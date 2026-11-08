@@ -1,105 +1,99 @@
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
-import datetime
 
-# --- SETTING HALAMAN ---
-st.set_page_config(page_title="Input Celah Belajar - Bimbel Rumah Nazma", page_icon="✏️", layout="centered")
+st.set_page_config(page_title="Portal Bimbel Rumah Nazma", layout="centered", page_icon="✏️")
 
-# --- KONEKSI DATABASE GOOGLE SHEETS ---
+# --- KONEKSI GOOGLE SHEETS ---
 @st.cache_resource
 def init_connection():
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scope
+    )
     client = gspread.authorize(creds)
-    url_db = "https://docs.google.com/spreadsheets/d/17JI1x966HfVG4YpfzCz_bssBwOmUTIJFbRutl0qyIZE/edit?usp=drivesdk"
-    return client.open_by_url(url_db)
+    return client
 
-sheet = init_connection()
+try:
+    client = init_connection()
+    # Menghubungkan ke Google Sheets Bimbel
+    sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17JI1x966HfVG4YpfzCz_bssBwOmUTIJFbRutl0qyIZE/edit")
+except Exception as e:
+    st.error(f"Gagal terhubung ke Google Sheets: {e}")
+    st.stop()
 
-# --- SISTEM LOGIN TUTOR ---
-st.title("✏️ Portal Pengajar Bimbel Rumah Nazma")
-st.write("Pencatatan Celah Belajar & Diagnostik Sesi Les Offline")
+# --- HEADER APLIKASI ---
+st.title("✏️ Portal Bimbel Rumah Nazma")
+st.caption("Sistem Log & Pemantauan Belajar Siswa")
 
-if "user_logged_in" not in st.session_state:
-    st.session_state.user_logged_in = False
-    st.session_state.user_data = None
+# --- PILIHAN PERAN LOGIN ---
+peran = st.selectbox(
+    "Pilih Akses Login:",
+    ["🔒 Pengajar / Tutor", "🎓 Siswa", "👨‍👩‍👧 Orang Tua"]
+)
 
-if not st.session_state.user_logged_in:
+st.markdown("---")
+
+# --- MENU LOGIN PENGAJAR ---
+if peran == "🔒 Pengajar / Tutor":
     st.subheader("🔒 Login Pengajar")
-    username_input = st.text_input("Username:")
-    pin_input = st.text_input("PIN / Password:", type="password")
+    username = st.text_input("Username Pengajar (misal: mei / rifky):")
+    pin = st.text_input("PIN / Password:", type="password")
     
-    if st.button("Masuk"):
-        sheet_akun = sheet.worksheet("Akun_Pengguna")
-        data_akun = sheet_akun.get_all_records()
-        
+    if st.button("Masuk Pengajar"):
+        ws = sheet.worksheet("Akun_Pengguna")
+        data = ws.get_all_records()
         user_found = False
-        for user in data_akun:
-            if str(user['Username']).strip() == username_input.strip() and str(user['PIN_Password']).strip() == pin_input.strip():
-                st.session_state.user_logged_in = True
-                st.session_state.user_data = user
+        for row in data:
+            if str(row.get("Username")).strip().lower() == username.strip().lower() and str(row.get("PIN_Password")).strip() == pin.strip():
                 user_found = True
-                st.rerun()
+                nama = row.get("Nama_Pengguna")
+                st.success(f"Selamat datang, {nama}!")
+                st.info("Fitur Input Celah Belajar & Jurnal Pengajar siap digunakan.")
                 break
-                
         if not user_found:
-            st.error("Username atau PIN salah. Silakan coba lagi.")
+            st.error("Username atau PIN Pengajar salah!")
 
-else:
-    user = st.session_state.user_data
-    st.success(f"Selamat bertugas, **{user['Nama_Pengguna']}** ({user['Level_Akses']}) 👋")
+# --- MENU LOGIN SISWA ---
+elif peran == "🎓 Siswa":
+    st.subheader("🎓 Login Siswa")
+    nama_siswa = st.text_input("Nama Siswa (misal: Aisyah / Adeva):")
+    pin_siswa = st.text_input("PIN Siswa (4 Angka):", type="password")
     
-    if st.button("Keluar / Logout"):
-        st.session_state.user_logged_in = False
-        st.session_state.user_data = None
-        st.rerun()
+    if st.button("Masuk Siswa"):
+        ws = sheet.worksheet("Data_Siswa")
+        data = ws.get_all_records()
+        siswa_found = False
+        for row in data:
+            if str(row.get("Nama_Lengkap")).strip().lower() == nama_siswa.strip().lower() and str(row.get("PIN_Siswa")).strip() == pin_siswa.strip():
+                siswa_found = True
+                st.success(f"Halo {row.get('Nama_Lengkap')}! Selamat belajar.")
+                st.write(f"**Kelas:** {row.get('Jenjang')} - Kelas {row.get('Kelas')}")
+                st.write(f"**Mapel:** {row.get('Mapel_Diambil')}")
+                st.info("Menu Bank Soal & Riwayat Kuis Latihan Siswa.")
+                break
+        if not siswa_found:
+            st.error("Nama Siswa atau PIN Siswa salah!")
 
-    st.markdown("---")
-
-    # --- FORM INPUT CELAH BELAJAR ---
-    st.subheader("📝 Form Diagnostik Pertemuan Offline")
-
-    sheet_siswa = sheet.worksheet("Data_Siswa")
-    data_siswa = sheet_siswa.get_all_records()
-    daftar_nama_siswa = [s['Nama_Lengkap'] for s in data_siswa if s['Status'] == 'Aktif']
-
-    with st.form(key="form_celah_belajar"):
-        tanggal = st.date_input("Tanggal Les:", datetime.date.today())
-        nama_siswa = st.selectbox("Nama Siswa:", daftar_nama_siswa)
-        mapel = st.selectbox("Mata Pelajaran:", ["Matematika", "IPA", "Fisika", "Kimia", "Bahasa Inggris", "Tematik/Calistung"])
-        topik_belum_paham = st.text_area("Topik/Materi yang Belum Dipahami (Celah Belajar):", 
-                                        placeholder="Contoh: Perkalian bersusun 3 angka, Konversi desimal ke pecahan")
-        tingkat_celah = st.select_slider("Tingkat Hambatan:", options=["Rendah", "Sedang", "Tinggi"])
-        status_tuntas = st.selectbox("Status Evaluasi:", ["Dalam Proses", "Perlu Remedial", "Selesai"])
-        
-        submit_button = st.form_submit_button(label="💾 Simpan Catatan Celah Belajar")
-
-    if submit_button:
-        if not topik_belum_paham.strip():
-            st.warning("Mohon isi topik yang belum dipahami siswa.")
-        else:
-            sheet_celah = sheet.worksheet("Celah_Belajar")
-            semua_catatan = sheet_celah.get_all_records()
-            id_baru = f"CLH-{len(semua_catatan) + 1:03d}"
-            
-            baris_baru = [
-                id_baru,
-                str(tanggal),
-                nama_siswa,
-                mapel,
-                topik_belum_paham,
-                tingkat_celah,
-                user['Nama_Pengguna'],
-                status_tuntas
-            ]
-            
-            sheet_celah.append_row(baris_baru)
-            st.balloons()
-            st.success(f"Catatan celah belajar untuk **{nama_siswa}** berhasil disimpan ke Google Sheets!")
-
-    if user['Level_Akses'] == 'Tutor 1':
-        st.markdown("---")
-        st.subheader("📊 Rekap Seluruh Celah Belajar (Akses Tutor 1)")
-        sheet_celah = sheet.worksheet("Celah_Belajar")
-        st.dataframe(sheet_celah.get_all_records())
+# --- MENU LOGIN ORANG TUA ---
+elif peran == "👨‍👩‍👧 Orang Tua":
+    st.subheader("👨‍👩‍👧 Login Orang Tua")
+    nama_anak = st.text_input("Nama Putra/Putri (misal: Aisyah / Adeva):")
+    pin_ortu = st.text_input("PIN Orang Tua (4 Angka):", type="password")
+    
+    if st.button("Masuk Orang Tua"):
+        ws = sheet.worksheet("Data_Siswa")
+        data = ws.get_all_records()
+        ortu_found = False
+        for row in data:
+            if str(row.get("Nama_Lengkap")).strip().lower() == nama_anak.strip().lower() and str(row.get("PIN_Ortu")).strip() == pin_ortu.strip():
+                ortu_found = True
+                st.success(f"Selamat datang Orang Tua dari Ananda {row.get('Nama_Lengkap')}.")
+                st.info("Laporan Grafik Perkembangan Belajar & Celah Belajar Ananda.")
+                break
+        if not ortu_found:
+            st.error("Nama Putra/Putri atau PIN Orang Tua salah!")
