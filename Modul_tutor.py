@@ -39,7 +39,7 @@ peran = st.selectbox(
 st.markdown("---")
 
 # ==========================================
-# 1. MODUL TUTOR / PENGAJAR (TAHAP 1)
+# 1. MODUL TUTOR / PENGAJAR
 # ==========================================
 if peran == "🔒 Pengajar / Tutor":
     st.subheader("🔒 Login Pengajar")
@@ -76,13 +76,38 @@ if peran == "🔒 Pengajar / Tutor":
         st.markdown("---")
         st.header("📖 Diari Kelemahan & Jurnal Mengajar Berkelanjutan")
         
-        # Ambil Daftar Siswa
+        # ----------------------------------------------------
+        # FITUR PENCARIAN SISWA AMAN (PRIVASI TERJAGA)
+        # ----------------------------------------------------
+        st.subheader("🔍 Cari Nama Siswa yang Diajar Hari Ini")
+        
         ws_siswa = sheet.worksheet("Data_Siswa")
-        siswa_list = [s.get("Nama_Lengkap") for s in ws_siswa.get_all_records() if s.get("Nama_Lengkap")]
+        data_siswa_all = ws_siswa.get_all_records()
         
-        selected_siswa = st.selectbox("Pilih Nama Siswa yang Dibatasi/Diajar Hari Ini:", ["-- Pilih Siswa --"] + siswa_list)
+        # Input pencarian nama (Tutor ketik nama/panggilan siswa)
+        search_query = st.text_input("Ketik Nama / Panggilan Siswa (misal: Aisyah / Adeva):").strip().lower()
         
-        if selected_siswa != "-- Pilih Siswa --":
+        selected_siswa = None
+        
+        if search_query:
+            # Filter nama siswa yang cocok dengan ketikan tutor
+            hasil_pencarian = [
+                s.get("Nama_Lengkap") for s in data_siswa_all 
+                if search_query in str(s.get("Nama_Lengkap")).strip().lower()
+            ]
+            
+            if hasil_pencarian:
+                pilihan = st.selectbox("Pilih Siswa dari Hasil Pencarian:", ["-- Pilih Siswa --"] + hasil_pencarian)
+                if pilihan != "-- Pilih Siswa --":
+                    selected_siswa = pilihan
+            else:
+                st.warning(f"Siswa dengan nama '{search_query}' tidak ditemukan di Data Siswa.")
+        else:
+            st.info("💡 Ketik nama siswa di kolom pencarian di atas untuk melihat catatan kelemahan & menginput jurnal hari ini.")
+        
+        # Jika siswa sudah dipilih dari hasil pencarian
+        if selected_siswa:
+            st.markdown("---")
             # ----------------------------------------------------
             # A. AMBIL CATATAN KELEMAHAN DARI TUTOR SEBELUMNYA
             # ----------------------------------------------------
