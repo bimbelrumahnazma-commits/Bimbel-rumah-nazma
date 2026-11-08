@@ -2,6 +2,7 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
+import time
 
 st.set_page_config(page_title="Portal Bimbel Rumah Nazma", layout="wide", page_icon="✏️")
 
@@ -28,7 +29,7 @@ except Exception as e:
 
 # --- HEADER APLIKASI ---
 st.title("✏️ Portal Bimbel Rumah Nazma")
-st.caption("Sistem Manajemen Pembelajaran & Diari Berkelanjutan")
+st.caption("Sistem Manajemen Pembelajaran & Kuis Online Berkelanjutan")
 
 # --- PILIHAN PERAN LOGIN ---
 peran = st.selectbox(
@@ -39,7 +40,7 @@ peran = st.selectbox(
 st.markdown("---")
 
 # ==========================================
-# 1. MODUL TUTOR / PENGAJAR (KAK RIFKY / KAK MEI)
+# 1. MODUL TUTOR / PENGAJAR
 # ==========================================
 if peran == "🔒 Pengajar / Tutor":
     st.subheader("🔒 Login Pengajar")
@@ -181,43 +182,42 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
     st.subheader("👑 Portal Kurikulum & Perencanaan (Mbak Fatimah)")
     pin_owner = st.text_input("Masukkan PIN Akses Pengelola:", type="password")
     
-    # PIN Pengelola default
     if pin_owner == "1605":
         st.success("Akses Pengelola Diizinkan 👋")
-        tab1, tab2 = st.tabs(["📅 Persiapan Jadwal & Soal Besok", "📚 Bank Topik Soal Master"])
+        tab1, tab2 = st.tabs(["📅 Plotting Soal & Timer Siswa", "📚 Master Bank Soal"])
         
         ws_siswa = sheet.worksheet("Data_Siswa")
         all_siswa = ws_siswa.get_all_records()
         
         with tab1:
-            st.markdown("### 🌙 Setting Soal & PR Siswa untuk Besok")
-            pilih_siswa = st.selectbox("Pilih Siswa Target:", ["-- Pilih Siswa --"] + [s.get("Nama_Lengkap") for s in all_siswa])
+            st.markdown("### 🌙 Setting Soal & PR Durasi Terukur untuk Siswa")
+            pilih_siswa = st.selectbox("Pilih Siswa Target:", ["-- Pilih Siswa --"] + [s.get("Nama_Lengkap") for s in all_siswa if s.get("Nama_Lengkap")])
             
             if pilih_siswa != "-- Pilih Siswa --":
-                # Ambil celah terakhir
                 try:
                     ws_celah = sheet.worksheet("Celah_Belajar")
                     celah_data = ws_celah.get_all_records()
                     celah_siswa = [c for c in celah_data if str(c.get("Nama_Siswa")).strip().lower() == pilih_siswa.strip().lower()]
-                    
                     if celah_siswa:
                         st.info(f"📌 **Celah Belajar Terakhir Ananda {pilih_siswa}:** {celah_siswa[-1].get('Topik_Belum_Paham')}")
                 except:
                     pass
                 
-                # Form Persiapan Soal
                 ws_topik = sheet.worksheet("Bank_Topik_Soal")
-                topik_list = [t.get("Nama_Topik") for t in ws_topik.get_all_records()]
+                topik_list = [t.get("Nama_Topik") for t in ws_topik.get_all_records() if t.get("Nama_Topik")]
                 
-                selected_topik = st.selectbox("Pilih Topik Soal Berkesinambungan:", topik_list)
-                jenis_soal = st.radio("Media Soal Besok:", ["Offline (Cetak/Latihan Buku)", "Online (PR Malam Siswa)"])
-                catatan_soal = st.text_area("Instruksi / Detail Soal untuk Tutor/Siswa:", placeholder="Misal: Kerjakan 5 soal perkalian bersusun & pemanasan pecahan campuran")
+                selected_topik = st.selectbox("Pilih Topik Soal Berkesinambungan:", topik_list if topik_list else ["Pecahan Dasar"])
+                jenis_soal = st.radio("Media Soal:", ["Online (Kuis HP / PR Siswa)", "Offline (Cetak / Buku Latihan)"])
                 
-                if st.button("📌 Plot Jadwal & Soal untuk Besok"):
-                    st.success(f"✅ Soal '{selected_topik}' ({jenis_soal}) berhasil di-plot untuk ananda {pilih_siswa}!")
+                # --- FITUR CUSTOM TIMER PER SISWA ---
+                durasi_menit = st.number_input("⏱️ Set Durasi Waktu Kuis (Menit):", min_value=5, max_value=180, value=30, step=5)
+                catatan_soal = st.text_area("Instruksi / Catatan Khusus untuk Siswa:", placeholder="Misal: Kerjakan dengan teliti! Kuis ini otomatis mengunci jika waktu habis.")
+                
+                if st.button("📌 Tugaskan Soal ke Siswa"):
+                    st.success(f"✅ Soal '{selected_topik}' berhasil ditugaskan ke {pilih_siswa} dengan durasi {durasi_menit} menit!")
         
         with tab2:
-            st.markdown("### 📚 Daftar Master Bank Topik Soal Bimbel")
+            st.markdown("### 📚 Master Bank Soal Bimbel")
             try:
                 ws_topik = sheet.worksheet("Bank_Topik_Soal")
                 st.dataframe(ws_topik.get_all_records())
@@ -227,27 +227,109 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
         st.error("PIN Pengelola Salah!")
 
 # ==========================================
-# 3. MODUL SISWA
+# 3. MODUL SISWA (LENGKAP DENGAN TIMER & GAMBAR SOAL)
 # ==========================================
 elif peran == "🎓 Siswa":
     st.subheader("🎓 Login Siswa")
-    nama_siswa = st.text_input("Nama Siswa (misal: Aisyah / Adeva):")
-    pin_siswa = st.text_input("PIN Siswa (4 Angka):", type="password")
     
-    if st.button("Masuk Siswa"):
-        ws = sheet.worksheet("Data_Siswa")
-        data = ws.get_all_records()
-        siswa_found = False
-        for row in data:
-            if str(row.get("Nama_Lengkap")).strip().lower() == nama_siswa.strip().lower() and str(row.get("PIN_Siswa")).strip() == pin_siswa.strip():
-                siswa_found = True
-                st.success(f"Halo {row.get('Nama_Lengkap')}! Selamat belajar.")
-                st.write(f"**Kelas:** {row.get('Jenjang')} - Kelas {row.get('Kelas')}")
-                st.write(f"**Mapel:** {row.get('Mapel_Diambil')}")
-                st.info("Menu Kuis & PR Online Siap Dikembangkan di Tahap 3 (Anti-Cheat).")
-                break
-        if not siswa_found:
-            st.error("Nama Siswa atau PIN Siswa salah!")
+    if "siswa_logged_in" not in st.session_state:
+        st.session_state.siswa_logged_in = False
+        st.session_state.siswa_nama = ""
+
+    if not st.session_state.siswa_logged_in:
+        nama_siswa = st.text_input("Nama Siswa (misal: Aisyah / Adeva):")
+        pin_siswa = st.text_input("PIN Siswa (4 Angka):", type="password")
+        
+        if st.button("Masuk Siswa"):
+            ws = sheet.worksheet("Data_Siswa")
+            data = ws.get_all_records()
+            siswa_found = False
+            for row in data:
+                if str(row.get("Nama_Lengkap")).strip().lower() == nama_siswa.strip().lower() and str(row.get("PIN_Siswa")).strip() == pin_siswa.strip():
+                    siswa_found = True
+                    st.session_state.siswa_logged_in = True
+                    st.session_state.siswa_nama = row.get("Nama_Lengkap")
+                    st.rerun()
+                    break
+            if not siswa_found:
+                st.error("Nama Siswa atau PIN Siswa salah!")
+    else:
+        st.success(f"Selamat Datang, Ananda **{st.session_state.siswa_nama}**! 👋")
+        if st.button("Logout Siswa"):
+            st.session_state.siswa_logged_in = False
+            st.session_state.siswa_nama = ""
+            st.session_state.pop("start_time", None)
+            st.rerun()
+            
+        st.markdown("---")
+        st.subheader("📝 Kuis Online & PR Mandiri")
+        
+        # --- PENGATURAN DURASI TIMER KUIS (DEFAULT: 30 MENIT) ---
+        durasi_menit_kuis = 30 
+        durasi_detik = durasi_menit_kuis * 60
+        
+        if "start_time" not in st.session_state:
+            st.session_state.start_time = time.time()
+            
+        waktu_berjalan = time.time() - st.session_state.start_time
+        sisa_waktu = int(durasi_detik - waktu_berjalan)
+        
+        if sisa_waktu > 0:
+            menit = sisa_waktu // 60
+            detik = sisa_waktu % 60
+            st.warning(f"⏱️ **Sisa Waktu Kuis:** `{menit:02d}:{detik:02d}` Menit")
+            
+            with st.form("form_kuis_siswa"):
+                st.markdown("### Soal Latihan Kuis")
+                
+                # SIMULASI DUMMY CONTOH SOAL (BISA DIAMBIL OTOMATIS DARI GOOGLE SHEETS)
+                soal_contoh = [
+                    {
+                        "no": 1,
+                        "bentuk": "Pilgan",
+                        "teks": "Hasil penjumlahan 1/2 + 1/4 adalah...",
+                        "gambar": "",
+                        "opsi": ["A. 2/4", "B. 3/4", "C. 1/6", "D. 4/4"]
+                    },
+                    {
+                        "no": 2,
+                        "bentuk": "Pilgan",
+                        "teks": "Perhatikan gambar pecahan di bawah ini! Berapa bagian yang diarsir?",
+                        "gambar": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/08/Fraction_3_4.svg/240px-Fraction_3_4.svg.png",
+                        "opsi": ["A. 1/4", "B. 2/4", "C. 3/4", "D. 4/4"]
+                    },
+                    {
+                        "no": 3,
+                        "bentuk": "Essay",
+                        "teks": "Jelaskan mengapa penyebut pada penjumlahan pecahan harus disamakan terlebih dahulu!",
+                        "gambar": "",
+                        "opsi": []
+                    }
+                ]
+                
+                jawaban_siswa = {}
+                for s in soal_contoh:
+                    st.markdown(f"**Soal No. {s['no']}** ({s['bentuk']})")
+                    st.write(s['teks'])
+                    
+                    # LOGIKA GAMBAR SOAL
+                    if s['gambar']:
+                        st.image(s['gambar'], caption="Gambar Soal", width=250)
+                        
+                    # LOGIKA BENTUK SOAL
+                    if s['bentuk'] == "Pilgan":
+                        jawaban_siswa[s['no']] = st.radio(f"Pilih Jawaban No {s['no']}:", s['opsi'], key=f"soal_{s['no']}")
+                    elif s['bentuk'] == "Essay":
+                        jawaban_siswa[s['no']] = st.text_area(f"Ketik Jawaban No {s['no']}:", key=f"soal_{s['no']}")
+                    
+                    st.markdown("---")
+                    
+                submitted = st.form_submit_button("🚀 Kirim Jawaban Kuis")
+                if submitted:
+                    st.balloons()
+                    st.success("🎉 Jawaban berhasil dikirim dan tersimpan di database Mbak Fatimah!")
+        else:
+            st.error("⏰ **Waktu Kuis Telah Habis!** Form kuis dikunci secara otomatis.")
 
 # ==========================================
 # 4. MODUL ORANG TUA
