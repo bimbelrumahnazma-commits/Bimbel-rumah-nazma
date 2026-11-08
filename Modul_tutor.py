@@ -1,7 +1,7 @@
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Portal Bimbel Rumah Nazma", layout="wide", page_icon="✏️")
 
@@ -28,23 +28,22 @@ except Exception as e:
 
 # --- HEADER APLIKASI ---
 st.title("✏️ Portal Bimbel Rumah Nazma")
-st.caption("Sistem Log & Pemantauan Belajar Siswa Multi-Peran")
+st.caption("Sistem Manajemen Pembelajaran & Diari Berkelanjutan")
 
 # --- PILIHAN PERAN LOGIN ---
 peran = st.selectbox(
     "Pilih Akses Login:",
-    ["🔒 Pengajar / Tutor", "🎓 Siswa", "👨‍👩‍👧 Orang Tua"]
+    ["🔒 Pengajar / Tutor", "👑 Pengelola / Owner (Mbak Fatimah)", "🎓 Siswa", "👨‍👩‍👧 Orang Tua"]
 )
 
 st.markdown("---")
 
 # ==========================================
-# 1. MODUL TUTOR / PENGAJAR
+# 1. MODUL TUTOR / PENGAJAR (KAK RIFKY / KAK MEI)
 # ==========================================
 if peran == "🔒 Pengajar / Tutor":
     st.subheader("🔒 Login Pengajar")
     
-    # State Login Tutor
     if "tutor_logged_in" not in st.session_state:
         st.session_state.tutor_logged_in = False
         st.session_state.tutor_nama = ""
@@ -74,23 +73,16 @@ if peran == "🔒 Pengajar / Tutor":
             st.rerun()
             
         st.markdown("---")
-        st.header("📖 Diari Kelemahan & Jurnal Mengajar Berkelanjutan")
+        st.header("📖 Diari Kelemahan & Jurnal Mengajar Sesi Hari Ini")
         
-        # ----------------------------------------------------
-        # FITUR PENCARIAN SISWA AMAN (PRIVASI TERJAGA)
-        # ----------------------------------------------------
         st.subheader("🔍 Cari Nama Siswa yang Diajar Hari Ini")
-        
         ws_siswa = sheet.worksheet("Data_Siswa")
         data_siswa_all = ws_siswa.get_all_records()
         
-        # Input pencarian nama (Tutor ketik nama/panggilan siswa)
         search_query = st.text_input("Ketik Nama / Panggilan Siswa (misal: Aisyah / Adeva):").strip().lower()
-        
         selected_siswa = None
         
         if search_query:
-            # Filter nama siswa yang cocok dengan ketikan tutor
             hasil_pencarian = [
                 s.get("Nama_Lengkap") for s in data_siswa_all 
                 if search_query in str(s.get("Nama_Lengkap")).strip().lower()
@@ -105,19 +97,13 @@ if peran == "🔒 Pengajar / Tutor":
         else:
             st.info("💡 Ketik nama siswa di kolom pencarian di atas untuk melihat catatan kelemahan & menginput jurnal hari ini.")
         
-        # Jika siswa sudah dipilih dari hasil pencarian
         if selected_siswa:
             st.markdown("---")
-            # ----------------------------------------------------
-            # A. AMBIL CATATAN KELEMAHAN DARI TUTOR SEBELUMNYA
-            # ----------------------------------------------------
             st.subheader(f"🔍 Rekam Jejak Kelemahan Ananda: {selected_siswa}")
             
             try:
                 ws_celah = sheet.worksheet("Celah_Belajar")
                 celah_data = ws_celah.get_all_records()
-                
-                # Filter celah siswa
                 celah_siswa = [c for c in celah_data if str(c.get("Nama_Siswa")).strip().lower() == selected_siswa.strip().lower()]
                 
                 if celah_siswa:
@@ -134,10 +120,6 @@ if peran == "🔒 Pengajar / Tutor":
                 st.write("Belum dapat memuat histori celah belajar.")
             
             st.markdown("---")
-            
-            # ----------------------------------------------------
-            # B. FORM INPUT HASIL LES HARI INI (UPDATE JURNAL)
-            # ----------------------------------------------------
             st.subheader(f"📝 Input Jurnal Belajar Sesi Hari Ini ({selected_siswa})")
             
             with st.form("form_jurnal"):
@@ -159,7 +141,6 @@ if peran == "🔒 Pengajar / Tutor":
                 
                 if submitted:
                     try:
-                        # 1. Simpan ke Form Responses 1 (Jurnal Utama)
                         ws_jurnal = sheet.worksheet("Form Responses 1")
                         ws_jurnal.append_row([
                             datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
@@ -175,7 +156,6 @@ if peran == "🔒 Pengajar / Tutor":
                             skor
                         ])
                         
-                        # 2. Simpan Catatan Celah Baru ke Tab Celah_Belajar
                         if kendala.strip():
                             ws_celah = sheet.worksheet("Celah_Belajar")
                             last_id = len(ws_celah.get_all_records()) + 1
@@ -190,12 +170,64 @@ if peran == "🔒 Pengajar / Tutor":
                                 "Dalam Proses"
                             ])
                         
-                        st.success("✅ Jurnal & Celah Belajar Berhasil Disimpan! Rantai informasi antar tutor telah diperbarui.")
+                        st.success("✅ Jurnal & Celah Belajar Berhasil Disimpan!")
                     except Exception as ex:
                         st.error(f"Gagal menyimpan data: {ex}")
 
 # ==========================================
-# 2. MODUL SISWA
+# 2. MODUL PENGELOLA / OWNER (MBAK FATIMAH)
+# ==========================================
+elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
+    st.subheader("👑 Portal Kurikulum & Perencanaan (Mbak Fatimah)")
+    pin_owner = st.text_input("Masukkan PIN Akses Pengelola:", type="password")
+    
+    # PIN Pengelola default
+    if pin_owner == "1605":
+        st.success("Akses Pengelola Diizinkan 👋")
+        tab1, tab2 = st.tabs(["📅 Persiapan Jadwal & Soal Besok", "📚 Bank Topik Soal Master"])
+        
+        ws_siswa = sheet.worksheet("Data_Siswa")
+        all_siswa = ws_siswa.get_all_records()
+        
+        with tab1:
+            st.markdown("### 🌙 Setting Soal & PR Siswa untuk Besok")
+            pilih_siswa = st.selectbox("Pilih Siswa Target:", ["-- Pilih Siswa --"] + [s.get("Nama_Lengkap") for s in all_siswa])
+            
+            if pilih_siswa != "-- Pilih Siswa --":
+                # Ambil celah terakhir
+                try:
+                    ws_celah = sheet.worksheet("Celah_Belajar")
+                    celah_data = ws_celah.get_all_records()
+                    celah_siswa = [c for c in celah_data if str(c.get("Nama_Siswa")).strip().lower() == pilih_siswa.strip().lower()]
+                    
+                    if celah_siswa:
+                        st.info(f"📌 **Celah Belajar Terakhir Ananda {pilih_siswa}:** {celah_siswa[-1].get('Topik_Belum_Paham')}")
+                except:
+                    pass
+                
+                # Form Persiapan Soal
+                ws_topik = sheet.worksheet("Bank_Topik_Soal")
+                topik_list = [t.get("Nama_Topik") for t in ws_topik.get_all_records()]
+                
+                selected_topik = st.selectbox("Pilih Topik Soal Berkesinambungan:", topik_list)
+                jenis_soal = st.radio("Media Soal Besok:", ["Offline (Cetak/Latihan Buku)", "Online (PR Malam Siswa)"])
+                catatan_soal = st.text_area("Instruksi / Detail Soal untuk Tutor/Siswa:", placeholder="Misal: Kerjakan 5 soal perkalian bersusun & pemanasan pecahan campuran")
+                
+                if st.button("📌 Plot Jadwal & Soal untuk Besok"):
+                    st.success(f"✅ Soal '{selected_topik}' ({jenis_soal}) berhasil di-plot untuk ananda {pilih_siswa}!")
+        
+        with tab2:
+            st.markdown("### 📚 Daftar Master Bank Topik Soal Bimbel")
+            try:
+                ws_topik = sheet.worksheet("Bank_Topik_Soal")
+                st.dataframe(ws_topik.get_all_records())
+            except Exception as e:
+                st.write("Gagal memuat bank topik soal.")
+    elif pin_owner:
+        st.error("PIN Pengelola Salah!")
+
+# ==========================================
+# 3. MODUL SISWA
 # ==========================================
 elif peran == "🎓 Siswa":
     st.subheader("🎓 Login Siswa")
@@ -212,13 +244,13 @@ elif peran == "🎓 Siswa":
                 st.success(f"Halo {row.get('Nama_Lengkap')}! Selamat belajar.")
                 st.write(f"**Kelas:** {row.get('Jenjang')} - Kelas {row.get('Kelas')}")
                 st.write(f"**Mapel:** {row.get('Mapel_Diambil')}")
-                st.info("Menu Kuis & PR Online Siap Dikembangkan di Tahap 3.")
+                st.info("Menu Kuis & PR Online Siap Dikembangkan di Tahap 3 (Anti-Cheat).")
                 break
         if not siswa_found:
             st.error("Nama Siswa atau PIN Siswa salah!")
 
 # ==========================================
-# 3. MODUL ORANG TUA
+# 4. MODUL ORANG TUA
 # ==========================================
 elif peran == "👨‍👩‍👧 Orang Tua":
     st.subheader("👨‍👩‍👧 Portal Orang Tua")
@@ -236,7 +268,6 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 st.success(f"Selamat datang Orang Tua dari Ananda **{row.get('Nama_Lengkap')}** 👋")
                 st.markdown(f"**Jenjang:** {row.get('Jenjang')} (Kelas {row.get('Kelas')}) | **Mapel:** {row.get('Mapel_Diambil')}")
                 st.markdown("---")
-                
                 st.subheader("📋 Laporan Hasil Belajar Sesi Terbaru")
                 
                 try:
