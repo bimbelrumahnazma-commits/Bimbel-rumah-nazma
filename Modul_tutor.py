@@ -145,11 +145,19 @@ if peran == "🔒 Pengajar / Tutor":
                     
                     if submitted:
                         try:
-                            ws_jurnal = sheet.worksheet("Form Responses 1")
+                            # COBA TEMUKAN NAMA TAB JURNAL YANG SESUAI
+                            try:
+                                ws_jurnal = sheet.worksheet("Form Responses 1")
+                            except:
+                                try:
+                                    ws_jurnal = sheet.worksheet("Form_Responses_1")
+                                except:
+                                    ws_jurnal = sheet.worksheet("Riwayat_Latihan")
+                            
                             ws_jurnal.append_row([
                                 datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                                 tgl.strftime("%d/%m/%Y"),
-                                st.session_state.tutor_nama,
+                                st.session_state.tutor_nama if st.session_state.tutor_nama else "Pengelola",
                                 "Hadir",
                                 selected_siswa,
                                 f"[{mapel}] {materi}",
@@ -161,18 +169,21 @@ if peran == "🔒 Pengajar / Tutor":
                             ])
                             
                             if kendala.strip():
-                                ws_celah = sheet.worksheet("Celah_Belajar")
-                                last_id = len(ws_celah.get_all_records()) + 1
-                                ws_celah.append_row([
-                                    f"CLH-{last_id:03d}",
-                                    tgl.strftime("%Y-%m-%d"),
-                                    selected_siswa,
-                                    mapel,
-                                    kendala,
-                                    tingkat_celah,
-                                    st.session_state.tutor_nama,
-                                    "Dalam Proses"
-                                ])
+                                try:
+                                    ws_celah = sheet.worksheet("Celah_Belajar")
+                                    last_id = len(ws_celah.get_all_records()) + 1
+                                    ws_celah.append_row([
+                                        f"CLH-{last_id:03d}",
+                                        tgl.strftime("%Y-%m-%d"),
+                                        selected_siswa,
+                                        mapel,
+                                        kendala,
+                                        tingkat_celah,
+                                        st.session_state.tutor_nama if st.session_state.tutor_nama else "Pengelola",
+                                        "Dalam Proses"
+                                    ])
+                                except:
+                                    pass
                             
                             st.success("✅ Jurnal & Celah Belajar Berhasil Disimpan!")
                         except Exception as ex:
@@ -270,13 +281,12 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                         all_soal = ws_master.get_all_records()
                         
                         if "IPAS" in selected_topik:
-                            soal_db = all_soal[30:] # Soal IPAS Nazma
+                            soal_db = all_soal[30:]
                         else:
-                            soal_db = all_soal[:30] # Soal Matematika
+                            soal_db = all_soal[:30]
                     except:
                         soal_db = []
                     
-                    # MEMBUAT FORMAT SOAL RINGKAS UNTUK UNDUHAN
                     pilgan_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Pilgan"]
                     essay_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Essay"]
                     
@@ -307,7 +317,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                         file_name=f"Lembar_Soal_{pilih_siswa}_{datetime.now().strftime('%d%m%Y')}.txt",
                         mime="text/plain"
                     )
-                    st.info("💡 **Petunjuk Cetak Paling Rapi:** Tekan tombol **Unduh** di atas, buka file yang terunduh di HP/Laptop, lalu langsung cetak. Hasilnya dijamin 100% bersih tanpa ada menu Streamlit!")
+                    st.info("💡 Tekan tombol **Unduh** di atas untuk mendapatkan file lembar soal murni yang siap dicetak dari HP/Laptop.")
 
         with tab2:
             st.markdown("### 📚 Master Bank Soal Bimbel")
@@ -440,24 +450,32 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 st.subheader("📋 Laporan Hasil Belajar Sesi Terbaru")
                 
                 try:
-                    ws_jurnal = sheet.worksheet("Form Responses 1")
+                    # COBA BEBERAPA OPSI NAMA TAB JURNAL
+                    try:
+                        ws_jurnal = sheet.worksheet("Form Responses 1")
+                    except:
+                        try:
+                            ws_jurnal = sheet.worksheet("Form_Responses_1")
+                        except:
+                            ws_jurnal = sheet.worksheet("Riwayat_Latihan")
+                            
                     data_jurnal = ws_jurnal.get_all_records()
                     
                     laporan_anak = [
                         j for j in data_jurnal 
-                        if str(j.get("Nama Siswa", "")).strip().lower() == nama_anak.strip().lower()
+                        if str(j.get("Nama Siswa", j.get("Nama_Siswa", ""))).strip().lower() == nama_anak.strip().lower()
                     ]
                     
                     if laporan_anak:
                         laporan_terbaru = laporan_anak[-1]
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.write(f"📅 **Tanggal:** {laporan_terbaru.get('Tanggal Mengajar', '-')}")
-                            st.write(f"👨‍🏫 **Tutor Pengajar:** {laporan_terbaru.get('Nama TUtor', '-')}")
-                            st.write(f"📚 **Materi & Mapel:** {laporan_terbaru.get('Materi dan Pelajaran Hari Ini', '-')}")
+                            st.write(f"📅 **Tanggal:** {laporan_terbaru.get('Tanggal Mengajar', laporan_terbaru.get('Tanggal', '-'))}")
+                            st.write(f"👨‍🏫 **Tutor Pengajar:** {laporan_terbaru.get('Nama TUtor', laporan_terbaru.get('Nama_Tutor', '-'))}")
+                            st.write(f"📚 **Materi & Mapel:** {laporan_terbaru.get('Materi dan Pelajaran Hari Ini', laporan_terbaru.get('Materi', '-'))}")
                         with col2:
-                            st.write(f"💯 **Nilai / Skor Latihan:** {laporan_terbaru.get('Nilai/skor latihan', '-')}")
-                            st.write(f"📝 **PR / Tugas Online:** {laporan_terbaru.get('tugas & Latihan (PR)', '-')}")
+                            st.write(f"💯 **Nilai / Skor Latihan:** {laporan_terbaru.get('Nilai/skor latihan', laporan_terbaru.get('Skor', '-'))}")
+                            st.write(f"📝 **PR / Tugas Online:** {laporan_terbaru.get('tugas & Latihan (PR)', laporan_terbaru.get('PR', '-'))}")
                         
                         st.markdown("**🌟 Pencapaian Belajar:**")
                         st.info(laporan_terbaru.get("Pencapaian Belajar", "-"))
