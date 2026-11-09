@@ -145,28 +145,43 @@ if peran == "🔒 Pengajar / Tutor":
                     
                     if submitted:
                         try:
+                            # 1. SIMPAN KE RIWAYAT_LATIHAN
+                            try:
+                                ws_riwayat = sheet.worksheet("Riwayat_Latihan")
+                                last_id = len(ws_riwayat.get_all_records()) + 1
+                                ws_riwayat.append_row([
+                                    f"LAT-{last_id:03d}",
+                                    tgl.strftime("%Y-%m-%d %H:%M:%S"),
+                                    selected_siswa,
+                                    mapel,
+                                    materi,
+                                    skor if skor else "0",
+                                    "25",
+                                    f"Pencapaian: {pencapaian} | Kendala: {kendala}"
+                                ])
+                            except Exception as e_riwayat:
+                                pass
+
+                            # 2. COBA SIMPAN KE FORM RESPONSES JIKA ADA
                             try:
                                 ws_jurnal = sheet.worksheet("Form Responses 1")
+                                ws_jurnal.append_row([
+                                    datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                                    tgl.strftime("%d/%m/%Y"),
+                                    st.session_state.tutor_nama if st.session_state.tutor_nama else "Pengelola",
+                                    "Hadir",
+                                    selected_siswa,
+                                    f"[{mapel}] {materi}",
+                                    pencapaian,
+                                    kendala,
+                                    pr,
+                                    foto_link,
+                                    skor
+                                ])
                             except:
-                                try:
-                                    ws_jurnal = sheet.worksheet("Form_Responses_1")
-                                except:
-                                    ws_jurnal = sheet.worksheet("Riwayat_Latihan")
+                                pass
                             
-                            ws_jurnal.append_row([
-                                datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                                tgl.strftime("%d/%m/%Y"),
-                                st.session_state.tutor_nama if st.session_state.tutor_nama else "Pengelola",
-                                "Hadir",
-                                selected_siswa,
-                                f"[{mapel}] {materi}",
-                                pencapaian,
-                                kendala,
-                                pr,
-                                foto_link,
-                                skor
-                            ])
-                            
+                            # 3. SIMPAN KE CELAH BELAJAR JIKA ADA KENDALA
                             if kendala.strip():
                                 try:
                                     ws_celah = sheet.worksheet("Celah_Belajar")
@@ -447,63 +462,82 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 st.markdown("---")
                 st.subheader("📋 Laporan Hasil Belajar Sesi Terbaru")
                 
+                laporan_anak = []
+                
+                # 1. CEK DARI RIWAYAT_LATIHAN
                 try:
-                    # AMBIL DATA DARI SALAH SATU TAB JURNAL
-                    ws_jurnal = None
-                    for name in ["Form Responses 1", "Form_Responses_1", "Riwayat_Latihan"]:
-                        try:
-                            ws_jurnal = sheet.worksheet(name)
-                            break
-                        except:
-                            pass
-                            
-                    data_jurnal = ws_jurnal.get_all_records() if ws_jurnal else []
-                    
-                    # PENCARIAN FLEKSIBEL UNTUK NAMA SISWA
-                    laporan_anak = []
-                    for j in data_jurnal:
-                        val_nama = str(j.get("Nama Siswa", j.get("Nama_Siswa", j.get("Siswa", "")))).strip().lower()
+                    ws_riwayat = sheet.worksheet("Riwayat_Latihan")
+                    data_riwayat = ws_riwayat.get_all_records()
+                    for r in data_riwayat:
+                        if str(r.get("Nama_Siswa")).strip().lower() == nama_anak.strip().lower():
+                            laporan_anak.append({
+                                'Tanggal': r.get('Waktu_Selesai', '-'),
+                                'Tutor': 'Tutor Bimbel',
+                                'Materi': f"[{r.get('Mapel')}] {r.get('Topik_Kuis')}",
+                                'Skor': r.get('Skor', '-'),
+                                'PR': '-',
+                                'Pencapaian': r.get('Detail_Salah', 'Selesai mengerjakan latihan'),
+                                'Kendala': '-'
+                            })
+                except:
+                    pass
+
+                # 2. CEK DARI CELAH_BELAJAR
+                try:
+                    ws_celah = sheet.worksheet("Celah_Belajar")
+                    data_celah = ws_celah.get_all_records()
+                    for c in data_celah:
+                        if str(c.get("Nama_Siswa")).strip().lower() == nama_anak.strip().lower():
+                            laporan_anak.append({
+                                'Tanggal': c.get('Tanggal', '-'),
+                                'Tutor': c.get('Tutor_Pengajar', '-'),
+                                'Materi': f"[{c.get('Mapel')}] {c.get('Topik_Belum_Paham')}",
+                                'Skor': 'Evaluasi Sesi',
+                                'PR': '-',
+                                'Pencapaian': 'Dalam proses pemantauan kelemahan',
+                                'Kendala': f"Celah Belajar: {c.get('Topik_Belum_Paham')} (Tingkat: {c.get('Tingkat_Celah')})"
+                            })
+                except:
+                    pass
+                
+                # 3. CEK DARI FORM RESPONSES 1 JIKA ADA
+                try:
+                    ws_form = sheet.worksheet("Form Responses 1")
+                    data_form = ws_form.get_all_records()
+                    for f in data_form:
+                        val_nama = str(f.get("Nama Siswa", f.get("Nama_Siswa", ""))).strip().lower()
                         if val_nama == nama_anak.strip().lower() or nama_anak.strip().lower() in val_nama:
-                            laporan_anak.append(j)
+                            laporan_anak.append({
+                                'Tanggal': f.get('Tanggal Mengajar', '-'),
+                                'Tutor': f.get('Nama TUtor', '-'),
+                                'Materi': f.get('Materi dan Pelajaran Hari Ini', '-'),
+                                'Skor': f.get('Nilai/skor latihan', '-'),
+                                'PR': f.get('tugas & Latihan (PR)', '-'),
+                                'Pencapaian': f.get('Pencapaian Belajar', '-'),
+                                'Kendala': f.get('Kendala Belajar Anak', '-')
+                            })
+                except:
+                    pass
+
+                if laporan_anak:
+                    laporan_terbaru = laporan_anak[-1]
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"📅 **Tanggal:** {laporan_terbaru.get('Tanggal')}")
+                        st.write(f"👨‍🏫 **Tutor Pengajar:** {laporan_terbaru.get('Tutor')}")
+                        st.write(f"📚 **Materi & Mapel:** {laporan_terbaru.get('Materi')}")
+                    with col2:
+                        st.write(f"💯 **Nilai / Skor Latihan:** {laporan_terbaru.get('Skor')}")
+                        st.write(f"📝 **PR / Tugas Online:** {laporan_terbaru.get('PR')}")
                     
-                    if laporan_anak:
-                        laporan_terbaru = laporan_anak[-1]
-                        
-                        # CARI ELEMEN DATA SECARA FLEKSIBEL
-                        tgl_val = laporan_terbaru.get('Tanggal Mengajar', laporan_terbaru.get('Tanggal', '-'))
-                        tutor_val = laporan_terbaru.get('Nama TUtor', laporan_terbaru.get('Nama_Tutor', laporan_terbaru.get('Tutor', '-')))
-                        materi_val = laporan_terbaru.get('Materi dan Pelajaran Hari Ini', laporan_terbaru.get('Materi', '-'))
-                        skor_val = laporan_terbaru.get('Nilai/skor latihan', laporan_terbaru.get('Skor', laporan_terbaru.get('Nilai', '-')))
-                        pr_val = laporan_terbaru.get('tugas & Latihan (PR)', laporan_terbaru.get('PR', '-'))
-                        capai_val = laporan_terbaru.get("Pencapaian Belajar", laporan_terbaru.get("Pencapaian", "-"))
-                        kendala_val = laporan_terbaru.get("Kendala Belajar Anak", laporan_terbaru.get("Kendala", "-"))
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write(f"📅 **Tanggal:** {tgl_val}")
-                            st.write(f"👨‍🏫 **Tutor Pengajar:** {tutor_val}")
-                            st.write(f"📚 **Materi & Mapel:** {materi_val}")
-                        with col2:
-                            st.write(f"💯 **Nilai / Skor Latihan:** {skor_val}")
-                            st.write(f"📝 **PR / Tugas Online:** {pr_val}")
-                        
-                        st.markdown("**🌟 Pencapaian Belajar:**")
-                        st.info(capai_val)
-                        
-                        if str(kendala_val).strip() and str(kendala_val) != "-":
-                            st.markdown("**💡 Catatan / Kendala Belajar:**")
-                            st.warning(kendala_val)
-                            
-                        foto_url = str(laporan_terbaru.get("Dokumentasi/ Foto hasil Belajar", laporan_terbaru.get("Foto", "")))
-                        if foto_url and "drive.google.com" in foto_url:
-                            st.markdown("**📷 Foto Dokumentasi Hasil Belajar:**")
-                            urls = [u.strip() for u in foto_url.split(",") if u.strip()]
-                            for idx, u in enumerate(urls, 1):
-                                st.markdown(f"👉 [Klik di sini untuk melihat Foto Dokumentasi {idx}]({u})")
-                    else:
-                        st.info("Belum ada catatan sesi belajar untuk Ananda.")
-                except Exception as ex:
-                    st.warning("Data detail sesi belum tersedia di jurnal.")
+                    st.markdown("**🌟 Pencapaian Belajar:**")
+                    st.info(laporan_terbaru.get('Pencapaian'))
+                    
+                    if str(laporan_terbaru.get('Kendala')).strip() and str(laporan_terbaru.get('Kendala')) != "-":
+                        st.markdown("**💡 Catatan / Kendala Belajar:**")
+                        st.warning(laporan_terbaru.get('Kendala'))
+                else:
+                    st.info("Belum ada catatan sesi belajar untuk Ananda.")
                 break
                 
         if not ortu_found:
