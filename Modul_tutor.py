@@ -300,14 +300,14 @@ if peran == "🎓 Siswa":
             if data_share:
                 for ds in data_share:
                     st.markdown(f"**📚 {ds.get('Judul_Materi')}** (Mapel: {ds.get('Mapel')})")
-                    st.caption(الس `Dibagikan oleh Tutor: {ds.get('Nama_Tutor')} | Tanggal: {ds.get('Tanggal')}`)
+                    st.caption(f"Dibagikan oleh Tutor: {ds.get('Nama_Tutor')} | Tanggal: {ds.get('Tanggal')}")
                     st.markdown(f"🔗 [Buka / Download File Dokumen]({ds.get('Link_File_Drive')})")
                     st.markdown("---")
             else:
                 st.info("Belum ada file materi dari Google Drive tutor yang dibagikan.")
 
 # ==========================================
-# 2. MODUL TUTOR (DENGAN INTEGRASI DRIVE MANDIRI & SHARING)
+# 2. MODUL TUTOR
 # ==========================================
 elif peran == "🔒 Pengajar / Tutor":
     st.subheader("🔒 Login Pengajar Portal")
@@ -462,7 +462,6 @@ elif peran == "🔒 Pengajar / Tutor":
                 else:
                     st.info("Belum ada data nilai.")
 
-        # TAB 3: BROWSE GOOGLE DRIVE PRIBADI TUTOR & SHARE KE SISWA
         with tutor_tab3:
             st.header("📂 Hubungkan & Bagikan File dari Google Drive Pribadi Tutor")
             st.caption("Tutor dapat menautkan link file Google Drive (PDF, Word, Soal) milik pribadi untuk dibagikan langsung kepada siswa.")
@@ -507,7 +506,7 @@ elif peran == "🔒 Pengajar / Tutor":
                     st.success("Soal berhasil disimpan ke database!")
 
 # ==========================================
-# 3. MODUL PENGELOLA / OWNER (MBAK FATIMAH) - DENGAN MONITORING DRIVE TUTOR
+# 3. MODUL PENGELOLA / OWNER (MBAK FATIMAH)
 # ==========================================
 elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
     st.subheader("👑 Portal Pengelola Bimbel")
@@ -540,7 +539,6 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
         with tab3:
             st.dataframe(sheet.worksheet("Bank_Soal_Master").get_all_records())
         
-        # TAB MONITORING FILE TUTOR UNTUK OWNER
         with tab4:
             st.markdown("### 👁️ Monitoring File & Soal yang Dibagikan Tutor")
             st.caption("Mbak Fatimah dapat melihat semua materi atau file Google Drive yang dibagikan oleh tutor lain kepada siswa.")
