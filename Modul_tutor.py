@@ -6,35 +6,6 @@ import time
 
 st.set_page_config(page_title="Portal Bimbel Rumah Nazma", layout="wide", page_icon="✏️")
 
-# --- KODE CSS UNTUK TAMPILAN DI LAYAR & HASIL CETAK ---
-st.markdown("""
-<style>
-@media print {
-    /* Sembunyikan elemen luar Streamlit saat dicetak */
-    header, footer, [data-testid="stHeader"], [data-testid="stSidebar"], 
-    .stButton, .stSelectbox, .stRadio, .stTextInput, .stAlert, .no-print {
-        display: none !important;
-    }
-    body, .main, .block-container {
-        padding: 0 !important;
-        margin: 0 !important;
-    }
-    @page {
-        size: A4;
-        margin: 1cm;
-    }
-}
-.kop-surat {
-    border: 2px solid #000;
-    padding: 12px;
-    background-color: #fff;
-    color: #000;
-    font-family: Arial, sans-serif;
-    margin-bottom: 15px;
-}
-</style>
-""", unsafe_allow_html=True)
-
 # --- KONEKSI GOOGLE SHEETS ---
 @st.cache_resource
 def init_connection():
@@ -305,61 +276,38 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     except:
                         soal_db = []
                     
-                    # TAMPILAN KOP DOKUMEN CETAK
-                    st.markdown(f"""
-                    <div class="kop-surat">
-                        <h2 style="text-align: center; margin: 0;">BIMBEL RUMAH NAZMA</h2>
-                        <h4 style="text-align: center; margin: 3px 0 10px 0; color: #444;">LEMBAR LATIHAN SOAL (OFFLINE)</h4>
-                        <hr style="border: 1px solid #000;">
-                        <table style="width: 100%; font-weight: bold; font-size: 13px;">
-                            <tr>
-                                <td>Nama Siswa: {pilih_siswa}</td>
-                                <td>Tanggal: {datetime.now().strftime('%d/%m/%Y')}</td>
-                            </tr>
-                            <tr>
-                                <td>Topik: {selected_topik}</td>
-                                <td>Paraf Tutor: _________</td>
-                            </tr>
-                        </table>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
+                    # MEMBUAT FORMAT SOAL RINGKAS UNTUK UNDUHAN
                     pilgan_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Pilgan"]
                     essay_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Essay"]
                     
-                    st.markdown("#### A. PILIHAN GANDA")
+                    text_document = f"BIMBEL RUMAH NAZMA\nLEMBAR LATIHAN SOAL (OFFLINE)\n"
+                    text_document += f"--------------------------------------------------\n"
+                    text_document += f"Nama Siswa : {pilih_siswa}\t\tTanggal : {datetime.now().strftime('%d/%m/%Y')}\n"
+                    text_document += f"Topik      : {selected_topik}\tParaf Tutor: _________\n"
+                    text_document += f"--------------------------------------------------\n\n"
+                    text_document += "A. PILIHAN GANDA\n\n"
                     
-                    # MENAMPILKAN SOAL PILGAN 2 KOLOM MENGGUNAKAN STREAMLIT COLUMNS
-                    for i in range(0, len(pilgan_list), 2):
-                        col1, col2 = st.columns(2)
+                    for idx, s in enumerate(pilgan_list, 1):
+                        text_document += f"{idx}. {s.get('Teks_Soal')}\n"
+                        if s.get('Opsi_Jawaban'):
+                            opsi = [o.strip() for o in str(s.get('Opsi_Jawaban')).split("|")]
+                            text_document += f"   {'   '.join(opsi)}\n"
+                        text_document += "\n"
                         
-                        # Kolom Kiri (Soal No Ganjil/Pasangan 1)
-                        with col1:
-                            s1 = pilgan_list[i]
-                            st.markdown(f"**{i+1}. {s1.get('Teks_Soal')}**")
-                            if s1.get('Opsi_Jawaban'):
-                                opsi = [o.strip() for o in str(s1.get('Opsi_Jawaban')).split("|")]
-                                st.caption("  ".join(opsi))
-                        
-                        # Kolom Kanan (Soal No Genap/Pasangan 2)
-                        with col2:
-                            if i + 1 < len(pilgan_list):
-                                s2 = pilgan_list[i+1]
-                                st.markdown(f"**{i+2}. {s2.get('Teks_Soal')}**")
-                                if s2.get('Opsi_Jawaban'):
-                                    opsi = [o.strip() for o in str(s2.get('Opsi_Jawaban')).split("|")]
-                                    st.caption("  ".join(opsi))
-                        st.markdown("")
-                    
                     if essay_list:
-                        st.markdown("#### B. ESSAY")
+                        text_document += "B. ESSAY\n\n"
                         for idx, s in enumerate(essay_list, len(pilgan_list) + 1):
-                            st.markdown(f"**{idx}. {s.get('Teks_Soal')}**")
-                            st.caption("Jawaban: __________________________________________________")
-                            st.markdown("")
+                            text_document += f"{idx}. {s.get('Teks_Soal')}\n"
+                            text_document += "   Jawaban: __________________________________________________\n\n"
                     
-                    st.markdown("---")
-                    st.success("✅ Lembar latihan siap dicetak! Tekan titik 3 browser HP -> Cetak (Print) / tekan Ctrl+P di Laptop.")
+                    st.subheader("📄 Unduh File Soal Siap Cetak (Bebas Menu Web)")
+                    st.download_button(
+                        label="📥 Unduh Lembar Soal (.txt / Siap Cetak)",
+                        data=text_document,
+                        file_name=f"Lembar_Soal_{pilih_siswa}_{datetime.now().strftime('%d%m%Y')}.txt",
+                        mime="text/plain"
+                    )
+                    st.info("💡 **Petunjuk Cetak Paling Rapi:** Tekan tombol **Unduh** di atas, buka file yang terunduh di HP/Laptop, lalu langsung cetak. Hasilnya dijamin 100% bersih tanpa ada menu Streamlit!")
 
         with tab2:
             st.markdown("### 📚 Master Bank Soal Bimbel")
