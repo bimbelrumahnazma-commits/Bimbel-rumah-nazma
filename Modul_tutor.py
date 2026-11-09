@@ -145,7 +145,6 @@ if peran == "🔒 Pengajar / Tutor":
                     
                     if submitted:
                         try:
-                            # 1. CARI TAB JURNAL UTAMA (Form Responses 1)
                             ws_jurnal = None
                             for tab_name in ["Form Responses 1", "Form_Responses_1", "Jurnal_Mengajar"]:
                                 try:
@@ -176,7 +175,6 @@ if peran == "🔒 Pengajar / Tutor":
                                 skor
                             ])
                             
-                            # 2. SIMPAN KE CELAH BELAJAR JIKA ADA KENDALA
                             if kendala.strip():
                                 try:
                                     ws_celah = sheet.worksheet("Celah_Belajar")
@@ -374,6 +372,7 @@ elif peran == "🎓 Siswa":
             st.session_state.siswa_logged_in = False
             st.session_state.siswa_nama = ""
             st.session_state.pop("start_time", None)
+            st.session_state.pop("kuis_submitted", None)
             st.rerun()
             
         st.markdown("---")
@@ -388,7 +387,7 @@ elif peran == "🎓 Siswa":
         waktu_berjalan = time.time() - st.session_state.start_time
         sisa_waktu = int(durasi_detik - waktu_berjalan)
         
-        if sisa_waktu > 0:
+        if sisa_waktu > 0 and not st.session_state.get("kuis_submitted", False):
             menit = sisa_waktu // 60
             detik = sisa_waktu % 60
             st.warning(f"⏱️ **Sisa Waktu Kuis:** `{menit:02d}:{detik:02d}` Menit")
@@ -402,13 +401,17 @@ elif peran == "🎓 Siswa":
                     
                     if str(st.session_state.siswa_nama).strip().lower() == "nazma":
                         soal_db = all_soal[30:]
+                        topik_nama = "IPAS Bab 4: Berkenalan dengan Energi"
+                        mapel_nama = "IPAS"
                     else:
                         soal_db = all_soal[:30]
+                        topik_nama = "Latihan Matematika Kelas 7"
+                        mapel_nama = "Matematika"
                 except:
                     soal_db = []
                 
+                jawaban_user = {}
                 if soal_db:
-                    jawaban_siswa = {}
                     for idx, s in enumerate(soal_db, 1):
                         st.markdown(f"**Soal No. {idx}** ({s.get('Bentuk_Soal')})")
                         st.write(s.get('Teks_Soal'))
@@ -421,18 +424,94 @@ elif peran == "🎓 Siswa":
                             opsi_list = [o.strip() for o in opsi_raw.split("|") if o.strip()]
                             if not opsi_list:
                                 opsi_list = ["A", "B", "C", "D"]
-                            jawaban_siswa[idx] = st.radio(f"Pilih Jawaban No {idx}:", opsi_list, key=f"soal_{idx}")
+                            jawaban_user[idx] = st.radio(f"Pilih Jawaban No {idx}:", opsi_list, key=f"soal_{idx}")
                         elif str(s.get('Bentuk_Soal')).strip() == "Essay":
-                            jawaban_siswa[idx] = st.text_area(f"Ketik Jawaban No {idx}:", key=f"soal_{idx}")
+                            jawaban_user[idx] = st.text_area(f"Ketik Jawaban No {idx}:", key=f"soal_{idx}")
                         
                         st.markdown("---")
                 else:
                     st.info("Belum ada soal online yang ditugaskan.")
                     
                 submitted = st.form_submit_button("🚀 Kirim Jawaban Kuis")
-                if submitted:
-                    st.balloons()
-                    st.success("🎉 Jawaban berhasil dikirim dan tersimpan di database!")
+                if submitted and soal_db:
+                    # PROSES PENILAIAN OTOMATIS
+                    total_soal = len(soal_db)
+                    benar = 0
+                    salah_no = []
+                    detail_per_soal = []
+                    
+                    for idx, s in enumerate(soal_db, 1):
+                        kunci_raw = str(s.get("Kunci_Jawaban", "")).strip().upper()
+                        user_ans = str(jawaban_user.get(idx, "")).strip()
+                        
+                        if str(s.get("Bentuk_Soal")).strip() == "Pilgan":
+                            user_huruf = user_ans[0].upper() if user_ans else ""
+                            if user_huruf == kunci_raw:
+                                benar += 1
+                                detail_per_soal.append((idx, True))
+                            else:
+                                salah_no.append(idx)
+                                detail_per_soal.append((idx, False))
+                        else:
+                            detail_per_soal.append((idx, "Essay"))
+
+                    # HITUNG SKOR (0-100)
+                    pilgan_count = len([s for s in soal_db if str(s.get("Bentuk_Soal")).strip() == "Pilgan"])
+                    skor_akhir = round((benar / pilgan_count) * 100) if pilgan_count > 0 else 100
+                    
+                    detail_salah_str = f"Soal salah: No {', '.join(map(str, salah_no))}" if salah_no else "Semua Pilgan Benar!"
+                    
+                    # SIMPAN KE GOOGLE SHEETS (Riwayat_Latihan)
+                    try:
+                        try:
+                            ws_riwayat = sheet.worksheet("Riwayat_Latihan")
+                        except:
+                            ws_riwayat = sheet.add_worksheet(title="Riwayat_Latihan", rows="1000", cols="10")
+                            ws_riwayat.append_row(["ID_Latihan", "Waktu_Selesai", "Nama_Siswa", "Mapel", "Topik_Kuis", "Skor", "Total_Soal", "Detail_Salah"])
+                            
+                        last_id = len(ws_riwayat.get_all_records()) + 1
+                        ws_riwayat.append_row([
+                            f"LAT-{last_id:03d}",
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            st.session_state.siswa_nama,
+                            mapel_nama,
+                            topik_nama,
+                            skor_akhir,
+                            total_soal,
+                            detail_salah_str
+                        ])
+                    except Exception as ex_save:
+                        st.error(f"Gagal menyimpan riwayat: {ex_save}")
+                    
+                    st.session_state.kuis_submitted = True
+                    st.session_state.hasil_skor = skor_akhir
+                    st.session_state.hasil_detail = detail_per_soal
+                    st.session_state.hasil_salah_no = salah_no
+                    st.rerun()
+
+        elif st.session_state.get("kuis_submitted", False):
+            st.balloons()
+            st.success(f"🎉 **Kuis Berhasil Dikirim!**")
+            st.markdown(f"### 💯 Skor Kamu: `{st.session_state.get('hasil_skor', 0)} / 100`")
+            
+            st.subheader("📋 Ringkasan Hasil Pengerjaan:")
+            salah_list = st.session_state.get('hasil_salah_no', [])
+            
+            if salah_list:
+                st.warning(f"📌 **Nomor yang Masih Salah:** Nomor **{', '.join(map(str, salah_list))}**")
+                st.info("💡 *Catatan:* Kunci jawaban tidak ditampilkan agar bisa dibahas dan dipelajari bersama Tutor saat sesi les!")
+            else:
+                st.success("🌟 Luar biasa! Semua soal Pilihan Ganda berhasil kamu jawab dengan Benar!")
+                
+            st.markdown("---")
+            st.write("Detail Status Jawaban:")
+            for no, status in st.session_state.get('hasil_detail', []):
+                if status is True:
+                    st.write(f"* Soal No. {no}: ✅ **BENAR**")
+                elif status is False:
+                    st.write(f"* Soal No. {no}: ❌ **SALAH**")
+                else:
+                    st.write(f"* Soal No. {no}: 📝 **ESSAY** (Akan diperiksa Tutor)")
         else:
             st.error("⏰ **Waktu Kuis Telah Habis!** Form kuis dikunci secara otomatis.")
 
@@ -457,9 +536,28 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 st.markdown("---")
                 st.subheader("📋 Laporan Hasil Belajar Sesi Terbaru")
                 
-                laporan_terbaru = None
+                laporan_list = []
                 
-                # UUTAMA: BACA TAB JURNAL DULU (Form Responses 1)
+                # 1. AMBIL DATA KUIS ONLINE SISWA (Riwayat_Latihan)
+                try:
+                    ws_riwayat = sheet.worksheet("Riwayat_Latihan")
+                    data_riwayat = ws_riwayat.get_all_records()
+                    for r in data_riwayat:
+                        if str(r.get("Nama_Siswa")).strip().lower() == nama_anak.strip().lower():
+                            laporan_list.append({
+                                'Tanggal': r.get('Waktu_Selesai', '-'),
+                                'Tutor': 'Sistem Kuis Online',
+                                'Materi': f"[{r.get('Mapel')}] {r.get('Topik_Kuis')}",
+                                'Skor': r.get('Skor', '-'),
+                                'PR': 'Kuis Online Aplikasi',
+                                'Pencapaian': f"Selesai Kuis Online ({r.get('Total_Soal')} Soal)",
+                                'Kendala': r.get('Detail_Salah', '-'),
+                                'Foto': ''
+                            })
+                except:
+                    pass
+
+                # 2. AMBIL DATA JURNAL LES OFFLINE (Form Responses 1)
                 try:
                     ws_jurnal = None
                     for tab_name in ["Form Responses 1", "Form_Responses_1", "Jurnal_Mengajar"]:
@@ -471,55 +569,32 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                     
                     if ws_jurnal:
                         data_jurnal = ws_jurnal.get_all_records()
-                        jurnal_anak = [
-                            j for j in data_jurnal 
-                            if str(j.get("Nama Siswa", j.get("Nama_Siswa", ""))).strip().lower() == nama_anak.strip().lower()
-                        ]
-                        if jurnal_anak:
-                            raw = jurnal_anak[-1]
-                            laporan_terbaru = {
-                                'Tanggal': raw.get('Tanggal Mengajar', raw.get('Tanggal', '-')),
-                                'Tutor': raw.get('Nama TUtor', raw.get('Nama_Tutor', '-')),
-                                'Materi': raw.get('Materi dan Pelajaran Hari Ini', raw.get('Materi', '-')),
-                                'Skor': raw.get('Nilai/skor latihan', raw.get('Skor', '-')),
-                                'PR': raw.get('tugas & Latihan (PR)', raw.get('PR', '-')),
-                                'Pencapaian': raw.get('Pencapaian Belajar', raw.get('Pencapaian', '-')),
-                                'Kendala': raw.get('Kendala Belajar Anak', raw.get('Kendala', '-')),
-                                'Foto': str(raw.get('Dokumentasi/ Foto hasil Belajar', raw.get('Foto', '')))
-                            }
+                        for j in data_jurnal:
+                            val_nama = str(j.get("Nama Siswa", j.get("Nama_Siswa", ""))).strip().lower()
+                            if val_nama == nama_anak.strip().lower() or nama_anak.strip().lower() in val_nama:
+                                laporan_list.append({
+                                    'Tanggal': j.get('Tanggal Mengajar', j.get('Tanggal', '-')),
+                                    'Tutor': j.get('Nama TUtor', j.get('Nama_Tutor', '-')),
+                                    'Materi': j.get('Materi dan Pelajaran Hari Ini', j.get('Materi', '-')),
+                                    'Skor': j.get('Nilai/skor latihan', j.get('Skor', '-')),
+                                    'PR': j.get('tugas & Latihan (PR)', j.get('PR', '-')),
+                                    'Pencapaian': j.get('Pencapaian Belajar', j.get('Pencapaian', '-')),
+                                    'Kendala': j.get('Kendala Belajar Anak', j.get('Kendala', '-')),
+                                    'Foto': str(j.get('Dokumentasi/ Foto hasil Belajar', j.get('Foto', '')))
+                                })
                 except:
                     pass
 
-                # CADANGAN: JIKA BELUM ADA JURNAL, BACA DARI RIWAYAT_LATIHAN ATAU CELAH_BELAJAR
-                if not laporan_terbaru:
-                    try:
-                        ws_riwayat = sheet.worksheet("Riwayat_Latihan")
-                        data_riwayat = ws_riwayat.get_all_records()
-                        riwayat_anak = [r for r in data_riwayat if str(r.get("Nama_Siswa")).strip().lower() == nama_anak.strip().lower()]
-                        if riwayat_anak:
-                            raw = riwayat_anak[-1]
-                            laporan_terbaru = {
-                                'Tanggal': raw.get('Waktu_Selesai', '-'),
-                                'Tutor': 'Tutor Bimbel',
-                                'Materi': f"[{raw.get('Mapel')}] {raw.get('Topik_Kuis')}",
-                                'Skor': raw.get('Skor', '-'),
-                                'PR': '-',
-                                'Pencapaian': raw.get('Detail_Salah', 'Selesai mengerjakan latihan'),
-                                'Kendala': '-',
-                                'Foto': ''
-                            }
-                    except:
-                        pass
-
-                if laporan_terbaru:
+                if laporan_list:
+                    laporan_terbaru = laporan_list[-1]
                     col1, col2 = st.columns(2)
                     with col1:
                         st.write(f"📅 **Tanggal:** {laporan_terbaru.get('Tanggal')}")
-                        st.write(f"👨‍🏫 **Tutor Pengajar:** {laporan_terbaru.get('Tutor')}")
+                        st.write(f"👨‍🏫 **Tutor / Sumber:** {laporan_terbaru.get('Tutor')}")
                         st.write(f"📚 **Materi & Mapel:** {laporan_terbaru.get('Materi')}")
                     with col2:
                         st.write(f"💯 **Nilai / Skor Latihan:** {laporan_terbaru.get('Skor')}")
-                        st.write(f"📝 **PR / Tugas Online:** {laporan_terbaru.get('PR')}")
+                        st.write(f"📝 **PR / Jenis Tugas:** {laporan_terbaru.get('PR')}")
                     
                     st.markdown("**🌟 Pencapaian Belajar:**")
                     st.info(laporan_terbaru.get('Pencapaian'))
@@ -528,7 +603,6 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                         st.markdown("**💡 Catatan / Kendala Belajar:**")
                         st.warning(laporan_terbaru.get('Kendala'))
                         
-                    # DUKUNGAN MULTI-FOTO DOKUMENTASI (PISAHAN KOMA)
                     foto_url_raw = laporan_terbaru.get('Foto', '')
                     if foto_url_raw and "http" in foto_url_raw:
                         st.markdown("**📷 Foto Dokumentasi Hasil Belajar:**")
