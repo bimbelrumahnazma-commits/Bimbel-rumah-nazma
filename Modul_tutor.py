@@ -6,32 +6,23 @@ import time
 
 st.set_page_config(page_title="Portal Bimbel Rumah Nazma", layout="wide", page_icon="✏️")
 
-# --- KODE CSS KHUSUS CETAK (PRINT-FRIENDLY A4 2 KOLOM) ---
+# --- KODE CSS KHUSUS CETAK (HANYA MENCETAK KOTAK SOAL) ---
 st.markdown("""
 <style>
 @media print {
-    /* Sembunyikan semua tombol dan navigasi Streamlit saat dicetak */
-    header, footer, .stButton, .stSelectbox, .stRadio, .stTextInput, [data-testid="stSidebar"], [data-testid="stHeader"] {
+    /* Sembunyikan seluruh tampilan luar Streamlit */
+    header, footer, .stAppHeader, [data-testid="stHeader"], [data-testid="stSidebar"], 
+    .stButton, .stSelectbox, .stRadio, .stTextInput, .stAlert, .element-container:has(.stAlert) {
         display: none !important;
     }
-    .main .block-container {
+    body, .main, .block-container {
         padding: 0 !important;
         margin: 0 !important;
+        background-color: #ffffff !important;
     }
-    /* Format Kertas A4 */
     @page {
         size: A4;
-        margin: 1.5cm;
-    }
-    .print-container {
-        font-family: Arial, sans-serif !important;
-        color: #000 !important;
-    }
-    /* Format 2 Kolom untuk Soal */
-    .soal-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 15px;
+        margin: 1cm;
     }
 }
 </style>
@@ -293,7 +284,6 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     else:
                         st.session_state["show_print_preview"] = True
 
-                # TAMPILAN PRATINJAU CETAK PRINT-FRIENDLY
                 if jenis_soal == "Offline (Cetak / Buku Latihan)" and st.session_state.get("show_print_preview", False):
                     st.markdown("---")
                     
@@ -308,12 +298,14 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     except:
                         soal_db = []
                     
-                    # HTMl KOP CETAK DENGAN DUA KOLOM
+                    pilgan_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Pilgan"]
+                    essay_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Essay"]
+                    
                     html_content = f"""
-                    <div class="print-container" style="border: 1.5px solid #000; padding: 15px; background: #fff; font-family: Arial, sans-serif;">
+                    <div style="border: 1.5px solid #000; padding: 15px; background: #fff; font-family: Arial, sans-serif; color: #000;">
                         <h2 style="text-align: center; margin: 0; font-size: 18px; color: #000;">BIMBEL RUMAH NAZMA</h2>
                         <h4 style="text-align: center; margin: 3px 0 10px 0; font-size: 13px; color: #333;">LEMBAR LATIHAN SOAL (OFFLINE)</h4>
-                        <table style="width: 100%; border-bottom: 2px solid #000; font-size: 12px; font-weight: bold; margin-bottom: 10px;">
+                        <table style="width: 100%; border-bottom: 2px solid #000; font-size: 12px; font-weight: bold; margin-bottom: 10px; color: #000;">
                             <tr>
                                 <td>Nama Siswa: {pilih_siswa}</td>
                                 <td>Tanggal: {datetime.now().strftime('%d/%m/%Y')}</td>
@@ -323,30 +315,29 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                                 <td>Paraf Tutor: _________</td>
                             </tr>
                         </table>
+                        <h5 style="margin: 5px 0; font-size: 13px;">A. PILIHAN GANDA</h5>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px 15px; font-size: 11px;">
                     """
                     
-                    pilgan_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Pilgan"]
-                    essay_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Essay"]
-                    
-                    html_content += "<h5 style='margin: 5px 0;'>A. PILIHAN GANDA</h5><div style='display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 11px;'>"
                     for idx, s in enumerate(pilgan_list, 1):
                         opsi_str = ""
                         if s.get('Opsi_Jawaban'):
                             opsi = [o.strip() for o in str(s.get('Opsi_Jawaban')).split("|")]
                             opsi_str = f"<br>{'&nbsp;&nbsp;'.join(opsi)}"
-                        html_content += f"<div style='margin-bottom: 6px;'><b>{idx}.</b> {s.get('Teks_Soal')}{opsi_str}</div>"
+                        html_content += f"<div style='margin-bottom: 4px;'><b>{idx}.</b> {s.get('Teks_Soal')}{opsi_str}</div>"
+                    
                     html_content += "</div>"
                     
                     if essay_list:
-                        html_content += "<h5 style='margin: 10px 0 5px 0;'>B. ESSAY</h5><div style='font-size: 11px;'>"
+                        html_content += "<h5 style='margin: 12px 0 5px 0; font-size: 13px;'>B. ESSAY</h5><div style='font-size: 11px;'>"
                         for idx, s in enumerate(essay_list, len(pilgan_list) + 1):
-                            html_content += f"<div style='margin-bottom: 8px;'><b>{idx}.</b> {s.get('Teks_Soal')}<br><span style='color: #888;'>Jawaban: __________________________________________________</span></div>"
+                            html_content += f"<div style='margin-bottom: 6px;'><b>{idx}.</b> {s.get('Teks_Soal')}<br><span style='color: #666;'>Jawaban: __________________________________________________</span></div>"
                         html_content += "</div>"
                         
                     html_content += "</div>"
                     
                     st.markdown(html_content, unsafe_allow_html=True)
-                    st.success("✅ Lembar latihan sudah terformat rapi 2 kolom A4 hemat kertas! Tekan titik 3 browser -> Cetak (Print) / Ctrl+P.")
+                    st.success("✅ Lembar latihan siap dicetak! Hanya area lembar soal di atas yang akan tercetak.")
 
         with tab2:
             st.markdown("### 📚 Master Bank Soal Bimbel")
@@ -422,9 +413,9 @@ elif peran == "🎓 Siswa":
                     all_soal = ws_master.get_all_records()
                     
                     if str(st.session_state.siswa_nama).strip().lower() == "nazma":
-                        soal_db = all_soal[30:] # Kuis IPAS Nazma
+                        soal_db = all_soal[30:]
                     else:
-                        soal_db = all_soal[:30] # Kuis Matematika
+                        soal_db = all_soal[:30]
                 except:
                     soal_db = []
                 
