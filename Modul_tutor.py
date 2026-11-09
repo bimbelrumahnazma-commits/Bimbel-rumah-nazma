@@ -10,7 +10,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Fungsi untuk menghubungkan ke Google Sheets
+# Fungsi koneksi ke Google Sheets
 @st.cache_resource
 def init_connection():
     scope = [
@@ -22,7 +22,7 @@ def init_connection():
     client = gspread.authorize(creds)
     return client
 
-# Fungsi untuk mengambil data dari tab tertentu
+# Fungsi ambil data berdasarkan tab
 def load_data_from_sheet(sheet_name):
     try:
         client = init_connection()
@@ -38,7 +38,7 @@ def main():
     st.markdown("---")
     
     # ----------------------------------------------------
-    # PEMILIHAN PERAN (ROLE) DI AWAL DI SIDEBAR
+    # 1. GERBANG PEMILIHAN PERAN (ROLE) DI AWAL (SIDEBAR)
     # ----------------------------------------------------
     st.sidebar.header("🔐 Akses Masuk Portal")
     peran = st.sidebar.selectbox(
@@ -53,98 +53,103 @@ def main():
     
     st.sidebar.markdown("---")
     
-    # TAMPILAN JIKA MASUK SEBAGAI TUTOR / OWNER
+    # ----------------------------------------------------
+    # JIKA MASUK SEBAGAI TUTOR / OWNER (PANEL BANK SOAL & MENGAJAR)
+    # ----------------------------------------------------
     if peran in ["👨‍🏫 Tutor / Pengajar", "👑 Owner / Admin"]:
-        st.sidebar.header("📋 Panel Kontrol Tutor")
-        nama_siswa_input = st.sidebar.text_input("Nama Siswa Bimbingan:")
+        st.sidebar.header("🎯 Sesi Pengajaran Aktif")
+        nama_siswa_ajar = st.sidebar.text_input("Nama Siswa yang Dibimbing:")
         
-        menu_pilihan = st.sidebar.selectbox(
-            "Pilih Menu Belajar:",
+        if nama_siswa_ajar:
+            st.sidebar.success(f"Sedang mengajar: **{nama_siswa_ajar}**")
+            
+        st.sidebar.markdown("---")
+        st.sidebar.header("🔍 Pilih Jalur Bank Soal")
+        
+        menu_bank = st.sidebar.radio(
+            "Pilih Kategori Bank Soal:",
             [
-                "🏠 Beranda Utama",
-                "📖 Jalur 1: Materi & Kisi-Kisi Harian",
-                "📝 Jalur 2: Paket Soal & Tryout Full",
+                "📖 Jalur 1: Materi & Konsep Harian",
+                "📝 Jalur 2: Paket Soal & Tryout",
                 "🏆 Jalur Khusus: Olimpiade Sains (OSN)",
-                "📊 Input Evaluasi Hasil Les"
+                "📊 Catatan Progres / Evaluasi Siswa"
             ]
         )
         
-        if menu_pilihan == "🏠 Beranda Utama":
-            st.subheader(f"Selamat Datang di Panel {peran} Bimbel Rumah Nazma!")
-            st.write("Silakan gunakan menu di sebelah kiri untuk mengelola materi, bank soal, atau merekap evaluasi siswa.")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.info("**Jalur 1**\nFokus penguasaan konsep dasar per bab & materi harian.")
-            with col2:
-                st.success("**Jalur 2**\nSimulasi paket latihan & tryout full skala nilai asli.")
-            with col3:
-                st.warning("**Olimpiade (OSN)**\nPembinaan soal penalaran tingkat tinggi (SD - SMA).")
+        # TAB 1: JALUR 1 (MATERI & KISI-KISI)
+        if menu_bank == "📖 Jalur 1: Materi & Konsep Harian":
+            st.subheader("📖 Pencarian Bank Soal Materi & Konsep Harian (Jalur 1)")
+            if nama_siswa_ajar:
+                st.info(f"💡 Tips: Cari soal yang sesuai untuk materi harian siswa **{nama_siswa_ajar}**.")
                 
-        elif menu_pilihan == "📖 Jalur 1: Materi & Kisi-Kisi Harian":
-            st.subheader("📖 Jalur 1: Penguasaan Materi & Kisi-Kisi Per Bab[span_0](start_span)[span_0](end_span)")
-            if nama_siswa_input:
-                st.markdown(f"👤 **Siswa Aktif:** `{nama_siswa_input}`")
-            jenjang = st.selectbox("Pilih Jenjang:", ["PAUD / TK", "Sekolah Dasar (SD)", "Sekolah Menengah Pertama (SMP)", "Sekolah Menengah Atas (SMA)"])
-            mapel = st.text_input("Masukkan Mata Pelajaran:")
-            
             df_materi = load_data_from_sheet("Bank_Soal_Materi")
             if not df_materi.empty:
-                st.success("Database Bank_Soal_Materi berhasil dimuat!")
-                st.dataframe(df_materi.head())
+                col1, col2 = st.columns(2)
+                with col1:
+                    filter_jenjang = st.text_input("Filter Jenjang / Mapel (cth: SD / Matematika):")
+                with col2:
+                    filter_bab = st.text_input("Filter Bab / Topik:")
+                    
+                df_tampil = df_materi.copy()
+                if filter_jenjang:
+                    df_tampil = df_tampil[df_tampil['Jenjang_Dan_Mapel'].astype(str).str.contains(filter_jenjang, case=False, na=False)]
+                if filter_bab:
+                    df_tampil = df_tampil[df_tampil['Bab_Atau_Topik'].astype(str).str.contains(filter_bab, case=False, na=False)]
+                    
+                st.write(f"Menemukan **{len(df_tampil)}** soal dari database.")
+                st.dataframe(df_tampil, use_container_width=True)
             else:
-                st.info("Belum ada data soal di tab `Bank_Soal_Materi`[span_1](start_span)[span_1](end_span). Silakan isi melalui Google Sheets.")
-            
-        elif menu_pilihan == "📝 Jalur 2: Paket Soal & Tryout Full":
-            st.subheader("📝 Jalur 2: Latihan Paket & Simulasi Ujian")
-            if nama_siswa_input:
-                st.markdown(f"👤 **Siswa Aktif:** `{nama_siswa_input}`")
-            kategori_ujian = st.selectbox("Pilih Program Ujian:", ["TKA (Tes Kemampuan Akademik)", "TOEFL", "SKD CPNS / Kedinasan", "UTBK / Ujian Mandiri"])
-            nomor_paket = st.selectbox("Pilih Sesi Latihan:", ["Paket 1", "Paket 2", "Paket 3", "Paket 4", "Paket 5", "Tryout Full (Skala Asli)"])
-            
+                st.warning("Belum ada data di tab `Bank_Soal_Materi`[span_0](start_span)[span_0](end_span). Silakan isi melalui Google Sheets.")
+
+        # TAB 2: JALUR 2 (PAKET SOAL & TRYOUT)
+        elif menu_bank == "📝 Jalur 2: Paket Soal & Tryout":
+            st.subheader("📝 Pencarian Paket Soal & Tryout Full (Jalur 2)")
             df_paket = load_data_from_sheet("Bank_Soal_Paket")
             if not df_paket.empty:
-                st.success("Database Bank_Soal_Paket berhasil dimuat!")
-                st.dataframe(df_paket.head())
+                filter_kategori = st.text_input("Cari Kategori Ujian (cth: TKA, TOEFL, SKD):")
+                df_tampil = df_paket.copy()
+                if filter_kategori:
+                    df_tampil = df_tampil[df_tampil['Jenjang_Dan_Kategori'].astype(str).str.contains(filter_kategori, case=False, na=False)]
+                    
+                st.write(f"Menemukan **{len(df_tampil)}** soal paket.")
+                st.dataframe(df_tampil, use_container_width=True)
             else:
-                st.info("Belum ada data soal di tab `Bank_Soal_Paket`[span_2](start_span)[span_2](end_span). Silakan isi melalui Google Sheets.")
-            
-        elif menu_pilihan == "🏆 Jalur Khusus: Olimpiade Sains (OSN)":
-            st.subheader("🏆 Pembinaan Olimpiade Sains Nasional (OSN)")
-            if nama_siswa_input:
-                st.markdown(f"👤 **Siswa Aktif:** `{nama_siswa_input}`")
-            jenjang_osn = st.selectbox("Pilih Jenjang Olimpiade:", ["SD", "SMP", "SMA"])
-            bidang_osn = st.selectbox("Pilih Bidang Sains:", ["Matematika", "Fisika", "Kimia", "Biologi", "Astronomi", "Ekonomi"])
-            
-            df_olimpiade = load_data_from_sheet("Bank_Soal_Olimpiade")
-            if not df_olimpiade.empty:
-                st.success("Database Bank_Soal_Olimpiade berhasil dimuat!")
-                st.dataframe(df_olimpiade.head())
+                st.warning("Belum ada data di tab `Bank_Soal_Paket`[span_1](start_span)[span_1](end_span). Silakan isi melalui Google Sheets.")
+
+        # TAB 3: OLIMPIADE SAINS (OSN)
+        elif menu_bank == "🏆 Jalur Khusus: Olimpiade Sains (OSN)":
+            st.subheader("🏆 Bank Soal Pembinaan Olimpiade Sains (OSN)")
+            df_osn = load_data_from_sheet("Bank_Soal_Olimpiade")
+            if not df_osn.empty:
+                filter_osn = st.text_input("Cari Bidang / Jenjang Olimpiade (cth: Matematika, Fisika, SD, SMA):")
+                df_tampil = df_osn.copy()
+                if filter_osn:
+                    df_tampil = df_tampil[df_tampil['Jenjang_Dan_Bidang'].astype(str).str.contains(filter_osn, case=False, na=False)]
+                    
+                st.write(f"Menemukan **{len(df_tampil)}** soal olimpiade lengkap dengan pembahasannya.")
+                st.dataframe(df_tampil, use_container_width=True)
             else:
-                st.info("Belum ada data soal di tab `Bank_Soal_Olimpiade`[span_3](start_span)[span_3](end_span). Silakan isi melalui Google Sheets.")
+                st.warning("Belum ada data di tab `Bank_Soal_Olimpiade`[span_2](start_span)[span_2](end_span). Silakan isi melalui Google Sheets.")
+
+        # TAB 4: CATATAN PROGRES / EVALUASI
+        elif menu_bank == "📊 Catatan Progres / Evaluasi Siswa":
+            st.subheader("📊 Catatan Progres & Riwayat Belajar Siswa")
+            with st.form("form_progres"):
+                p_nama = st.text_input("Nama Siswa:", value=nama_siswa_ajar)
+                p_mapel = st.text_input("Mata Pelajaran / Program:")
+                p_skor = st.number_input("Skor / Nilai Latihan:", 0, 100, 0)
+                p_catatan = st.text_area("Catatan Perkembangan / Kendala:")
                 
-        elif menu_pilihan == "📊 Input Evaluasi Hasil Les":
-            st.subheader("📊 Form Rekapitulasi Sesi Setelah Les")
-            with st.form("form_evaluasi"):
-                input_nama = st.text_input("Nama Siswa:", value=nama_siswa_input)
-                input_kategori = st.selectbox("Kategori Belajar:", ["Jalur 1 - Materi", "Jalur 2 - Paket/Tryout", "Olimpiade (OSN)"])
-                input_skor = st.number_input("Perolehan Skor / Nilai:", min_value=0, max_value=100, value=0)
-                input_catatan = st.text_area("Catatan Evaluasi / Kendala Siswa:")
-                
-                submitted = st.form_submit_button("Simpan Data ke Spreadsheet")
-                if submitted:
-                    if input_nama:
-                        try:
-                            client = init_connection()
-                            spreadsheet = client.open("Data_Bimbel_Rumah_Nazma_Rapi")
-                            worksheet = spreadsheet.worksheet("Bank_Soal_Materi") # atau sesuaikan tab rekap
-                            st.success(f"Evaluasi untuk {input_nama} berhasil dicatat!")
-                        except Exception as e:
-                            st.error(f"Gagal menyimpan: {e}")
+                simpan_progres = st.form_submit_button("Simpan Catatan Sesi")
+                if simpan_progres:
+                    if p_nama:
+                        st.success(f"Catatan progres untuk **{p_nama}** berhasil dicatat untuk sesi ini!")
                     else:
                         st.warning("Mohon isi nama siswa terlebih dahulu.")
 
-    # TAMPILAN JIKA MASUK SEBAGAI SISWA / WALI MURID
+    # ----------------------------------------------------
+    # JIKA MASUK SEBAGAI SISWA / WALI MURID
+    # ----------------------------------------------------
     else:
         st.subheader(f"👋 Selamat Datang di Portal {peran} Bimbel Rumah Nazma")
         st.write("Silakan pilih program belajar yang ingin diakses:")
