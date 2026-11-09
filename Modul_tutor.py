@@ -37,8 +37,12 @@ def main():
     st.title("📚 Portal Pembelajaran Bimbel Rumah Nazma")
     st.markdown("---")
     
-    # Sidebar untuk Menu Navigasi Utama
-    st.sidebar.header("Navigasi Portal")
+    # ----------------------------------------------------
+    # PANEL UTAMA TUTOR: INPUT NAMA SISWA & KATEGORI
+    # ----------------------------------------------------
+    st.sidebar.header("📋 Sesi Belajar Siswa")
+    nama_siswa = st.sidebar.text_input("Masukkan Nama Siswa:")
+    
     menu_pilihan = st.sidebar.selectbox(
         "Pilih Jalur Belajar:",
         [
@@ -49,11 +53,15 @@ def main():
         ]
     )
     
+    # Validasi jika nama siswa belum diisi (kecuali di beranda)
+    if menu_pilihan != "🏠 Beranda Utama" and not nama_siswa:
+        st.sidebar.warning("⚠️ Harap isi 'Nama Siswa' terlebih dahulu sebelum memilih jalur belajar!")
+    
     if menu_pilihan == "🏠 Beranda Utama":
         st.subheader("Selamat Datang di Portal Resmi Bimbel Rumah Nazma!")
         st.write("""
         Portal ini dirancang khusus untuk mendukung kegiatan belajar siswa secara terstruktur.
-        Silakan pilih jalur belajar di menu sebelah kiri untuk mulai mengakses materi harian, 
+        Silakan masukkan nama siswa di menu sebelah kiri dan pilih jalur belajar untuk mulai mengakses materi harian, 
         latihan paket soal, tryout berstandar skala nilai asli, hingga pembinaan olimpiade.
         """)
         
@@ -67,6 +75,9 @@ def main():
             
     elif menu_pilihan == "📖 Jalur 1: Materi & Kisi-Kisi Harian":
         st.subheader("📖 Jalur 1: Penguasaan Materi & Kisi-Kisi Per Bab")
+        if nama_siswa:
+            st.markdown(f"👤 **Siswa Aktif:** `{nama_siswa}`")
+            
         jenjang = st.selectbox("Pilih Jenjang:", ["PAUD / TK", "Sekolah Dasar (SD)", "Sekolah Menengah Pertama (SMP)", "Sekolah Menengah Atas (SMA)"])
         mapel = st.text_input("Masukkan Mata Pelajaran:")
         
@@ -79,6 +90,9 @@ def main():
         
     elif menu_pilihan == "📝 Jalur 2: Paket Soal & Tryout Full":
         st.subheader("📝 Jalur 2: Latihan Paket & Simulasi Ujian")
+        if nama_siswa:
+            st.markdown(f"👤 **Siswa Aktif:** `{nama_siswa}`")
+            
         kategori_ujian = st.selectbox("Pilih Program Ujian:", ["TKA (Tes Kemampuan Akademik)", "TOEFL", "SKD CPNS / Kedinasan", "UTBK / Ujian Mandiri"])
         nomor_paket = st.selectbox("Pilih Sesi Latihan:", ["Paket 1", "Paket 2", "Paket 3", "Paket 4", "Paket 5", "Tryout Full (Skala Asli)"])
         
@@ -91,6 +105,9 @@ def main():
         
     elif menu_pilihan == "🏆 Jalur Khusus: Olimpiade Sains (OSN)":
         st.subheader("🏆 Pembinaan Olimpiade Sains Nasional (OSN)")
+        if nama_siswa:
+            st.markdown(f"👤 **Siswa Aktif:** `{nama_siswa}`")
+            
         jenjang_osn = st.selectbox("Pilih Jenjang Olimpiade:", ["SD", "SMP", "SMA"])
         bidang_osn = st.selectbox("Pilih Bidang Sains:", ["Matematika", "Fisika", "Kimia", "Biologi", "Astronomi", "Ekonomi"])
         
