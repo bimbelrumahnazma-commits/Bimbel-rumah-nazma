@@ -29,7 +29,7 @@ except Exception as e:
 
 # --- HEADER APLIKASI ---
 st.title("✏️ Portal Bimbel Rumah Nazma")
-st.caption("Sistem Manajemen Pembelajaran & Kuis Online Berkelanjutan")
+st.caption("Sistem Manajemen Pembelajaran & Kuis Online/Offline")
 
 # --- PILIHAN PERAN LOGIN ---
 peran = st.selectbox(
@@ -75,13 +75,10 @@ if peran == "🔒 Pengajar / Tutor":
             
         st.markdown("---")
         
-        # TAB MENU TUTOR
         tutor_tab1, tutor_tab2 = st.tabs(["📝 Jurnal & Celah Belajar", "➕ Tambah Soal Baru ke Bank Soal"])
         
-        # --- TAB 1: JURNAL & CELAH BELAJAR ---
         with tutor_tab1:
             st.header("📖 Diari Kelemahan & Jurnal Mengajar Sesi Hari Ini")
-            
             st.subheader("🔍 Cari Nama Siswa yang Diajar Hari Ini")
             ws_siswa = sheet.worksheet("Data_Siswa")
             data_siswa_all = ws_siswa.get_all_records()
@@ -181,7 +178,6 @@ if peran == "🔒 Pengajar / Tutor":
                         except Exception as ex:
                             st.error(f"Gagal menyimpan data: {ex}")
 
-        # --- TAB 2: TAMBAH SOAL BARU BY TUTOR ---
         with tutor_tab2:
             st.header("➕ Tambah Soal Baru ke Bank Soal Master")
             st.caption("Tutor dapat menginput soal baru di sini tanpa perlu membuka Google Sheets.")
@@ -217,7 +213,7 @@ if peran == "🔒 Pengajar / Tutor":
                                 ws_master = sheet.add_worksheet(title="Bank_Soal_Master", rows="1000", cols="10")
                                 ws_master.append_row(["Bentuk_Soal", "Teks_Soal", "URL_Gambar", "Opsi_Jawaban", "Kunci_Jawaban"])
                             
-                            ws_master.append_row([bentuk, teks_soal, url_gambar, opsi_jawaban, kunci])
+                            ws_master.append_row([bentuk, teks_soal, url_gambar, opsi_jawaban, str(kunci)])
                             st.success("🎉 Soal baru berhasil disimpan ke Bank Soal Master!")
                         except Exception as ex:
                             st.error(f"Gagal menyimpan soal: {ex}")
@@ -250,13 +246,10 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                 except:
                     pass
                 
-                try:
-                    ws_master = sheet.worksheet("Bank_Soal_Master")
-                    soal_list = ws_master.get_all_records()
-                    topik_options = ["Latihan Matematika Kelas 7 (30 Soal Master)"]
-                except:
-                    topik_options = ["Pecahan Dasar"]
-                
+                topik_options = [
+                    "IPAS Bab 4: Berkenalan dengan Energi (25 Soal Nazma)",
+                    "Latihan Matematika Kelas 7 (30 Soal Master)"
+                ]
                 selected_topik = st.selectbox("Pilih Topik Soal Berkesinambungan:", topik_options)
                 jenis_soal = st.radio("Media Soal:", ["Online (Kuis HP / PR Siswa)", "Offline (Cetak / Buku Latihan)"])
                 
@@ -264,20 +257,79 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                 catatan_soal = st.text_area("Instruksi / Catatan Khusus untuk Siswa:", placeholder="Misal: Kerjakan dengan teliti! Kuis ini otomatis mengunci jika waktu habis.")
                 
                 if st.button("📌 Tugaskan Soal ke Siswa"):
-                    st.success(f"✅ Soal '{selected_topik}' berhasil ditugaskan ke {pilih_siswa} dengan durasi {durasi_menit} menit!")
-        
+                    if jenis_soal == "Online (Kuis HP / PR Siswa)":
+                        st.success(f"✅ Soal '{selected_topik}' berhasil ditugaskan ke {pilih_siswa} secara online!")
+                    else:
+                        st.session_state["show_print_preview"] = True
+
+                if jenis_soal == "Offline (Cetak / Buku Latihan)" and st.session_state.get("show_print_preview", False):
+                    st.markdown("---")
+                    st.markdown("### 🖨️ PRATINJAU LEMBAR SOAL SIAP CETAK")
+                    
+                    try:
+                        ws_master = sheet.worksheet("Bank_Soal_Master")
+                        all_soal = ws_master.get_all_records()
+                        
+                        if "IPAS" in selected_topik:
+                            soal_db = all_soal[30:] # Ambil soal IPAS Nazma (Baris 32 ke atas)
+                        else:
+                            soal_db = all_soal[:30] # Ambil soal Matematika Kelas 7
+                    except:
+                        soal_db = []
+                    
+                    st.markdown(f"""
+                    <div style="border: 2px solid #000; padding: 15px; background-color: #ffffff; color: #000000; font-family: Arial, sans-serif;">
+                        <h2 style="text-align: center; margin-bottom: 2px; color: #000;">BIMBEL RUMAH NAZMA</h2>
+                        <h4 style="text-align: center; margin-top: 0; color: #333;">LEMBAR LATIHAN SOAL (OFFLINE)</h4>
+                        <hr style="border: 1px solid #000;">
+                        <table style="width: 100%; font-weight: bold; margin-bottom: 10px; color: #000;">
+                            <tr>
+                                <td>Nama Siswa: {pilih_siswa}</td>
+                                <td>Tanggal: {datetime.now().strftime('%d/%m/%Y')}</td>
+                            </tr>
+                            <tr>
+                                <td>Topik: {selected_topik}</td>
+                                <td>Paraf Tutor: _________</td>
+                            </tr>
+                        </table>
+                        <hr style="border: 1px dashed #000;">
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.write("")
+                    
+                    for idx, s in enumerate(soal_db, 1):
+                        st.markdown(f"**{idx}. {s.get('Teks_Soal')}**")
+                        if str(s.get('Bentuk_Soal')).strip() == "Pilgan" and s.get('Opsi_Jawaban'):
+                            opsi = [o.strip() for o in str(s.get('Opsi_Jawaban')).split("|")]
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                if len(opsi) > 0: st.write(opsi[0])
+                                if len(opsi) > 1: st.write(opsi[1])
+                            with col_b:
+                                if len(opsi) > 2: st.write(opsi[2])
+                                if len(opsi) > 3: st.write(opsi[3])
+                        elif str(s.get('Bentuk_Soal')).strip() == "Essay":
+                            st.write("Jawaban: __________________________________________________")
+                        st.write("")
+                        
+                    st.success("✅ Lembar soal siap dicetak! Silakan gunakan menu Print di browser HP/Laptop (Ctrl+P di Laptop).")
+
         with tab2:
             st.markdown("### 📚 Master Bank Soal Bimbel")
             try:
                 ws_master = sheet.worksheet("Bank_Soal_Master")
-                st.dataframe(ws_master.get_all_records())
+                data_master = ws_master.get_all_records()
+                for r in data_master:
+                    for k in r:
+                        r[k] = str(r[k])
+                st.dataframe(data_master)
             except Exception as e:
-                st.write("Gagal memuat bank soal master.")
+                st.write(f"Gagal memuat bank soal master: {e}")
     elif pin_owner:
         st.error("PIN Pengelola Salah!")
 
 # ==========================================
-# 3. MODUL SISWA (LENGKAP DENGAN TIMER & GAMBAR SOAL)
+# 3. MODUL SISWA
 # ==========================================
 elif peran == "🎓 Siswa":
     st.subheader("🎓 Login Siswa")
@@ -287,7 +339,7 @@ elif peran == "🎓 Siswa":
         st.session_state.siswa_nama = ""
 
     if not st.session_state.siswa_logged_in:
-        nama_siswa = st.text_input("Nama Siswa (misal: Aisyah / Adeva):")
+        nama_siswa = st.text_input("Nama Siswa (misal: Aisyah / Adeva / Nazma):")
         pin_siswa = st.text_input("PIN Siswa (4 Angka):", type="password")
         
         if st.button("Masuk Siswa"):
@@ -333,26 +385,31 @@ elif peran == "🎓 Siswa":
                 
                 try:
                     ws_master = sheet.worksheet("Bank_Soal_Master")
-                    soal_db = ws_master.get_all_records()
+                    all_soal = ws_master.get_all_records()
+                    
+                    if str(st.session_state.siswa_nama).strip().lower() == "nazma":
+                        soal_db = all_soal[30:] # Kuis IPAS khusus Nazma
+                    else:
+                        soal_db = all_soal[:30] # Kuis Matematika
                 except:
                     soal_db = []
                 
                 if soal_db:
                     jawaban_siswa = {}
-                    for idx, s in enumerate(soal_db[:5], 1): # Menampilkan 5 soal pertama
+                    for idx, s in enumerate(soal_db, 1):
                         st.markdown(f"**Soal No. {idx}** ({s.get('Bentuk_Soal')})")
                         st.write(s.get('Teks_Soal'))
                         
                         if s.get('URL_Gambar'):
                             st.image(s.get('URL_Gambar'), caption="Gambar Soal", width=250)
                             
-                        if s.get('Bentuk_Soal') == "Pilgan":
+                        if str(s.get('Bentuk_Soal')).strip() == "Pilgan":
                             opsi_raw = str(s.get('Opsi_Jawaban', ''))
                             opsi_list = [o.strip() for o in opsi_raw.split("|") if o.strip()]
                             if not opsi_list:
                                 opsi_list = ["A", "B", "C", "D"]
                             jawaban_siswa[idx] = st.radio(f"Pilih Jawaban No {idx}:", opsi_list, key=f"soal_{idx}")
-                        elif s.get('Bentuk_Soal') == "Essay":
+                        elif str(s.get('Bentuk_Soal')).strip() == "Essay":
                             jawaban_siswa[idx] = st.text_area(f"Ketik Jawaban No {idx}:", key=f"soal_{idx}")
                         
                         st.markdown("---")
@@ -371,7 +428,7 @@ elif peran == "🎓 Siswa":
 # ==========================================
 elif peran == "👨‍👩‍👧 Orang Tua":
     st.subheader("👨‍👩‍👧 Portal Orang Tua")
-    nama_anak = st.text_input("Nama Putra/Putri (misal: Aisyah / Adeva / Sherin):")
+    nama_anak = st.text_input("Nama Putra/Putri (misal: Aisyah / Adeva / Sherin / Nazma):")
     pin_ortu = st.text_input("PIN Orang Tua (4 Angka):", type="password")
     
     if st.button("Masuk Orang Tua"):
