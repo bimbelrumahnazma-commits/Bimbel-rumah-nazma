@@ -37,11 +37,8 @@ def main():
     st.title("📚 Portal Pembelajaran Bimbel Rumah Nazma")
     st.markdown("---")
     
-    # ----------------------------------------------------
-    # PANEL UTAMA TUTOR: INPUT NAMA SISWA & KATEGORI
-    # ----------------------------------------------------
-    st.sidebar.header("📋 Sesi Belajar Siswa")
-    nama_siswa = st.sidebar.text_input("Masukkan Nama Siswa:")
+    st.sidebar.header("📋 Menu Sesi Les")
+    nama_siswa = st.sidebar.text_input("Nama Siswa:")
     
     menu_pilihan = st.sidebar.selectbox(
         "Pilih Jalur Belajar:",
@@ -49,35 +46,20 @@ def main():
             "🏠 Beranda Utama",
             "📖 Jalur 1: Materi & Kisi-Kisi Harian",
             "📝 Jalur 2: Paket Soal & Tryout Full",
-            "🏆 Jalur Khusus: Olimpiade Sains (OSN)"
+            "🏆 Jalur Khusus: Olimpiade Sains (OSN)",
+            "📊 Input Evaluasi Hasil Les"
         ]
     )
-    
-    # Validasi jika nama siswa belum diisi (kecuali di beranda)
-    if menu_pilihan != "🏠 Beranda Utama" and not nama_siswa:
-        st.sidebar.warning("⚠️ Harap isi 'Nama Siswa' terlebih dahulu sebelum memilih jalur belajar!")
     
     if menu_pilihan == "🏠 Beranda Utama":
         st.subheader("Selamat Datang di Portal Resmi Bimbel Rumah Nazma!")
         st.write("""
-        Portal ini dirancang khusus untuk mendukung kegiatan belajar siswa secara terstruktur.
-        Silakan masukkan nama siswa di menu sebelah kiri dan pilih jalur belajar untuk mulai mengakses materi harian, 
-        latihan paket soal, tryout berstandar skala nilai asli, hingga pembinaan olimpiade.
+        Portal ini dirancang untuk mengelola materi, bank soal, serta rekapan evaluasi 
+        hasil belajar siswa secara terstruktur dan terhubung langsung ke Google Sheets.
         """)
         
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.info("**Jalur 1**\nFokus penguasaan konsep dasar per bab & materi harian sekolah.")
-        with col2:
-            st.success("**Jalur 2**\nSimulasi paket latihan & tryout full dengan skala nilai asli (TKA, TOEFL, SKD).")
-        with col3:
-            st.warning("**Olimpiade (OSN)**\nPembinaan soal penalaran tingkat tinggi (SD - SMA) lengkap dengan pembahasannya.")
-            
     elif menu_pilihan == "📖 Jalur 1: Materi & Kisi-Kisi Harian":
         st.subheader("📖 Jalur 1: Penguasaan Materi & Kisi-Kisi Per Bab")
-        if nama_siswa:
-            st.markdown(f"👤 **Siswa Aktif:** `{nama_siswa}`")
-            
         jenjang = st.selectbox("Pilih Jenjang:", ["PAUD / TK", "Sekolah Dasar (SD)", "Sekolah Menengah Pertama (SMP)", "Sekolah Menengah Atas (SMA)"])
         mapel = st.text_input("Masukkan Mata Pelajaran:")
         
@@ -86,13 +68,10 @@ def main():
             st.success("Database Bank Soal Materi berhasil dimuat!")
             st.dataframe(df_materi.head())
         else:
-            st.info("Belum ada data soal di tab `Bank_Soal_Materi`. Silakan isi soal melalui Google Sheets.")
+            st.info("Belum ada data soal di tab `Bank_Soal_Materi`[span_0](start_span)[span_0](end_span).")
         
     elif menu_pilihan == "📝 Jalur 2: Paket Soal & Tryout Full":
         st.subheader("📝 Jalur 2: Latihan Paket & Simulasi Ujian")
-        if nama_siswa:
-            st.markdown(f"👤 **Siswa Aktif:** `{nama_siswa}`")
-            
         kategori_ujian = st.selectbox("Pilih Program Ujian:", ["TKA (Tes Kemampuan Akademik)", "TOEFL", "SKD CPNS / Kedinasan", "UTBK / Ujian Mandiri"])
         nomor_paket = st.selectbox("Pilih Sesi Latihan:", ["Paket 1", "Paket 2", "Paket 3", "Paket 4", "Paket 5", "Tryout Full (Skala Asli)"])
         
@@ -101,13 +80,10 @@ def main():
             st.success("Database Bank Soal Paket berhasil dimuat!")
             st.dataframe(df_paket.head())
         else:
-            st.info("Belum ada data soal di tab `Bank_Soal_Paket`. Silakan isi soal melalui Google Sheets.")
+            st.info("Belum ada data soal di tab `Bank_Soal_Paket`[span_1](start_span)[span_1](end_span).")
         
     elif menu_pilihan == "🏆 Jalur Khusus: Olimpiade Sains (OSN)":
         st.subheader("🏆 Pembinaan Olimpiade Sains Nasional (OSN)")
-        if nama_siswa:
-            st.markdown(f"👤 **Siswa Aktif:** `{nama_siswa}`")
-            
         jenjang_osn = st.selectbox("Pilih Jenjang Olimpiade:", ["SD", "SMP", "SMA"])
         bidang_osn = st.selectbox("Pilih Bidang Sains:", ["Matematika", "Fisika", "Kimia", "Biologi", "Astronomi", "Ekonomi"])
         
@@ -116,7 +92,32 @@ def main():
             st.success("Database Bank Soal Olimpiade berhasil dimuat!")
             st.dataframe(df_olimpiade.head())
         else:
-            st.info("Belum ada data soal di tab `Bank_Soal_Olimpiade`. Silakan isi soal melalui Google Sheets.")
+            st.info("Belum ada data soal di tab `Bank_Soal_Olimpiade`[span_2](start_span)[span_2](end_span).")
+            
+    elif menu_pilihan == "📊 Input Evaluasi Hasil Les":
+        st.subheader("📊 Form Rekapitulasi Sesi Setelah Les")
+        st.write("Gunakan form di bawah ini untuk mencatat hasil pencapaian belajar siswa agar tersimpan aman.")
+        
+        with st.form("form_evaluasi"):
+            input_nama = st.text_input("Nama Siswa:", value=nama_siswa)
+            input_kategori = st.selectbox("Kategori Belajar:", ["Jalur 1 - Materi", "Jalur 2 - Paket/Tryout", "Olimpiade (OSN)"])
+            input_skor = st.number_input("Perolehan Skor / Nilai:", min_value=0, max_value=100, value=0)
+            input_catatan = st.text_area("Catatan Evaluasi / Kendala Siswa:")
+            
+            submitted = st.form_submit_button("Simpan Data ke Spreadsheet")
+            if submitted:
+                if input_nama:
+                    try:
+                        client = init_connection()
+                        spreadsheet = client.open("Data_Bimbel_Rumah_Nazma_Rapi")
+                        # Memastikan atau menggunakan tab rekap (bisa disesuaikan namanya)
+                        worksheet = spreadsheet.worksheet("Data_Siswa")
+                        worksheet.append_row([input_nama, input_kategori, input_skor, input_catatan])
+                        st.success(f"Data evaluasi untuk {input_nama} berhasil disimpan ke Spreadsheet!")
+                    except Exception as e:
+                        st.error(f"Gagal menyimpan data: {e}")
+                else:
+                    st.warning("Mohon isi nama siswa terlebih dahulu.")
 
 if __name__ == "__main__":
     main()
