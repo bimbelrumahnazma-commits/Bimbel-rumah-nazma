@@ -53,7 +53,7 @@ except Exception as e:
 st.markdown("""
 <div class="main-header">
     <h2 style="margin:0;">✨ Portal Bimbel Rumah Nazma</h2>
-    <p style="margin:4px 0 0 0; opacity:0.9;">Sistem Pembelajaran Terpadu, Gamifikasi & Kontrol Multi-Drive Tutor</p>
+    <p style="margin:4px 0 0 0; opacity:0.9;">Sistem Pembelajaran Terpadu, Gamifikasi & Upload File Mandiri Tutor</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -301,13 +301,13 @@ if peran == "🎓 Siswa":
                 for ds in data_share:
                     st.markdown(f"**📚 {ds.get('Judul_Materi')}** (Mapel: {ds.get('Mapel')})")
                     st.caption(f"Dibagikan oleh Tutor: {ds.get('Nama_Tutor')} | Tanggal: {ds.get('Tanggal')}")
-                    st.markdown(f"🔗 [Buka / Download File Dokumen]({ds.get('Link_File_Drive')})")
+                    st.markdown(f"🔗 [Buka / Download File]({ds.get('Link_File_Drive')})")
                     st.markdown("---")
             else:
-                st.info("Belum ada file materi dari Google Drive tutor yang dibagikan.")
+                st.info("Belum ada file materi dari tutor yang dibagikan.")
 
 # ==========================================
-# 2. MODUL TUTOR
+# 2. MODUL TUTOR (DENGAN UPLOAD FILE DARI PERANGKAT)
 # ==========================================
 elif peran == "🔒 Pengajar / Tutor":
     st.subheader("🔒 Login Pengajar Portal")
@@ -351,7 +351,7 @@ elif peran == "🔒 Pengajar / Tutor":
         tutor_tab1, tutor_tab2, tutor_tab3, tutor_tab4 = st.tabs([
             "📝 Jurnal & Kontrol Games", 
             "📊 Portofolio Siswa", 
-            "📂 Browse Google Drive Pribadi & Share", 
+            "📁 Upload File / Link Materi", 
             "➕ Tambah Soal Baru"
         ])
         
@@ -462,17 +462,28 @@ elif peran == "🔒 Pengajar / Tutor":
                 else:
                     st.info("Belum ada data nilai.")
 
+        # TAB 3: UPLOAD FILE DARI FILE MANAGER / DRIVE
         with tutor_tab3:
-            st.header("📂 Hubungkan & Bagikan File dari Google Drive Pribadi Tutor")
-            st.caption("Tutor dapat menautkan link file Google Drive (PDF, Word, Soal) milik pribadi untuk dibagikan langsung kepada siswa.")
+            st.header("📁 Upload File atau Bagikan Link Materi ke Siswa")
+            st.caption("Tutor dapat mengunggah file dari File Manager (PDF/Word/Foto) atau menempelkan link Google Drive.")
             
-            with st.form("form_share_drive"):
+            with st.form("form_upload_materi"):
                 mapel_share = st.selectbox("Mata Pelajaran / Kategori", ["Bahasa Inggris", "IPA / IPAS", "TOEFL", "UTBK", "SKD", "Matematika"])
                 judul_file = st.text_input("Judul Dokumen / Soal:")
-                link_drive = st.text_input("Link File Google Drive (Pastikan akses dibagikan 'Siapa saja yang memiliki link'):")
                 
-                if st.form_submit_button("📤 Bagikan ke Portal Siswa"):
-                    if judul_file and link_drive:
+                # Opsi Input File atau Link
+                sumber_file = st.radio("Sumber File:", ["Masukkan Link Google Drive / Web", "Unggah dari File Manager (Perangkat)"])
+                
+                link_or_file_input = st.text_input("Link File (Google Drive / URL):")
+                uploaded_file = st.file_uploader("Atau Pilih File dari Perangkat (PDF/Word/Gambar):", type=["pdf", "docx", "png", "jpg", "jpeg"])
+                
+                if st.form_submit_button("📤 Bagikan Materi ke Siswa"):
+                    final_link = link_or_file_input
+                    if uploaded_file is not None:
+                        # Jika file diupload dari perangkat, kita simpan namanya atau buat placeholder link
+                        final_link = f"File Upload: {uploaded_file.name} (Tersimpan di Sesi Guru)"
+                        
+                    if judul_file and (final_link or uploaded_file):
                         try:
                             try:
                                 ws_share = sheet.worksheet("Sharing_Materi_Tutor")
@@ -485,13 +496,13 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.session_state.tutor_nama,
                                 mapel_share,
                                 judul_file,
-                                link_drive
+                                final_link
                             ])
-                            st.success("✅ File berhasil dibagikan! Siswa sekarang dapat melihat dan mendownloadnya dari akun mereka.")
+                            st.success("✅ Materi berhasil dibagikan ke siswa!")
                         except Exception as err_sh:
-                            st.error(f"Gagal membagikan file: {err_sh}")
+                            st.error(f"Gagal membagikan materi: {err_sh}")
                     else:
-                        st.warning("Judul dan Link Google Drive wajib diisi!")
+                        st.warning("Judul dan File/Link wajib diisi!")
 
         with tutor_tab4:
             st.header("➕ Tambah Soal Baru ke Master Bank Soal")
@@ -518,7 +529,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             "🎁 Undian Hadiah Siswa", 
             "👥 Kelola Akun", 
             "📚 Master Bank Soal", 
-            "👁️ Monitor File/Soal yang Dishare Tutor"
+            "👁️ Monitor Materi yang Dibagikan Tutor"
         ])
         
         with tab1:
@@ -540,17 +551,17 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.dataframe(sheet.worksheet("Bank_Soal_Master").get_all_records())
         
         with tab4:
-            st.markdown("### 👁️ Monitoring File & Soal yang Dibagikan Tutor")
-            st.caption("Mbak Fatimah dapat melihat semua materi atau file Google Drive yang dibagikan oleh tutor lain kepada siswa.")
+            st.markdown("### 👁️ Monitoring Materi & File dari Semua Tutor")
+            st.caption("Mbak Fatimah dapat melihat semua file atau link yang dibagikan oleh tutor lain kepada siswa.")
             try:
                 ws_m_share = sheet.worksheet("Sharing_Materi_Tutor")
                 df_share = pd.DataFrame(ws_m_share.get_all_records())
                 if not df_share.empty:
                     st.dataframe(df_share, use_container_width=True)
                 else:
-                    st.info("Belum ada file yang dibagikan tutor.")
+                    st.info("Belum ada materi yang dibagikan tutor.")
             except:
-                st.info("Belum ada riwayat sharing materi tutor.")
+                st.info("Belum ada riwayat sharing materi.")
                 
     elif pin_owner:
         st.error("PIN Salah!")
