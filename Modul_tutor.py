@@ -3,9 +3,37 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import time
-import json
 
 st.set_page_config(page_title="Portal Bimbel Rumah Nazma", layout="wide", page_icon="✏️")
+
+# --- KODE CSS UNTUK TAMPILAN DI LAYAR & HASIL CETAK ---
+st.markdown("""
+<style>
+@media print {
+    /* Sembunyikan elemen luar Streamlit saat dicetak */
+    header, footer, [data-testid="stHeader"], [data-testid="stSidebar"], 
+    .stButton, .stSelectbox, .stRadio, .stTextInput, .stAlert, .no-print {
+        display: none !important;
+    }
+    body, .main, .block-container {
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    @page {
+        size: A4;
+        margin: 1cm;
+    }
+}
+.kop-surat {
+    border: 2px solid #000;
+    padding: 12px;
+    background-color: #fff;
+    color: #000;
+    font-family: Arial, sans-serif;
+    margin-bottom: 15px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # --- KONEKSI GOOGLE SHEETS ---
 @st.cache_resource
@@ -277,37 +305,13 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     except:
                         soal_db = []
                     
-                    pilgan_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Pilgan"]
-                    essay_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Essay"]
-                    
-                    # RANCANG HTML MURNI LEMBAR CETAK
-                    html_soal = f"""
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <title>Cetak Soal - {pilih_siswa}</title>
-                        <style>
-                            @page {{ size: A4; margin: 1.2cm; }}
-                            body {{ font-family: Arial, sans-serif; color: #000; margin: 0; padding: 0; font-size: 11px; }}
-                            .header {{ text-align: center; margin-bottom: 5px; }}
-                            .header h2 {{ margin: 0; font-size: 18px; }}
-                            .header h4 {{ margin: 2px 0 10px 0; font-size: 12px; font-weight: normal; }}
-                            .meta-table {{ width: 100%; border-bottom: 2px solid #000; margin-bottom: 10px; font-weight: bold; font-size: 11px; }}
-                            .meta-table td {{ padding: 3px 0; }}
-                            .section-title {{ font-size: 12px; margin: 8px 0 4px 0; border-bottom: 1px solid #ccc; }}
-                            .pilgan-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 6px 15px; }}
-                            .soal-item {{ margin-bottom: 4px; page-break-inside: avoid; }}
-                            .opsi {{ margin-top: 2px; padding-left: 10px; color: #111; }}
-                            .essay-item {{ margin-bottom: 8px; page-break-inside: avoid; }}
-                            .line {{ margin-top: 3px; color: #666; }}
-                        </style>
-                    </head>
-                    <body>
-                        <div class="header">
-                            <h2>BIMBEL RUMAH NAZMA</h2>
-                            <h4>LEMBAR LATIHAN SOAL (OFFLINE)</h4>
-                        </div>
-                        <table class="meta-table">
+                    # TAMPILAN KOP DOKUMEN CETAK
+                    st.markdown(f"""
+                    <div class="kop-surat">
+                        <h2 style="text-align: center; margin: 0;">BIMBEL RUMAH NAZMA</h2>
+                        <h4 style="text-align: center; margin: 3px 0 10px 0; color: #444;">LEMBAR LATIHAN SOAL (OFFLINE)</h4>
+                        <hr style="border: 1px solid #000;">
+                        <table style="width: 100%; font-weight: bold; font-size: 13px;">
                             <tr>
                                 <td>Nama Siswa: {pilih_siswa}</td>
                                 <td>Tanggal: {datetime.now().strftime('%d/%m/%Y')}</td>
@@ -317,45 +321,45 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                                 <td>Paraf Tutor: _________</td>
                             </tr>
                         </table>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    pilgan_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Pilgan"]
+                    essay_list = [s for s in soal_db if str(s.get('Bentuk_Soal')).strip() == "Essay"]
+                    
+                    st.markdown("#### A. PILIHAN GANDA")
+                    
+                    # MENAMPILKAN SOAL PILGAN 2 KOLOM MENGGUNAKAN STREAMLIT COLUMNS
+                    for i in range(0, len(pilgan_list), 2):
+                        col1, col2 = st.columns(2)
                         
-                        <div class="section-title">A. PILIHAN GANDA</div>
-                        <div class="pilgan-grid">
-                    """
-                    
-                    for idx, s in enumerate(pilgan_list, 1):
-                        opsi_str = ""
-                        if s.get('Opsi_Jawaban'):
-                            opsi = [o.strip() for o in str(s.get('Opsi_Jawaban')).split("|")]
-                            opsi_str = f"<div class='opsi'>{'&nbsp;&nbsp;&nbsp;'.join(opsi)}</div>"
-                        html_soal += f"<div class='soal-item'><b>{idx}.</b> {s.get('Teks_Soal')}{opsi_str}</div>"
-                    
-                    html_soal += "</div>"
+                        # Kolom Kiri (Soal No Ganjil/Pasangan 1)
+                        with col1:
+                            s1 = pilgan_list[i]
+                            st.markdown(f"**{i+1}. {s1.get('Teks_Soal')}**")
+                            if s1.get('Opsi_Jawaban'):
+                                opsi = [o.strip() for o in str(s1.get('Opsi_Jawaban')).split("|")]
+                                st.caption("  ".join(opsi))
+                        
+                        # Kolom Kanan (Soal No Genap/Pasangan 2)
+                        with col2:
+                            if i + 1 < len(pilgan_list):
+                                s2 = pilgan_list[i+1]
+                                st.markdown(f"**{i+2}. {s2.get('Teks_Soal')}**")
+                                if s2.get('Opsi_Jawaban'):
+                                    opsi = [o.strip() for o in str(s2.get('Opsi_Jawaban')).split("|")]
+                                    st.caption("  ".join(opsi))
+                        st.markdown("")
                     
                     if essay_list:
-                        html_soal += "<div class='section-title'>B. ESSAY</div>"
+                        st.markdown("#### B. ESSAY")
                         for idx, s in enumerate(essay_list, len(pilgan_list) + 1):
-                            html_soal += f"<div class='essay-item'><b>{idx}.</b> {s.get('Teks_Soal')}<div class='line'>Jawaban: __________________________________________________</div></div>"
-                            
-                    html_soal += """
-                        <script>
-                            window.onload = function() { window.print(); }
-                        </script>
-                    </body>
-                    </html>
-                    """
+                            st.markdown(f"**{idx}. {s.get('Teks_Soal')}**")
+                            st.caption("Jawaban: __________________________________________________")
+                            st.markdown("")
                     
-                    # TOMBOL BUKA HALAMAN CETAK POP-UP
-                    encoded_html = json.dumps(html_soal)
-                    st.markdown(f"""
-                        <button onclick='
-                            var win = window.open("", "_blank");
-                            win.document.write({encoded_html});
-                            win.document.close();
-                        ' style='background-color: #007bff; color: white; padding: 12px 20px; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%;'>
-                            🖨️ Buka & Cetak Lembar Soal (Bebas Menu Streamlit)
-                        </button>
-                    """, unsafe_allow_html=True)
-                    st.info("💡 Klik tombol biru di atas, lalu browser akan otomatis membuka dialog cetak yang bersih dan rapi 2 kolom tanpa menu Streamlit.")
+                    st.markdown("---")
+                    st.success("✅ Lembar latihan siap dicetak! Tekan titik 3 browser HP -> Cetak (Print) / tekan Ctrl+P di Laptop.")
 
         with tab2:
             st.markdown("### 📚 Master Bank Soal Bimbel")
