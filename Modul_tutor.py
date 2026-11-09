@@ -158,13 +158,11 @@ if peran == "🎓 Siswa":
                         ws_master = sheet.worksheet("Bank_Soal_Master")
                         all_soal = ws_master.get_all_records()
                         
-                        # PEMISAHAN SOAL BERDASARKAN JENJANG (SD/TK vs SMP/SMA)
                         jenjang_s = st.session_state.siswa_jenjang
                         if "SD" in jenjang_s or "TK" in jenjang_s:
-                            # Ambil baris soal untuk SD (misal baris setelah indeks tertentu atau filter mapel)
                             soal_db = [s for s in all_soal if "IPAS" in str(s.get("Teks_Soal")) or "SD" in str(s.get("Bentuk_Soal"))]
                             if not soal_db:
-                                soal_db = all_soal[:15]  # Fallback aman
+                                soal_db = all_soal[:15]
                             topik_nama = "IPAS & Tematik Dasar SD"
                             mapel_nama = "IPAS"
                         else:
@@ -275,7 +273,7 @@ if peran == "🎓 Siswa":
                 st.info("Belum ada grafik riwayat nilai.")
 
 # ==========================================
-# 2. MODUL TUTOR (DENGAN KONTROL GAMES & INPUT POIN)
+# 2. MODUL TUTOR (DENGAN MULTI-MAPEL & CETAK OFFLINE)
 # ==========================================
 elif peran == "🔒 Pengajar / Tutor":
     st.subheader("🔒 Login Pengajar Portal")
@@ -316,11 +314,11 @@ elif peran == "🔒 Pengajar / Tutor":
             st.rerun()
             
         st.markdown("---")
-        tutor_tab1, tutor_tab2, tutor_tab3 = st.tabs(["📝 Jurnal, Celah & Kelola Games", "📊 Portofolio Sesi Siswa (Privasi Aman)", "➕ Tambah Soal Baru"])
+        tutor_tab1, tutor_tab2, tutor_tab3 = st.tabs(["📝 Jurnal, Multi-Mapel & Cetak Soal", "📊 Portofolio Sesi Siswa (Privasi Aman)", "➕ Tambah Soal Baru"])
         
-        # TAB 1: JURNAL, KELOLA GAMES & POIN OLEH TUTOR
+        # TAB 1: JURNAL, KELOLA GAMES & MULTI-MAPEL / CETAK OFFLINE
         with tutor_tab1:
-            st.header("📖 Diari Kelemahan, Jurnal & Kontrol Games Kelas")
+            st.header("📖 Persiapan Materi Multi-Mapel & Cetak Soal Fisik")
             ws_siswa = sheet.worksheet("Data_Siswa")
             data_siswa_all = ws_siswa.get_all_records()
             siswa_aktif = [s.get("Nama_Lengkap") for s in data_siswa_all if str(s.get("Status", "Aktif")).strip().lower() != "nonaktif" and s.get("Nama_Lengkap")]
@@ -337,9 +335,32 @@ elif peran == "🔒 Pengajar / Tutor":
                 else:
                     st.warning("Siswa aktif tidak ditemukan.")
             else:
-                st.info("💡 Ketik nama siswa di atas untuk mulai menginput jurnal atau memberikan poin games interaktif.")
+                st.info("💡 Ketik nama siswa di atas untuk mulai menginput jurnal, multi-mapel, atau mencetak soal offline.")
             
             if selected_siswa:
+                st.markdown("---")
+                
+                # DUKUNGAN MULTI-MAPEL DALAM 1 SESI PERTEMUAN
+                st.subheader(f"📚 Pilih Mapel untuk Sesi Bimbingan: {selected_siswa}")
+                mapel_pilihan_tutor = st.multiselect(
+                    "Pilih Mapel yang Akan Dibahas Hari Ini (Bisa Lebih dari 1 dalam 1 Pertemuan):",
+                    ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA (Fisika/Kimia/Biologi)", "Bahasa Indonesia", "PKN"]
+                )
+                
+                if mapel_pilihan_tutor:
+                    st.info(f"✨ Sesi ini mencakup mapel: **{', '.join(mapel_pilihan_tutor)}**")
+                    
+                    # MODE CETAK LEMBAR LATIHAN OFFLINE (UNTUK ANAK KETINGGALAN GADGET)
+                    with st.expander("🖨️ Mode Cetak Lembar Latihan Fisik (Printer Epson)"):
+                        st.write("Gunakan fitur ini untuk mencetak lembar latihan langsung ke kertas jika siswa tidak membawa gadget.")
+                        if st.button("🖨️ Cetak Lembar Soal Sekarang"):
+                            st.markdown("""
+                            <script>
+                                window.print();
+                            </script>
+                            """, unsafe_allow_html=True)
+                            st.success("Perintah cetak dikirim! Jika dialog cetak tidak muncul, silakan tekan `Ctrl + P` pada keyboard Anda.")
+
                 st.markdown("---")
                 # PANEL KONTROL GAMES OLEH TUTOR
                 st.subheader(f"🎮 Panel Kelola Games & Poin untuk: {selected_siswa}")
@@ -362,7 +383,6 @@ elif peran == "🔒 Pengajar / Tutor":
                     
                     if btn_beri_poin:
                         try:
-                            # Cari row siswa di sheet Data_Siswa
                             for idx_s, row_s in enumerate(data_siswa_all, 2):
                                 if str(row_s.get("Nama_Lengkap")).strip().lower() == selected_siswa.strip().lower():
                                     current_poin = int(row_s.get("Poin", 0)) if str(row_s.get("Poin", "")).isdigit() else 0
@@ -378,8 +398,8 @@ elif peran == "🔒 Pengajar / Tutor":
                 st.subheader(f"📝 Input Jurnal Belajar Sesi Ini ({selected_siswa})")
                 with st.form("form_jurnal"):
                     tgl = st.date_input("Tanggal Mengajar", datetime.now())
-                    mapel = st.selectbox("Mata Pelajaran", ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA (Fisika/Kimia/Biologi)", "Lainnya"])
-                    materi = st.text_area("Materi & Pelajaran Hari Ini")
+                    mapel_utama = st.selectbox("Mata Pelajaran Utama Sesi Ini", ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA (Fisika/Kimia/Biologi)", "Lainnya"])
+                    materi = st.text_area("Materi & Pelajaran Hari Ini (Bisa ditulis beberapa mapel sekaligus)")
                     pencapaian = st.text_area("Pencapaian Belajar Siswa")
                     kendala = st.text_area("Celah / Kendala Belajar Baru")
                     tingkat_celah = st.select_slider("Tingkat Celah", options=["Rendah", "Sedang", "Tinggi"])
@@ -400,7 +420,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.session_state.tutor_nama,
                                 "Hadir",
                                 selected_siswa,
-                                f"[{mapel}] {materi}",
+                                f"[{mapel_utama}] {materi}",
                                 pencapaian,
                                 kendala,
                                 pr,
@@ -414,7 +434,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                     f"CLH-{last_id:03d}",
                                     tgl.strftime("%Y-%m-%d"),
                                     selected_siswa,
-                                    mapel,
+                                    mapel_utama,
                                     kendala,
                                     tingkat_celah,
                                     st.session_state.tutor_nama,
