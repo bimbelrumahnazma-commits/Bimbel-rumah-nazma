@@ -53,7 +53,7 @@ except Exception as e:
 st.markdown("""
 <div class="main-header">
     <h2 style="margin:0;">✨ Portal Bimbel Rumah Nazma</h2>
-    <p style="margin:4px 0 0 0; opacity:0.9;">Sistem Pembelajaran Terpadu, Gamifikasi & Portofolio Berkelanjutan</p>
+    <p style="margin:4px 0 0 0; opacity:0.9;">Sistem Pembelajaran Terpadu, Gamifikasi & Kontrol Multi-Drive Tutor</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -65,7 +65,7 @@ peran = st.selectbox(
 st.markdown("---")
 
 # ==========================================
-# 1. MODUL SISWA (PILIH KATEGORI SOAL & KUIS)
+# 1. MODUL SISWA
 # ==========================================
 if peran == "🎓 Siswa":
     st.subheader("🎓 Login Portal Siswa")
@@ -135,7 +135,7 @@ if peran == "🎓 Siswa":
             st.info("💡 Pilih kategori latihan di bawah untuk mengasah kemampuanmu.")
 
         st.markdown("---")
-        siswa_tab1, siswa_tab2 = st.tabs(["📝 Kuis Online & Pilih Kategori", "📈 Grafik Progress Nilai Saya"])
+        siswa_tab1, siswa_tab2, siswa_tab3 = st.tabs(["📝 Kuis Online & Kategori", "📈 Grafik Progress", "📂 Materi & File dari Tutor"])
         
         with siswa_tab1:
             st.subheader("🎯 Pilih Kategori Soal Latihan")
@@ -167,10 +167,9 @@ if peran == "🎓 Siswa":
                         ws_master = sheet.worksheet("Bank_Soal_Master")
                         all_soal = ws_master.get_all_records()
                         
-                        # FILTER BERDASARKAN PILIHAN KATEGORI SISWA
                         if pilihan_kategori == "Bahasa Inggris (Simple Past Tense)":
-                            soal_db = [s for s in all_soal if any(k in str(s.get("Teks_Soal", "")).lower() for k in ["i ___", "bali", "past", "did", "was", "were", "verb"])]
-                            if not soal_db: soal_db = all_soal[80:130] # Sesuai bank soal B. Inggris
+                            soal_db = [s for s in all_soal if any(k in str(s.get("Teks_Soal", "")).lower() for k in ["i ___", "bali", "past", "did", "was", "were", "verb", "dinara"])]
+                            if not soal_db: soal_db = all_soal[80:130]
                             topik_nama = "Bahasa Inggris (Past Tense)"
                             mapel_nama = "Bahasa Inggris"
                         elif pilihan_kategori == "IPA / IPAS & Usaha Energi":
@@ -190,14 +189,14 @@ if peran == "🎓 Siswa":
                             soal_db = [s for s in all_soal if any(k in str(s.get("Teks_Soal", "")).lower() for k in ["skd", "twk", "tiu", "tkp"])]
                             topik_nama = "Simulasi SKD CPNS"
                             mapel_nama = "SKD"
-                        else: # Otomatis Sesuai Jenjang
+                        else:
                             jenjang_s = st.session_state.siswa_jenjang
                             if "SD" in jenjang_s or "TK" in jenjang_s:
-                                soal_db = all_soal[50:130] # Soal SD / B. Inggris
+                                soal_db = all_soal[50:130]
                                 topik_nama = "Latihan Harian SD"
                                 mapel_nama = "Tematik"
                             else:
-                                soal_db = all_soal[:50] # Soal IPA/Matematika SMP
+                                soal_db = all_soal[:50]
                                 topik_nama = "Latihan Harian SMP/SMA"
                                 mapel_nama = "Matematika/IPA"
                     except:
@@ -205,7 +204,7 @@ if peran == "🎓 Siswa":
                     
                     jawaban_user = {}
                     if soal_db:
-                        for idx, s in enumerate(soal_db[:20], 1): # Batasi max 20 soal tampil per sesi agar ringan
+                        for idx, s in enumerate(soal_db[:20], 1):
                             st.markdown(f"**Soal No. {idx}**")
                             st.write(s.get('Teks_Soal'))
                             if s.get('URL_Gambar'):
@@ -290,8 +289,25 @@ if peran == "🎓 Siswa":
             else:
                 st.info("Belum ada grafik riwayat nilai.")
 
+        with siswa_tab3:
+            st.subheader("📂 Daftar Materi & File Dibagikan Tutor")
+            try:
+                ws_share = sheet.worksheet("Sharing_Materi_Tutor")
+                data_share = ws_share.get_all_records()
+            except:
+                data_share = []
+            
+            if data_share:
+                for ds in data_share:
+                    st.markdown(f"**📚 {ds.get('Judul_Materi')}** (Mapel: {ds.get('Mapel')})")
+                    st.caption(الس `Dibagikan oleh Tutor: {ds.get('Nama_Tutor')} | Tanggal: {ds.get('Tanggal')}`)
+                    st.markdown(f"🔗 [Buka / Download File Dokumen]({ds.get('Link_File_Drive')})")
+                    st.markdown("---")
+            else:
+                st.info("Belum ada file materi dari Google Drive tutor yang dibagikan.")
+
 # ==========================================
-# 2. MODUL TUTOR (DENGAN BROWSE SOAL & CETAK OFFLINE)
+# 2. MODUL TUTOR (DENGAN INTEGRASI DRIVE MANDIRI & SHARING)
 # ==========================================
 elif peran == "🔒 Pengajar / Tutor":
     st.subheader("🔒 Login Pengajar Portal")
@@ -335,7 +351,7 @@ elif peran == "🔒 Pengajar / Tutor":
         tutor_tab1, tutor_tab2, tutor_tab3, tutor_tab4 = st.tabs([
             "📝 Jurnal & Kontrol Games", 
             "📊 Portofolio Siswa", 
-            "📂 Browse & Cetak Soal Offline", 
+            "📂 Browse Google Drive Pribadi & Share", 
             "➕ Tambah Soal Baru"
         ])
         
@@ -446,41 +462,37 @@ elif peran == "🔒 Pengajar / Tutor":
                 else:
                     st.info("Belum ada data nilai.")
 
-        # TAB 3: BROWSE & PRINT SOAL OFFLINE
+        # TAB 3: BROWSE GOOGLE DRIVE PRIBADI TUTOR & SHARE KE SISWA
         with tutor_tab3:
-            st.header("📂 Browse & Print Bank Soal Offline")
-            st.caption("Tutor dapat melihat, menyaring, dan menyiapkan soal dari master database untuk dicetak (Print) atau dibagikan ke siswa.")
+            st.header("📂 Hubungkan & Bagikan File dari Google Drive Pribadi Tutor")
+            st.caption("Tutor dapat menautkan link file Google Drive (PDF, Word, Soal) milik pribadi untuk dibagikan langsung kepada siswa.")
             
-            try:
-                ws_m = sheet.worksheet("Bank_Soal_Master")
-                all_bank_soal = ws_m.get_all_records()
-            except:
-                all_bank_soal = []
-
-            filter_tipe_soal = st.selectbox("Filter Kumpulan Soal:", [
-                "Semua Soal Master", 
-                "Bahasa Inggris (Past Tense)", 
-                "IPA / Usaha & Tuas", 
-                "Soal Esai / Pilgan"
-            ])
-
-            if all_bank_soal:
-                filtered_soal = all_bank_soal
-                if "Inggris" in filter_tipe_soal:
-                    filtered_soal = all_bank_soal[80:130] if len(all_bank_soal) >= 130 else all_bank_soal
-                elif "IPA" in filter_tipe_soal:
-                    filtered_soal = all_bank_soal[50:80] if len(all_bank_soal) >= 80 else all_bank_soal
+            with st.form("form_share_drive"):
+                mapel_share = st.selectbox("Mata Pelajaran / Kategori", ["Bahasa Inggris", "IPA / IPAS", "TOEFL", "UTBK", "SKD", "Matematika"])
+                judul_file = st.text_input("Judul Dokumen / Soal:")
+                link_drive = st.text_input("Link File Google Drive (Pastikan akses dibagikan 'Siapa saja yang memiliki link'):")
                 
-                st.info(f"Menampilkan {len(filtered_soal)} butir soal siap cetak:")
-                
-                for idx, fs in enumerate(filtered_soal, 1):
-                    with st.expander(f"Soal No. {idx} ({fs.get('Bentuk_Soal')})"):
-                        st.write(f"**Pertanyaan:** {fs.get('Teks_Soal')}")
-                        if fs.get('Opsi_Jawaban'):
-                            st.write(f"**Pilihan:** {fs.get('Opsi_Jawaban')}")
-                        st.success(f"**Kunci Jawaban:** {fs.get('Kunci_Jawaban')}")
-            else:
-                st.warning("Belum ada data soal di database.")
+                if st.form_submit_button("📤 Bagikan ke Portal Siswa"):
+                    if judul_file and link_drive:
+                        try:
+                            try:
+                                ws_share = sheet.worksheet("Sharing_Materi_Tutor")
+                            except:
+                                ws_share = sheet.add_worksheet(title="Sharing_Materi_Tutor", rows="500", cols="5")
+                                ws_share.append_row(["Tanggal", "Nama_Tutor", "Mapel", "Judul_Materi", "Link_File_Drive"])
+                            
+                            ws_share.append_row([
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                st.session_state.tutor_nama,
+                                mapel_share,
+                                judul_file,
+                                link_drive
+                            ])
+                            st.success("✅ File berhasil dibagikan! Siswa sekarang dapat melihat dan mendownloadnya dari akun mereka.")
+                        except Exception as err_sh:
+                            st.error(f"Gagal membagikan file: {err_sh}")
+                    else:
+                        st.warning("Judul dan Link Google Drive wajib diisi!")
 
         with tutor_tab4:
             st.header("➕ Tambah Soal Baru ke Master Bank Soal")
@@ -495,7 +507,7 @@ elif peran == "🔒 Pengajar / Tutor":
                     st.success("Soal berhasil disimpan ke database!")
 
 # ==========================================
-# 3. MODUL PENGELOLA / OWNER (MBAK FATIMAH)
+# 3. MODUL PENGELOLA / OWNER (MBAK FATIMAH) - DENGAN MONITORING DRIVE TUTOR
 # ==========================================
 elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
     st.subheader("👑 Portal Pengelola Bimbel")
@@ -503,7 +515,12 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
     
     if pin_owner == "1605":
         st.success("Akses Diizinkan 👋")
-        tab1, tab2, tab3 = st.tabs(["🎁 Undian Hadiah Siswa (Poin ≥ 100)", "👥 Kelola Status Akun", "📚 Master Bank Soal"])
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "🎁 Undian Hadiah Siswa", 
+            "👥 Kelola Akun", 
+            "📚 Master Bank Soal", 
+            "👁️ Monitor File/Soal yang Dishare Tutor"
+        ])
         
         with tab1:
             st.markdown("### 🎁 Pengundian Hadiah Giveaway")
@@ -522,6 +539,21 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.dataframe(pd.DataFrame(ws_siswa.get_all_records())[["ID_Siswa", "Nama_Lengkap", "Jenjang", "Poin", "Status"]])
         with tab3:
             st.dataframe(sheet.worksheet("Bank_Soal_Master").get_all_records())
+        
+        # TAB MONITORING FILE TUTOR UNTUK OWNER
+        with tab4:
+            st.markdown("### 👁️ Monitoring File & Soal yang Dibagikan Tutor")
+            st.caption("Mbak Fatimah dapat melihat semua materi atau file Google Drive yang dibagikan oleh tutor lain kepada siswa.")
+            try:
+                ws_m_share = sheet.worksheet("Sharing_Materi_Tutor")
+                df_share = pd.DataFrame(ws_m_share.get_all_records())
+                if not df_share.empty:
+                    st.dataframe(df_share, use_container_width=True)
+                else:
+                    st.info("Belum ada file yang dibagikan tutor.")
+            except:
+                st.info("Belum ada riwayat sharing materi tutor.")
+                
     elif pin_owner:
         st.error("PIN Salah!")
 
