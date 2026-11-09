@@ -59,8 +59,8 @@ def main():
     # Input PIN Keamanan Sesuai Peran
     pin_input = st.sidebar.text_input("Masukkan PIN Akses:", type="password")
     
-    # Validasi PIN sederhana (bisa disesuaikan dengan kebutuhan)
-    PIN_BENAR = "1234" # Ganti atau sesuaikan PIN sesuai standar Bimbel Rumah Nazma
+    # Validasi PIN standar
+    PIN_BENAR = "1234" 
     
     if pin_input != PIN_BENAR:
         st.sidebar.warning("⚠️ Masukkan PIN yang benar untuk masuk.")
@@ -76,7 +76,6 @@ def main():
     if peran in ["👑 Owner / Admin", "👨‍🏫 Tutor / Pengajar"]:
         st.sidebar.header("📋 Kelola Akun Siswa")
         
-        # Pilihan untuk masuk ke akun anak/siswa tertentu guna menyiapkan materi & tugas
         mode_tutor = st.sidebar.radio(
             "Pilih Menu Utama:",
             [
@@ -92,7 +91,6 @@ def main():
             if nama_target_siswa:
                 st.success(f"Sedang mengakses ruang belajar siswa: **{nama_target_siswa}**")
                 
-                # Pilihan jalur materi untuk anak tersebut
                 jalur_pilihan = st.selectbox(
                     "Pilih Jalur Belajar untuk Siswa:",
                     [
