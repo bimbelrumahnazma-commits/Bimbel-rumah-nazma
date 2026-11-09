@@ -145,7 +145,6 @@ if peran == "🔒 Pengajar / Tutor":
                     
                     if submitted:
                         try:
-                            # COBA TEMUKAN NAMA TAB JURNAL YANG SESUAI
                             try:
                                 ws_jurnal = sheet.worksheet("Form Responses 1")
                             except:
@@ -317,7 +316,6 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                         file_name=f"Lembar_Soal_{pilih_siswa}_{datetime.now().strftime('%d%m%Y')}.txt",
                         mime="text/plain"
                     )
-                    st.info("💡 Tekan tombol **Unduh** di atas untuk mendapatkan file lembar soal murni yang siap dicetak dari HP/Laptop.")
 
         with tab2:
             st.markdown("### 📚 Master Bank Soal Bimbel")
@@ -450,41 +448,53 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 st.subheader("📋 Laporan Hasil Belajar Sesi Terbaru")
                 
                 try:
-                    # COBA BEBERAPA OPSI NAMA TAB JURNAL
-                    try:
-                        ws_jurnal = sheet.worksheet("Form Responses 1")
-                    except:
+                    # AMBIL DATA DARI SALAH SATU TAB JURNAL
+                    ws_jurnal = None
+                    for name in ["Form Responses 1", "Form_Responses_1", "Riwayat_Latihan"]:
                         try:
-                            ws_jurnal = sheet.worksheet("Form_Responses_1")
+                            ws_jurnal = sheet.worksheet(name)
+                            break
                         except:
-                            ws_jurnal = sheet.worksheet("Riwayat_Latihan")
+                            pass
                             
-                    data_jurnal = ws_jurnal.get_all_records()
+                    data_jurnal = ws_jurnal.get_all_records() if ws_jurnal else []
                     
-                    laporan_anak = [
-                        j for j in data_jurnal 
-                        if str(j.get("Nama Siswa", j.get("Nama_Siswa", ""))).strip().lower() == nama_anak.strip().lower()
-                    ]
+                    # PENCARIAN FLEKSIBEL UNTUK NAMA SISWA
+                    laporan_anak = []
+                    for j in data_jurnal:
+                        val_nama = str(j.get("Nama Siswa", j.get("Nama_Siswa", j.get("Siswa", "")))).strip().lower()
+                        if val_nama == nama_anak.strip().lower() or nama_anak.strip().lower() in val_nama:
+                            laporan_anak.append(j)
                     
                     if laporan_anak:
                         laporan_terbaru = laporan_anak[-1]
+                        
+                        # CARI ELEMEN DATA SECARA FLEKSIBEL
+                        tgl_val = laporan_terbaru.get('Tanggal Mengajar', laporan_terbaru.get('Tanggal', '-'))
+                        tutor_val = laporan_terbaru.get('Nama TUtor', laporan_terbaru.get('Nama_Tutor', laporan_terbaru.get('Tutor', '-')))
+                        materi_val = laporan_terbaru.get('Materi dan Pelajaran Hari Ini', laporan_terbaru.get('Materi', '-'))
+                        skor_val = laporan_terbaru.get('Nilai/skor latihan', laporan_terbaru.get('Skor', laporan_terbaru.get('Nilai', '-')))
+                        pr_val = laporan_terbaru.get('tugas & Latihan (PR)', laporan_terbaru.get('PR', '-'))
+                        capai_val = laporan_terbaru.get("Pencapaian Belajar", laporan_terbaru.get("Pencapaian", "-"))
+                        kendala_val = laporan_terbaru.get("Kendala Belajar Anak", laporan_terbaru.get("Kendala", "-"))
+                        
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.write(f"📅 **Tanggal:** {laporan_terbaru.get('Tanggal Mengajar', laporan_terbaru.get('Tanggal', '-'))}")
-                            st.write(f"👨‍🏫 **Tutor Pengajar:** {laporan_terbaru.get('Nama TUtor', laporan_terbaru.get('Nama_Tutor', '-'))}")
-                            st.write(f"📚 **Materi & Mapel:** {laporan_terbaru.get('Materi dan Pelajaran Hari Ini', laporan_terbaru.get('Materi', '-'))}")
+                            st.write(f"📅 **Tanggal:** {tgl_val}")
+                            st.write(f"👨‍🏫 **Tutor Pengajar:** {tutor_val}")
+                            st.write(f"📚 **Materi & Mapel:** {materi_val}")
                         with col2:
-                            st.write(f"💯 **Nilai / Skor Latihan:** {laporan_terbaru.get('Nilai/skor latihan', laporan_terbaru.get('Skor', '-'))}")
-                            st.write(f"📝 **PR / Tugas Online:** {laporan_terbaru.get('tugas & Latihan (PR)', laporan_terbaru.get('PR', '-'))}")
+                            st.write(f"💯 **Nilai / Skor Latihan:** {skor_val}")
+                            st.write(f"📝 **PR / Tugas Online:** {pr_val}")
                         
                         st.markdown("**🌟 Pencapaian Belajar:**")
-                        st.info(laporan_terbaru.get("Pencapaian Belajar", "-"))
+                        st.info(capai_val)
                         
-                        if laporan_terbaru.get("Kendala Belajar Anak"):
+                        if str(kendala_val).strip() and str(kendala_val) != "-":
                             st.markdown("**💡 Catatan / Kendala Belajar:**")
-                            st.warning(laporan_terbaru.get("Kendala Belajar Anak"))
+                            st.warning(kendala_val)
                             
-                        foto_url = str(laporan_terbaru.get("Dokumentasi/ Foto hasil Belajar", ""))
+                        foto_url = str(laporan_terbaru.get("Dokumentasi/ Foto hasil Belajar", laporan_terbaru.get("Foto", "")))
                         if foto_url and "drive.google.com" in foto_url:
                             st.markdown("**📷 Foto Dokumentasi Hasil Belajar:**")
                             urls = [u.strip() for u in foto_url.split(",") if u.strip()]
