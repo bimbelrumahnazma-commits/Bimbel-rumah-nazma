@@ -141,7 +141,6 @@ if peran == "🎓 Siswa":
             st.markdown(f"### 🎒 Ruang Belajar Ananda **{st.session_state.siswa_nama}**")
             st.info("Berikut adalah materi, file offline, dan kuis multi-mapel yang telah disiapkan oleh tutor untuk pertemuan hari ini.")
             
-            # Menampilkan tugas/materi multi-mapel yang disiapkan tutor untuk siswa ini
             try:
                 ws_tugas = sheet.worksheet("Tugas_Sesi_Siswa")
                 all_tugas = ws_tugas.get_all_records()
@@ -203,13 +202,11 @@ if peran == "🎓 Siswa":
                             st.markdown(f"**Soal No. {idx}** *({bentuk_soal})*")
                             st.write(s.get('Teks_Soal'))
                             
-                            # Dukungan Soal Bergambar
                             if s.get('URL_Gambar'):
                                 st.image(s.get('URL_Gambar'), caption="Ilustrasi Soal", width=300)
                                 
                             opsi_raw = str(s.get('Opsi_Jawaban', ''))
                             
-                            # Render berdasarkan ragam bentuk soal lengkap
                             if bentuk_soal == "Pilihan Ganda" or opsi_raw and opsi_raw != "nan":
                                 opsi_list = [o.strip() for o in opsi_raw.split("|") if o.strip()]
                                 jawaban_user[idx] = st.radio(f"Pilih Jawaban No {idx}:", opsi_list, key=f"soal_{idx}")
@@ -229,7 +226,7 @@ if peran == "🎓 Siswa":
                             elif bentuk_soal == "Menjodohkan":
                                 jawaban_user[idx] = st.text_input(f"Tuliskan pasangan jawaban Menjodohkan No {idx}:", key=f"jodoh_{idx}")
                                 
-                            else: # Essay
+                            else: 
                                 jawaban_user[idx] = st.text_area(f"Jawaban Essay No {idx}:", key=f"essay_{idx}")
                                 
                             st.markdown("---")
@@ -314,7 +311,7 @@ if peran == "🎓 Siswa":
                 st.info("Belum ada grafik riwayat nilai.")
 
 # ==========================================
-# 2. MODUL TUTOR (DENGAN VALIDASI STATUS AKTIF & PERSIAPAN MULTI-MAPEL LENGKAP)
+# 2. MODUL TUTOR (MULTI-MAPEL, BROWSE OFFLINE, EDIT/BUAT SOAL ONLINE)
 # ==========================================
 elif peran == "🔒 Pengajar / Tutor":
     st.subheader("🔒 Login Pengajar Portal")
@@ -356,9 +353,9 @@ elif peran == "🔒 Pengajar / Tutor":
             st.rerun()
             
         st.markdown("---")
-        tutor_tab1, tutor_tab2, tutor_tab3 = st.tabs(["📝 Persiapan Multi-Mapel & Jurnal", "📊 Portofolio Sesi Siswa", "➕ Tambah Soal Master"])
+        tutor_tab1, tutor_tab2, tutor_tab3 = st.tabs(["📝 Persiapan Multi-Mapel & Soal", "📊 Portofolio Sesi Siswa", "➕ Tambah Soal Master"])
         
-        # TAB 1: PERSIAPAN MULTI-MAPEL, SOAL ONLINE/OFFLINE, CETAK FISIK & JURNAL
+        # TAB 1: PERSIAPAN MULTI-MAPEL, BROWSE OFFLINE, SOAL ONLINE & JURNAL
         with tutor_tab1:
             st.header("📖 Persiapan Sesi Pembelajaran & Materi Multi-Mapel")
             ws_siswa = sheet.worksheet("Data_Siswa")
@@ -392,19 +389,40 @@ elif peran == "🔒 Pengajar / Tutor":
                 if mapel_pilihan_tutor:
                     st.success(f"✨ Sesi hari ini mencakup mapel: **{', '.join(mapel_pilihan_tutor)}**")
                     
-                    with st.form("form_persiapan_materi"):
-                        st.markdown("### 🛠️ Siapkan Tugas & Soal (Online & Offline Multi-File)")
+                    st.markdown("---")
+                    st.markdown("### 🛠️ Menu Pengaturan Soal & Modul (Online & Offline)")
+                    
+                    with st.form("form_persiapan_materi_lengkap"):
+                        # BAGIAN A: SOAL OFFLINE (BROWSE MULTI-FILE / DRIVE)
+                        st.markdown("#### 📂 1. Soal / Modul Offline (Browse Multi-File)")
+                        uploaded_files = st.file_uploader(
+                            "Pilih / Browse file materi offline dari perangkat (Bisa pilih lebih dari 1 file untuk beberapa mapel):",
+                            type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"],
+                            accept_multiple_files=True
+                        )
+                        link_file_tambahan = st.text_area("Atau tempel Link Google Drive / File Manager (Pisahkan dengan baris baru):", placeholder="https://drive.google.com/...")
                         
-                        sumber_soal = st.selectbox("Pilih Sumber Soal Online:", [
-                            "Ambil Otomatis dari Master Bank Soal (Spreadsheet)",
-                            "Buat/Input Instruksi & Soal Manual untuk Sesi Ini"
+                        st.markdown("---")
+                        # BAGIAN B: SOAL ONLINE (TARIK DARI SPREADSHEET ATAU BUAT/EDIT LANGSUNG)
+                        st.markdown("#### 📝 2. Soal Online (Interaktif / Bank Soal)")
+                        sumber_soal_opsi = st.selectbox("Pilih Sumber Soal Online:", [
+                            "Tarik Otomatis dari Master Bank Soal (Spreadsheet)",
+                            "Buat / Edit & Input Soal Baru Khusus Sesi Ini"
                         ])
                         
-                        instruksi_tutor = st.text_area("Instruksi / Soal Pengerjaan untuk Siswa:", placeholder="Contoh: Kerjakan soal latihan online di akunmu dan pelajari file materi terlampir.")
+                        instruksi_tutor = st.text_area("Instruksi / Catatan Pengerjaan untuk Siswa:", placeholder="Contoh: Kerjakan soal latihan online di akunmu dan pelajari file terlampir.")
                         
-                        # Browse / Input File Offline dari Drive / File Manager (Mendukung Multi-File / Banyak Link)
-                        link_file_offline = st.text_area("Link File/Modul Offline (Drive / File Manager - Bisa masukkan beberapa link dipisah baris baru):", placeholder="https://drive.google.com/... (File Mapel 1)\nhttps://drive.google.com/... (File Mapel 2)")
-                        
+                        # Jika tutor memilih membuat soal langsung untuk sesi ini
+                        if sumber_soal_opsi == "Buat / Edit & Input Soal Baru Khusus Sesi Ini":
+                            st.markdown("##### ✍️ Editor Soal Online Sesi Ini")
+                            bentuk_soal_baru = st.selectbox("Bentuk Soal Sesi Ini:", ["Pilihan Ganda", "Pilihan Ganda Kompleks", "Benar / Salah", "Menjodohkan", "Essay"])
+                            teks_soal_baru = st.text_area("Teks Soal / Pertanyaan:")
+                            url_gambar_baru = st.text_input("Link Gambar / Ilustrasi Soal (Opsional):", placeholder="https://...")
+                            opsi_baru = st.text_input("Opsi Jawaban (Pisahkan dengan | ):", placeholder="A. ... | B. ... | C. ... | D. ...")
+                            kunci_baru = st.text_input("Kunci Jawaban:")
+                        else:
+                            bentuk_soal_baru, teks_soal_baru, url_gambar_baru, opsi_baru, kunci_baru = "", "", "", "", ""
+
                         btn_simpan_tugas = st.form_submit_button("📤 Simpan & Kirim Materi ke Akun Siswa")
                         
                         if btn_simpan_tugas:
@@ -415,15 +433,25 @@ elif peran == "🔒 Pengajar / Tutor":
                                     ws_tugas = sheet.add_worksheet(title="Tugas_Sesi_Siswa", rows="1000", cols="10")
                                     ws_tugas.append_row(["Tanggal", "Nama_Siswa", "Mapel", "Instruksi", "File_Offline"])
                                     
+                                file_info_str = f"Link/Drive: {link_file_tambahan}"
+                                if uploaded_files:
+                                    nama_file_list = [f.name for f in uploaded_files]
+                                    file_info_str += f" | Uploaded Files: {', '.join(nama_file_list)}"
+
                                 for m_item in mapel_pilihan_tutor:
                                     ws_tugas.append_row([
                                         datetime.now().strftime("%Y-%m-%d"),
                                         selected_siswa,
                                         m_item,
-                                        f"[{sumber_soal}] {instruksi_tutor}",
-                                        link_file_offline
+                                        f"[{sumber_soal_opsi}] {instruksi_tutor}",
+                                        file_info_str
                                     ])
-                                st.success(f"✅ Materi multi-mapel untuk {selected_siswa} berhasil dikirim dan otomatis tampil di akun siswa!")
+                                    
+                                # Jika tutor membuat soal langsung, simpan juga ke Master Bank Soal
+                                if sumber_soal_opsi == "Buat / Edit & Input Soal Baru Khusus Sesi Ini" and teks_soal_baru:
+                                    sheet.worksheet("Bank_Soal_Master").append_row([bentuk_soal_baru, teks_soal_baru, url_gambar_baru, opsi_baru, kunci_baru])
+
+                                st.success(f"✅ Materi multi-mapel, file offline, dan soal online untuk {selected_siswa} berhasil dikirim dan otomatis tampil di akun siswa!")
                             except Exception as ex_t:
                                 st.error(f"Gagal menyimpan tugas: {ex_t}")
 
@@ -520,7 +548,7 @@ elif peran == "🔒 Pengajar / Tutor":
                         except Exception as ex:
                             st.error(f"Gagal: {ex}")
 
-        # TAB 2: PORTOFOLLIO TERKUNCI (AMAN DARI DATA RAHASIA)
+        # TAB 2: PORTOFOLLIO TERKUNCI (AMAN DARI DATA RAHASIA & RESPONSIF DIKLIK)
         with tutor_tab2:
             st.header("📊 Portofolio & Histori Sesi Siswa (Privasi Aman)")
             st.caption("Ketik nama siswa secara spesifik untuk melihat portofolio pribadinya (daftar anak disembunyikan demi kerahasiaan).")
@@ -529,18 +557,18 @@ elif peran == "🔒 Pengajar / Tutor":
             data_siswa_all = ws_siswa.get_all_records()
             list_nama_aktif = [s.get("Nama_Lengkap") for s in data_siswa_all if str(s.get("Status", "Aktif")).strip().lower() != "nonaktif" and s.get("Nama_Lengkap")]
             
-            # Pencarian spesifik untuk menjaga privasi (tidak memunculkan daftar keseluruhan secara terbuka)
             search_portofolio = st.text_input("🔍 Ketik Nama Siswa untuk Membuka Portofolio:").strip().lower()
             pilih_siswa_histori = "-- Pilih Siswa --"
             
             if search_portofolio:
                 hasil_p_match = [n for n in list_nama_aktif if search_portofolio in n.strip().lower()]
                 if hasil_p_match:
-                    pilih_siswa_histori = st.selectbox("Pilih Hasil Pencarian Siswa:", ["-- Pilih Siswa --"] + hasil_p_match)
+                    pilih_siswa_histori = st.selectbox("Pilih Hasil Pencarian Siswa:", ["-- Pilih Siswa --"] + hasil_p_match, key="select_portofolio_aman")
                 else:
                     st.warning("Nama siswa tidak ditemukan.")
             
             if pilih_siswa_histori != "-- Pilih Siswa --":
+                st.markdown("---")
                 st.subheader(f"📈 Grafik Perkembangan Nilai: {pilih_siswa_histori}")
                 data_grafik = []
                 try:
