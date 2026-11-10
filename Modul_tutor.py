@@ -412,29 +412,26 @@ elif peran == "🔒 Pengajar / Tutor":
         ])
 
         # -------------------------------------------------
-        # TAB 1: PERSIAPAN DAN BANK SOAL
+        # TAB 1: KONFIGURASI TUGAS DAN EVALUASI SESI (VERSI 2)
         # -------------------------------------------------
         with tutor_tab1:
             st.header("📖 Persiapan Sesi Pembelajaran")
             ws_siswa = sheet.worksheet("Data_Siswa")
             data_siswa_all = ws_siswa.get_all_records()
             siswa_aktif = [
-                s.get("Nama_Lengkap") for s in data_siswa_all
-                if str(s.get("Status", "Aktif")).strip().lower() != "nonaktif"
-                and s.get("Nama_Lengkap")
+                str(s.get("Nama_Lengkap", "")).strip()
+                for s in data_siswa_all
+                if str(s.get("Status", "Aktif")).strip().lower() not in ["nonaktif", "tidak aktif"]
+                and str(s.get("Nama_Lengkap", "")).strip()
             ]
 
-            search_query = st.text_input("🔍 Cari nama siswa yang sedang diajar:").strip().lower()
+            search_query = st.text_input("🔍 Cari nama siswa yang sedang diajar:", key="tutor_cari_siswa").strip().lower()
+            hasil_pencarian = [x for x in siswa_aktif if search_query in x.lower()] if search_query else []
             selected_siswa = None
-
             if search_query:
-                hasil_pencarian = [
-                    s for s in siswa_aktif if search_query in str(s).strip().lower()
-                ]
                 if hasil_pencarian:
-                    pilihan = st.selectbox("Pilih Siswa:", ["-- Pilih Siswa --"] + hasil_pencarian)
-                    if pilihan != "-- Pilih Siswa --":
-                        selected_siswa = pilihan
+                    pilihan = st.selectbox("Pilih siswa:", hasil_pencarian, key="tutor_pilih_siswa")
+                    selected_siswa = pilihan
                 else:
                     st.warning("Siswa aktif tidak ditemukan.")
             else:
@@ -442,238 +439,173 @@ elif peran == "🔒 Pengajar / Tutor":
 
             if selected_siswa:
                 st.markdown("---")
-                st.subheader(f"📚 Konfigurasi Tugas untuk: **{selected_siswa}**")
+                st.subheader(f"📚 Rencana tugas untuk: {selected_siswa}")
+                st.caption("Setiap tugas disimpan sebagai catatan tersendiri sehingga satu siswa dapat menerima beberapa tugas dari beberapa mata pelajaran.")
 
-                mapel_pilihan_tutor = st.multiselect(
-                    "Pilih mata pelajaran:",
-                    [
-                        "Matematika", "IPAS / Tematik", "Bahasa Inggris",
-                        "IPA (Fisika/Kimia/Biologi)", "Bahasa Indonesia",
-                        "PKN", "Olimpiade (OSN)"
-                    ]
-                )
+                # Draft tugas disimpan di session state sampai tutor menekan tombol simpan.
+                draft_key = f"draft_tugas_{selected_siswa}"
+                if draft_key not in st.session_state:
+                    st.session_state[draft_key] = []
 
-                uploaded_files = st.file_uploader(
-                    "Unggah file modul/soal dari perangkat (PDF, Word, Excel, gambar):",
-                    type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"],
-                    accept_multiple_files=True
-                )
-                link_file_tambahan = st.text_input(
-                    "Link modul / Flipbook (opsional):",
-                    placeholder="https://..."
-                )
-                timer_menit_opsi = st.selectbox(
-                    "Durasi pengerjaan (menit):", [15, 30, 45, 60], index=1
-                )
-                instruksi_tutor = st.text_area("Instruksi untuk siswa:")
-
-                st.markdown("---")
-                st.subheader("📚 Pilih Soal dari Bank Soal Bersama")
-
-                try:
-                    bank = get_bank_soal()
-                    if not bank:
-                        st.info("Bank Soal_Master_v2 belum berisi soal aktif.")
-                    else:
-                        kolom = st.columns(3)
-                        with kolom[0]:
-                            filter_jenjang = st.selectbox(
-                                "Filter jenjang:",
-                                ["Semua"] + sorted({
-                                    str(x.get("Jenjang", "")).strip()
-                                    for x in bank if x.get("Jenjang")
-                                })
-                            )
-                        with kolom[1]:
-                            filter_mapel = st.selectbox(
-                                "Filter mapel:",
-                                ["Semua"] + sorted({
-                                    str(x.get("Mapel", "")).strip()
-                                    for x in bank if x.get("Mapel")
-                                })
-                            )
-                        with kolom[2]:
-                            filter_topik = st.selectbox(
-                                "Filter topik:",
-                                ["Semua"] + sorted({
-                                    str(x.get("Topik", "")).strip()
-                                    for x in bank if x.get("Topik")
-                                })
-                            )
-
-                        bank_terfilter = []
-                        for soal in bank:
-                            if filter_jenjang != "Semua" and str(soal.get("Jenjang", "")).strip() != filter_jenjang:
-                                continue
-                            if filter_mapel != "Semua" and str(soal.get("Mapel", "")).strip() != filter_mapel:
-                                continue
-                            if filter_topik != "Semua" and str(soal.get("Topik", "")).strip() != filter_topik:
-                                continue
-                            bank_terfilter.append(soal)
-
-                        pilihan_soal = []
-                        for i, soal in enumerate(bank_terfilter):
-                            id_soal = str(soal.get("ID_Soal", f"BARIS-{i+1}"))
-                            label = f"{id_soal} | {soal.get('Mapel', '-')} | {str(soal.get('Teks_Soal', ''))[:85]}"
-                            pilihan_soal.append(label)
-
-                        if pilihan_soal:
-                            dipilih = st.multiselect(
-                                "Pilih satu atau beberapa soal untuk tugas ini:",
-                                pilihan_soal
-                            )
-                            daftar_soal_terpilih = []
-                            for label in dipilih:
-                                idx = pilihan_soal.index(label)
-                                soal = bank_terfilter[idx]
-                                daftar_soal_terpilih.append({
-                                    "ID_Soal": str(soal.get("ID_Soal", "")),
-                                    "Jenjang": str(soal.get("Jenjang", "")),
-                                    "Mapel": str(soal.get("Mapel", "")),
-                                    "Topik": str(soal.get("Topik", "")),
-                                    "Bentuk_Soal": str(soal.get("Bentuk_Soal", "")),
-                                    "Teks_Soal": str(soal.get("Teks_Soal", "")),
-                                    "Url_Gambar": str(soal.get("Url_Gambar", "")),
-                                    "Opsi_List": normalisasi_opsi(soal.get("Opsi", "")),
-                                    "Kunci": str(soal.get("Kunci", ""))
-                                })
-
-                            if daftar_soal_terpilih:
-                                st.caption(f"{len(daftar_soal_terpilih)} soal dipilih.")
-                                with st.expander("Pratinjau soal yang dipilih"):
-                                    for no, q in enumerate(daftar_soal_terpilih, 1):
-                                        st.write(f"**{no}. {q['Teks_Soal']}**")
-                                        if q["Url_Gambar"]:
-                                            st.image(q["Url_Gambar"], use_container_width=True)
-                                        if q["Opsi_List"]:
-                                            for opsi in q["Opsi_List"]:
-                                                st.write(f"- {opsi}")
-                        else:
-                            daftar_soal_terpilih = []
-                            st.warning("Tidak ada soal yang cocok dengan filter.")
-                except Exception as e:
-                    daftar_soal_terpilih = []
-                    st.error(f"Gagal membaca Bank_Soal_Master_v2: {e}")
-
-                st.markdown("---")
-                st.subheader("✍️ Tambah Soal Baru ke Bank Soal")
-                with st.expander("Buka editor soal baru"):
-                    with st.form("form_soal_baru_bank"):
-                        jenjang_baru = st.selectbox("Jenjang soal:", ["PAUD", "TK", "SD", "SMP", "SMA"])
-                        mapel_baru = st.text_input("Mata pelajaran:")
-                        topik_baru = st.text_input("Topik:")
-                        bentuk_baru = st.selectbox(
-                            "Bentuk soal:",
-                            [
-                                "Pilihan Ganda", "Pilihan Ganda Kompleks",
-                                "Benar / Salah", "Menjodohkan",
-                                "Isian Singkat", "Essay"
-                            ]
+                with st.expander("➕ Buat tugas baru", expanded=True):
+                    with st.form(f"form_tugas_baru_{selected_siswa}"):
+                        mapel_tugas = st.selectbox(
+                            "Mata pelajaran:",
+                            ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA (Fisika/Kimia/Biologi)", "Bahasa Indonesia", "PKN", "Olimpiade (OSN)"]
                         )
-                        teks_baru = st.text_area("Teks soal:")
-                        gambar_baru = st.text_input("URL gambar (opsional):")
-                        opsi_baru = st.text_input("Opsi jawaban, pisahkan dengan tanda |")
-                        kunci_baru = st.text_input("Kunci jawaban (untuk tutor):")
-                        simpan_soal_baru = st.form_submit_button("Simpan ke Bank Soal Bersama")
+                        judul_tugas = st.text_input("Judul / topik tugas:")
+                        jenis_tugas = st.radio("Jenis pengerjaan:", ["Online", "Offline"], horizontal=True)
+                        sumber_tugas = st.selectbox(
+                            "Sumber materi / soal:",
+                            ["Bank Soal Bersama (Spreadsheet)", "Link Google Drive / Flipbook", "Upload dari perangkat"]
+                        )
+                        instruksi_tugas = st.text_area("Instruksi untuk siswa:")
+                        timer_tugas = st.selectbox("Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=2, format_func=lambda x: "Tanpa timer" if x == 0 else f"{x} menit")
+                        tenggat_tugas = st.date_input("Tanggal tenggat:", value=datetime.now().date())
+                        link_tugas = st.text_input("Link Drive / Flipbook (jika digunakan):", placeholder="https://...")
+                        file_tugas = st.file_uploader("Pilih file dari perangkat (opsional):", type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"], key=f"upload_tugas_{selected_siswa}")
 
-                        if simpan_soal_baru:
-                            if not mapel_baru.strip() or not teks_baru.strip():
-                                st.error("Mata pelajaran dan teks soal wajib diisi.")
-                            else:
-                                try:
-                                    ws_bank = sheet.worksheet("Bank_Soal_Master_v2")
-                                    id_baru = "SOAL-" + uuid.uuid4().hex[:8].upper()
-                                    ws_bank.append_row([
-                                        id_baru, jenjang_baru, mapel_baru.strip(),
-                                        topik_baru.strip(), bentuk_baru,
-                                        teks_baru.strip(), gambar_baru.strip(),
-                                        opsi_baru.strip(), kunci_baru.strip(), "Ya"
-                                    ])
-                                    st.success(f"Soal {id_baru} berhasil ditambahkan ke bank soal.")
+                        bank = []
+                        soal_dipilih = []
+                        if sumber_tugas == "Bank Soal Bersama (Spreadsheet)":
+                            try:
+                                bank = get_bank_soal()
+                                if bank:
+                                    jenjang_filter = st.selectbox("Filter jenjang soal:", ["Semua"] + sorted({str(q.get("Jenjang", "")).strip() for q in bank if q.get("Jenjang")}))
+                                    mapel_filter = st.selectbox("Filter mapel soal:", ["Semua"] + sorted({str(q.get("Mapel", "")).strip() for q in bank if q.get("Mapel")}))
+                                    topik_filter = st.selectbox("Filter topik soal:", ["Semua"] + sorted({str(q.get("Topik", "")).strip() for q in bank if q.get("Topik")}))
+                                    bank_filter = [q for q in bank if (jenjang_filter == "Semua" or str(q.get("Jenjang", "")).strip() == jenjang_filter) and (mapel_filter == "Semua" or str(q.get("Mapel", "")).strip() == mapel_filter) and (topik_filter == "Semua" or str(q.get("Topik", "")).strip() == topik_filter)]
+                                    labels = [f"{q.get('ID_Soal', 'TANPA-ID')} | {str(q.get('Teks_Soal', ''))[:100]}" for q in bank_filter]
+                                    selected_labels = st.multiselect("Pilih soal untuk tugas ini:", labels)
+                                    for label in selected_labels:
+                                        q = bank_filter[labels.index(label)]
+                                        soal_dipilih.append({
+                                            "ID_Soal": str(q.get("ID_Soal", "")),
+                                            "Jenjang": str(q.get("Jenjang", "")),
+                                            "Mapel": str(q.get("Mapel", "")),
+                                            "Topik": str(q.get("Topik", "")),
+                                            "Bentuk_Soal": str(q.get("Bentuk_Soal", "")),
+                                            "Teks_Soal": str(q.get("Teks_Soal", "")),
+                                            "Url_Gambar": str(q.get("Url_Gambar", "")),
+                                            "Opsi_List": normalisasi_opsi(q.get("Opsi", "")),
+                                            "Kunci": str(q.get("Kunci", ""))
+                                        })
+                                else:
+                                    st.info("Bank Soal_Master_v2 belum berisi soal aktif.")
+                            except Exception as e:
+                                st.error(f"Bank soal belum dapat dibaca: {e}")
+                        tambah_draft = st.form_submit_button("Tambahkan ke daftar tugas")
+
+                    if tambah_draft:
+                        if not judul_tugas.strip():
+                            st.error("Judul / topik tugas wajib diisi.")
+                        elif sumber_tugas == "Bank Soal Bersama (Spreadsheet)" and not soal_dipilih:
+                            st.error("Pilih minimal satu soal dari bank soal.")
+                        elif sumber_tugas == "Link Google Drive / Flipbook" and not link_tugas.strip():
+                            st.error("Masukkan link Drive / Flipbook.")
+                        elif sumber_tugas == "Upload dari perangkat" and file_tugas is None:
+                            st.error("Pilih file yang akan dilampirkan.")
+                        else:
+                            # Upload perangkat belum disimpan permanen; simpan hanya metadata dan beri peringatan.
+                            file_meta = ""
+                            if file_tugas is not None:
+                                file_meta = file_tugas.name
+                            st.session_state[draft_key].append({
+                                "Mapel": mapel_tugas,
+                                "Judul": judul_tugas.strip(),
+                                "Jenis": jenis_tugas,
+                                "Sumber": sumber_tugas,
+                                "Instruksi": instruksi_tugas.strip(),
+                                "Timer": timer_tugas,
+                                "Tenggat": tenggat_tugas.strftime("%Y-%m-%d"),
+                                "Link": link_tugas.strip(),
+                                "Nama_File": file_meta,
+                                "Soal": soal_dipilih
+                            })
+                            st.success("Tugas masuk ke daftar draft. Tekan Simpan & Kirim setelah semua tugas selesai ditambahkan.")
+                            st.rerun()
+
+                daftar_draft = st.session_state[draft_key]
+                st.markdown("### 📋 Daftar tugas yang akan dikirim")
+                if daftar_draft:
+                    for i, item in enumerate(daftar_draft, 1):
+                        with st.expander(f"{i}. {item['Mapel']} — {item['Judul']} ({item['Jenis']})"):
+                            st.write(f"Sumber: {item['Sumber']}")
+                            st.write(f"Timer: {'Tanpa timer' if item['Timer'] == 0 else str(item['Timer']) + ' menit'} | Tenggat: {item['Tenggat']}")
+                            st.write(f"Jumlah soal: {len(item['Soal'])}")
+                            if item["Link"]:
+                                st.write(f"Link: {item['Link']}")
+                            if item["Nama_File"]:
+                                st.warning(f"File dipilih: {item['Nama_File']}. Isi file belum tersimpan permanen; diperlukan integrasi penyimpanan cloud.")
+                    col_kirim, col_hapus = st.columns(2)
+                    with col_kirim:
+                        if st.button("📤 Simpan & Kirim Semua Tugas", type="primary", key=f"kirim_semua_{selected_siswa}"):
+                            try:
+                                ws_tugas = get_or_create_worksheet(
+                                    "Tugas_Sesi_Siswa_v2",
+                                    ["ID_Tugas", "Tanggal", "Nama_Siswa", "Mapel", "Judul_Tugas", "Jenis_Tugas", "Sumber", "Instruksi", "File_Offline", "Timer_Menit", "Tenggat", "Soal_JSON", "Status_Tugas", "Tutor"]
+                                )
+                                headers_now = ws_tugas.row_values(1)
+                                required_headers = ["ID_Tugas", "Tanggal", "Nama_Siswa", "Mapel", "Judul_Tugas", "Jenis_Tugas", "Sumber", "Instruksi", "File_Offline", "Timer_Menit", "Tenggat", "Soal_JSON", "Status_Tugas", "Tutor"]
+                                if headers_now != required_headers:
+                                    st.error("Header Tugas_Sesi_Siswa_v2 berbeda dari struktur yang diperlukan. Data tidak ditulis agar tidak bergeser.")
+                                else:
+                                    for item in daftar_draft:
+                                        id_tugas = "TGS-" + uuid.uuid4().hex[:10].upper()
+                                        file_info = item["Link"] or item["Nama_File"]
+                                        ws_tugas.append_row([
+                                            id_tugas, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), selected_siswa,
+                                            item["Mapel"], item["Judul"], item["Jenis"], item["Sumber"], item["Instruksi"],
+                                            file_info, item["Timer"], item["Tenggat"], json.dumps(item["Soal"], ensure_ascii=False),
+                                            "Diberikan", st.session_state.tutor_nama
+                                        ])
+                                    st.session_state[draft_key] = []
+                                    st.success(f"{len(daftar_draft)} tugas berhasil disimpan untuk {selected_siswa}.")
                                     st.rerun()
-                                except Exception as e:
-                                    st.error(f"Gagal menyimpan soal: {e}")
+                            except Exception as e:
+                                st.error(f"Gagal menyimpan tugas: {e}")
+                    with col_hapus:
+                        if st.button("Kosongkan daftar draft", key=f"hapus_draft_{selected_siswa}"):
+                            st.session_state[draft_key] = []
+                            st.rerun()
+                else:
+                    st.info("Belum ada tugas di daftar draft.")
 
                 st.markdown("---")
-                if st.button("📤 Kirim Tugas ke Siswa", type="primary"):
-                    if not mapel_pilihan_tutor:
-                        st.error("Pilih minimal satu mata pelajaran.")
-                    elif not daftar_soal_terpilih and not link_file_tambahan and not uploaded_files:
-                        st.error("Pilih soal dari bank atau masukkan modul/link terlebih dahulu.")
-                    else:
-                        try:
-                            file_info = link_file_tambahan.strip()
-                            if uploaded_files:
-                                nama_upload = ", ".join([f.name for f in uploaded_files])
-                                if file_info:
-                                    file_info += " | "
-                                file_info += "Nama file terpilih: " + nama_upload
-                                st.warning(
-                                    "File dari perangkat baru tercatat namanya pada tahap ini; "
-                                    "isi file belum disimpan permanen. Fitur penyimpanan cloud akan ditambahkan pada tahap berikutnya."
-                                )
+                st.subheader("📝 Jurnal dan Evaluasi Sesi")
+                with st.form(f"form_jurnal_v2_{selected_siswa}"):
+                    tanggal_sesi = st.date_input("Tanggal sesi:", datetime.now().date())
+                    mapel_diajarkan = st.multiselect("Mata pelajaran yang diajarkan:", ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA (Fisika/Kimia/Biologi)", "Bahasa Indonesia", "PKN", "Olimpiade (OSN)"])
+                    st.markdown("#### Evaluasi per mata pelajaran")
+                    evaluasi_mapel = {}
+                    for idx, mp in enumerate(mapel_diajarkan):
+                        st.markdown(f"**{mp}**")
+                        materi_mp = st.text_input(f"Materi {mp}", key=f"materi_mp_{selected_siswa}_{idx}")
+                        target_mp = st.text_input(f"Target belajar {mp}", key=f"target_mp_{selected_siswa}_{idx}")
+                        capaian_mp = st.text_area(f"Kompetensi yang dikuasai / hasil belajar {mp}", key=f"capaian_mp_{selected_siswa}_{idx}")
+                        penguatan_mp = st.text_area(f"Bagian yang perlu penguatan {mp}", key=f"penguatan_mp_{selected_siswa}_{idx}")
+                        nilai_mp = st.text_input(f"Nilai latihan (opsional) {mp}", key=f"nilai_mp_{selected_siswa}_{idx}")
+                        evaluasi_mapel[mp] = {"Materi": materi_mp, "Target": target_mp, "Capaian": capaian_mp, "Penguatan": penguatan_mp, "Nilai": nilai_mp}
+                    st.markdown("#### Catatan umum sesi")
+                    kondisi_siswa = st.selectbox("Kondisi siswa:", ["Baik", "Cukup", "Kurang fokus", "Lelah", "Perlu perhatian khusus"])
+                    keaktifan = st.selectbox("Keaktifan siswa:", ["Sangat aktif", "Aktif", "Cukup aktif", "Pasif"])
+                    kendala_umum = st.text_area("Kendala selama sesi:")
+                    rekomendasi = st.text_area("Rekomendasi / tindak lanjut:")
+                    handover = st.text_area("Catatan untuk tutor berikutnya (handover):")
+                    dokumentasi = st.text_input("Link dokumentasi (opsional):")
+                    simpan_jurnal = st.form_submit_button("💾 Simpan Jurnal dan Evaluasi")
 
-                            jumlah_tugas = 0
-                            for mapel in mapel_pilihan_tutor:
-                                soal_mapel = [
-                                    q for q in daftar_soal_terpilih
-                                    if not q.get("Mapel") or q.get("Mapel") == mapel
-                                    or (mapel == "IPA (Fisika/Kimia/Biologi)" and q.get("Mapel") == "IPA")
-                                ]
-                                # Jika filter soal berasal dari mapel lain, tetap sertakan hanya jika tutor memilih satu mapel.
-                                if not soal_mapel and len(mapel_pilihan_tutor) == 1:
-                                    soal_mapel = daftar_soal_terpilih
-
-                                task_id = simpan_tugas_dan_soal(
-                                    selected_siswa, mapel, instruksi_tutor,
-                                    timer_menit_opsi, soal_mapel,
-                                    file_info, st.session_state.tutor_nama
-                                )
-                                jumlah_tugas += 1
-
-                            st.success(
-                                f"{jumlah_tugas} tugas berhasil dibuat untuk {selected_siswa}. "
-                                "Tugas tersimpan di Google Sheets."
-                            )
-                        except Exception as e:
-                            st.error(f"Gagal menyimpan tugas: {e}")
-
-                st.markdown("---")
-                st.subheader(f"📝 Jurnal & Evaluasi Sesi ({selected_siswa})")
-                with st.form("form_jurnal"):
-                    tgl = st.date_input("Tanggal Mengajar", datetime.now().date())
-                    mapel_utama = st.selectbox(
-                        "Mata Pelajaran Utama:",
-                        [
-                            "Matematika", "IPAS / Tematik", "Bahasa Inggris",
-                            "IPA (Fisika/Kimia/Biologi)", "Lainnya"
-                        ]
-                    )
-                    materi = st.text_area("Materi & Pelajaran Hari Ini")
-                    pencapaian = st.text_area("Pencapaian Belajar Siswa")
-                    kendala = st.text_area("Catatan Evaluasi / Kendala Belajar")
-                    col_j1, col_j2 = st.columns(2)
-                    with col_j1:
-                        skor_offline = st.text_input("Nilai / Skor Latihan Offline")
-                        pr_teks = st.text_input("Daftar PR / Tugas Rumah")
-                    with col_j2:
-                        foto_dok = st.text_input("Link Foto Dokumentasi (Opsional)")
-
-                    if st.form_submit_button("💾 Simpan Jurnal Permanen"):
-                        try:
-                            ws_jurnal = sheet.worksheet("Form Responses 1")
-                            ws_jurnal.append_row([
-                                datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                                tgl.strftime("%d/%m/%Y"),
-                                st.session_state.tutor_nama,
-                                "Hadir",
-                                selected_siswa,
-                                f"[{mapel_utama}] {materi}",
-                                pencapaian, kendala, pr_teks, foto_dok, skor_offline
-                            ])
-                            st.success("Jurnal berhasil disimpan.")
-                        except Exception as e:
-                            st.error(f"Gagal menyimpan jurnal: {e}")
+                if simpan_jurnal:
+                    try:
+                        ws_sesi = get_or_create_worksheet("Jurnal_Sesi_Tutor_v2", ["ID_Sesi", "Tanggal", "Nama_Siswa", "Tutor", "Kondisi_Siswa", "Keaktifan", "Kendala_Umum", "Rekomendasi", "Handover", "Dokumentasi"])
+                        id_sesi = "SES-" + uuid.uuid4().hex[:10].upper()
+                        ws_sesi.append_row([id_sesi, tanggal_sesi.strftime("%Y-%m-%d"), selected_siswa, st.session_state.tutor_nama, kondisi_siswa, keaktifan, kendala_umum, rekomendasi, handover, dokumentasi])
+                        ws_eval = get_or_create_worksheet("Evaluasi_Mapel_Tutor_v2", ["ID_Evaluasi", "ID_Sesi", "Tanggal", "Nama_Siswa", "Tutor", "Mapel", "Materi", "Target", "Capaian", "Penguatan", "Nilai"])
+                        for mp, ev in evaluasi_mapel.items():
+                            ws_eval.append_row(["EVL-" + uuid.uuid4().hex[:10].upper(), id_sesi, tanggal_sesi.strftime("%Y-%m-%d"), selected_siswa, st.session_state.tutor_nama, mp, ev["Materi"], ev["Target"], ev["Capaian"], ev["Penguatan"], ev["Nilai"]])
+                        st.success("Jurnal sesi dan evaluasi per mapel berhasil disimpan.")
+                    except Exception as e:
+                        st.error(f"Gagal menyimpan jurnal/evaluasi: {e}")
 
         # -------------------------------------------------
         # TAB 2: PORTOFOLIO DAN PENILAIAN JAWABAN
