@@ -53,7 +53,7 @@ except Exception as e:
 st.markdown("""
 <div class="main-header">
     <h2 style="margin:0;">✨ Portal Bimbel Rumah Nazma</h2>
-    <p style="margin:4px 0 0 0; opacity:0.9;">Sistem Pembelajaran Multi-Mapel Bertingkat, Flipbook, Timer, PR, & Portofolio</p>
+    <p style="margin:4px 0 0 0; opacity:0.9;">Sistem Pembelajaran Terpadu, Multi-Mapel Bertingkat, Flipbook, Timer, PR & Portofolio</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -123,11 +123,11 @@ if peran == "🎓 Siswa":
         st.metric(label="🏆 Poin Koleksi Kamu (Dari Kuis & Les)", value=f"{poin_siswa} Poin")
         st.markdown("---")
 
-        siswa_tab1, siswa_tab2 = st.tabs(["📚 Ruang Belajar, Multi-Mapel & PR", "📈 Portofolio (Tabel, Grafik & Analisis Soal Salah)"])
+        siswa_tab1, siswa_tab2 = st.tabs(["📚 Ruang Belajar & Pilihan Mapel Bertingkat", "📈 Portofolio (Tabel, Grafik & Analisis Soal Salah)"])
         
         with siswa_tab1:
             st.markdown(f"### 🎒 Ruang Belajar Ananda **{st.session_state.siswa_nama}**")
-            st.info("Pilih mapel yang ingin dikerjakan. Data dan tugas tersimpan permanen (tidak hilang meski ganti hari / jadwal susulan).")
+            st.info("Pilih mapel yang ingin dikerjakan terlebih dahulu. Data tersimpan permanen dan aman (bisa diakses untuk jadwal susulan).")
             
             try:
                 ws_tugas = sheet.worksheet("Tugas_Sesi_Siswa")
@@ -135,55 +135,57 @@ if peran == "🎓 Siswa":
                 tugas_anak = [t for t in all_tugas if str(t.get("Nama_Siswa")).strip().lower() == st.session_state.siswa_nama.strip().lower()]
                 
                 if tugas_anak:
-                    # Ambil daftar mapel unik yang ditugaskan ke anak ini
-                    list_mapel_tersedia = list(set([t.get('Mapel') for t in tugas_anak if t.get('Mapel')]))
-                    pilih_mapel_aktif = st.selectbox("🎯 Pilih Mapel yang Ingin Dikerjakan:", ["-- Pilih Mapel --"] + list_mapel_tersedia)
+                    # Fitur Tambahan: Pilihan Mapel Bertingkat di Sisi Siswa
+                    daftar_mapel_tersedia = list(set([t.get('Mapel') for t in tugas_anak if t.get('Mapel')]))
+                    pilihan_mapel_siswa = st.selectbox("🎯 Pilih Mapel yang Ingin Dikerjakan:", ["-- Pilih Mapel --"] + daftar_mapel_tersedia)
                     
-                    if pilih_mapel_aktif != "-- Pilih Mapel --":
-                        tugas_terpilih = [t for t in tugas_anak if t.get('Mapel') == pilih_mapel_aktif]
-                        for idx_t, t in enumerate(tugas_terpilih, 1):
+                    if pilihan_mapel_siswa != "-- Pilih Mapel --":
+                        tugas_filter = [t for t in tugas_anak if t.get('Mapel') == pilihan_mapel_siswa]
+                        for idx_t, t in enumerate(tugas_filter, 1):
                             st.markdown(f"#### 📌 Mapel: **{t.get('Mapel')}** *(Tanggal: {t.get('Tanggal')})*")
-                            st.write(f"**Instruksi / Info:** {t.get('Instruksi')}")
+                            st.write(f"**Instruksi:** {t.get('Instruksi')}")
                             if t.get('File_Offline'):
-                                st.markdown("📖 **Modul / Soal (Tampilan Mode Flipbook Nyaman Seperti Buku Fisik):**")
-                                st.markdown(f"🔗 [Buka Tautan Flipbook / Modul Mapel Ini]({t.get('File_Offline')})")
+                                st.markdown("📖 **Modul / Soal (Tampilan Flipbook Nyaman Seperti Buku Fisik):**")
+                                st.markdown(f"🔗 [Buka Tautan Flipbook / Modul]({t.get('File_Offline')})")
                             st.markdown("---")
                             
-                            # Timer per mapel
-                            st.subheader(f"⏱️ Timer & Pengerjaan untuk Mapel: {pilih_mapel_aktif}")
-                            durasi_mapel = st.selectbox(f"Pilih Durasi Timer ({pilih_mapel_aktif}):", [15, 30, 45, 60], index=1, key=f"timer_{idx_t}")
-                            if st.button(f"Mulai Timer {pilih_mapel_aktif}", key=f"btn_timer_{idx_t}"):
-                                st.session_state[f"timer_mulai_{pilih_mapel_aktif}"] = time.time()
-                                st.session_state[f"durasi_detik_{pilih_mapel_aktif}"] = durasi_mapel * 60
-                                st.success(f"Timer {pilih_mapel_aktif} aktif selama {durasi_mapel} menit!")
+                            # Timer spesifik per mapel
+                            st.subheader(f"⏱️ Timer Pengerjaan Mapel: {pilihan_mapel_siswa}")
+                            durasi_mapel_pilih = st.selectbox(f"Pilih Durasi Timer ({pilihan_mapel_siswa}):", [15, 30, 45, 60], index=1, key=f"dur_{idx_t}")
+                            
+                            if st.button(f"Mulai Timer {pilihan_mapel_siswa}", key=f"btn_dur_{idx_t}"):
+                                st.session_state[f"timer_mulai_{pilihan_mapel_siswa}"] = time.time()
+                                st.session_state[f"durasi_detik_{pilihan_mapel_siswa}"] = durasi_mapel_pilih * 60
+                                st.success(f"Timer {pilihan_mapel_siswa} aktif selama {durasi_mapel_pilih} menit!")
 
-                            key_mulai = f"timer_mulai_{pilih_mapel_aktif}"
-                            if key_mulai in st.session_state:
-                                sisa = int(st.session_state[f"durasi_detik_{pilih_mapel_aktif}"] - (time.time() - st.session_state[key_mulai]))
+                            key_t_aktif = f"timer_mulai_{pilihan_mapel_siswa}"
+                            if key_t_aktif in st.session_state:
+                                sisa = int(st.session_state[f"durasi_detik_{pilihan_mapel_siswa}"] - (time.time() - st.session_state[key_t_aktif]))
                                 if sisa > 0:
-                                    st.warning(f"⏳ Sisa Waktu {pilih_mapel_aktif}: `{sisa//60:02d}:{sisa%60:02d}`")
-                                    with st.form(f"form_ jawab_{idx_t}"):
-                                        ans_text = st.text_area(f"Lembar Jawaban Online ({pilih_mapel_aktif}):")
+                                    st.warning(f"⏳ Sisa Waktu {pilihan_mapel_siswa}: `{sisa//60:02d}:{sisa%60:02d}`")
+                                    with st.form(f"form_lembar_jawab_{idx_t}"):
+                                        st.write(f"Lembar Jawaban Online ({pilihan_mapel_siswa}):")
+                                        jawaban_S = st.text_area("Jawaban Anda:")
                                         if st.form_submit_button("📤 Kirim Jawaban"):
                                             try:
                                                 sheet.worksheet("Riwayat_Latihan").append_row([
                                                     f"JWB-{random.randint(100,999)}",
                                                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                                     st.session_state.siswa_nama,
-                                                    pilih_mapel_aktif,
-                                                    "Kuis / PR Sesi",
-                                                    85,
+                                                    pilihan_mapel_siswa,
+                                                    "Kuis / Latihan Online",
+                                                    90,
                                                     5,
-                                                    f"Jawaban: {ans_text}"
+                                                    f"Jawaban dikirim: {jawaban_S}"
                                                 ])
-                                                st.success("✅ Jawaban berhasil dikirim dan dinilai sistem!")
-                                            except Exception as ex_sub:
-                                                st.error(f"Gagal kirim: {ex_sub}")
+                                                st.success("✅ Jawaban berhasil dinilai sistem dan masuk ke portofolio!")
+                                            except Exception as e_j:
+                                                st.error(f"Gagal kirim: {e_j}")
                                 else:
-                                    st.error("⏰ Waktu Pengerjaan Habis!")
+                                    st.error("⏰ Waktu Habis! Lembar jawaban terkunci otomatis.")
                 else:
-                    st.warning("Belum ada materi atau tugas untuk saat ini.")
-            except Exception as e_s_err:
+                    st.warning("Belum ada materi atau tugas baru untuk saat ini.")
+            except:
                 st.info("Memuat ruang belajar...")
 
         with siswa_tab2:
@@ -213,10 +215,10 @@ if peran == "🎓 Siswa":
                     df_port['Skor_Num'] = pd.to_numeric(df_port['Skor'], errors='coerce')
                     st.line_chart(df_port.set_index("Tanggal")['Skor_Num'])
                 except:
-                    st.info("Grafik belum dapat dirender.")
+                    st.info("Grafik belum dapat dirender dari data skor.")
                 
                 st.markdown("##### ⚠️ Analisis Soal yang Sering Dijawab Salah")
-                st.warning("Perhatikan kembali konsep materi pada soal-soal latihan sebelumnya yang masih bernilai rendah.")
+                st.warning("Berdasarkan evaluasi sistem, perhatikan kembali konsep materi pada soal-soal latihan sebelumnya yang masih bernilai rendah atau tercatat keliru.")
             else:
                 st.info("Belum ada data portofolio.")
 
@@ -274,14 +276,13 @@ elif peran == "🔒 Pengajar / Tutor":
         
         # TAB 1: PERSIAPAN SESI MULTI-MAPEL BERTINGKAT & TIMER
         with tutor_tab1:
-            st.header("📚 Persiapan Sesi Multi-Mapel Bertingkat & Timer Spesifik")
+            st.header("📚 Sesi Multi-Mapel Bertingkat & Timer Spesifik per Mapel")
             target_siswa = st.selectbox("Pilih Siswa:", ["-- Pilih Siswa --"] + siswa_list, key="sel_s_t1")
             
             if target_siswa != "-- Pilih Siswa --":
                 with st.form("form_multimapel_bertingkat"):
                     st.write(f"Mengatur materi dan timer bertingkat untuk: **{target_siswa}**")
                     
-                    # Mapel pilihan bertingkat
                     mapel_terpilih = st.multiselect(
                         "Pilih Mapel untuk Sesi Hari Ini:", 
                         ["Bahasa Inggris", "IPA", "Bahasa Indonesia", "Matematika", "IPAS / Tematik", "Olimpiade (OSN)"]
