@@ -101,7 +101,7 @@ if peran == "🎓 Siswa":
             if not siswa_found:
                 st.error("Nama Siswa atau PIN Siswa salah!")
             elif not is_active:
-                st.error("🚫 **Akun Siswa Anda sudah Nonaktif.**")
+                st.error("🚫 **Akun Siswa Anda sudah Nonaktif. Silakan hubungi Mbak Fatimah.**")
     else:
         c_head1, c_head2 = st.columns([3, 1])
         with c_head1:
@@ -141,7 +141,7 @@ if peran == "🎓 Siswa":
             st.markdown(f"### 🎒 Ruang Belajar Ananda **{st.session_state.siswa_nama}**")
             st.info("Berikut adalah materi, file offline, dan kuis multi-mapel yang telah disiapkan oleh tutor untuk pertemuan hari ini.")
             
-            # Menampilkan tugas/materi yang disiapkan tutor untuk siswa ini
+            # Menampilkan tugas/materi multi-mapel yang disiapkan tutor untuk siswa ini
             try:
                 ws_tugas = sheet.worksheet("Tugas_Sesi_Siswa")
                 all_tugas = ws_tugas.get_all_records()
@@ -149,8 +149,8 @@ if peran == "🎓 Siswa":
                 
                 if tugas_anak:
                     for idx_t, t in enumerate(tugas_anak, 1):
-                        st.markdown(f"#### 📌 Pertemuan: {t.get('Tanggal')} | Mapel: **{t.get('Mapel')}**")
-                        st.write(f"**Catatan/Instruksi Tutor:** {t.get('Instruksi')}")
+                        st.markdown(f"#### 📌 Mapel: **{t.get('Mapel')}** *(Tanggal: {t.get('Tanggal')})*")
+                        st.write(f"**Instruksi Tutor:** {t.get('Instruksi')}")
                         if t.get('File_Offline'):
                             st.markdown(f"📎 **File / Modul Offline Sesi Ini:** [{t.get('File_Offline')}]({t.get('File_Offline')})")
                         st.markdown("---")
@@ -199,7 +199,7 @@ if peran == "🎓 Siswa":
                     jawaban_user = {}
                     if soal_db:
                         for idx, s in enumerate(soal_db, 1):
-                            bentuk_soal = str(s.get("Bentuk_Soal", "Pilgan")).strip()
+                            bentuk_soal = str(s.get("Bentuk_Soal", "Pilihan Ganda")).strip()
                             st.markdown(f"**Soal No. {idx}** *({bentuk_soal})*")
                             st.write(s.get('Teks_Soal'))
                             
@@ -314,7 +314,7 @@ if peran == "🎓 Siswa":
                 st.info("Belum ada grafik riwayat nilai.")
 
 # ==========================================
-# 2. MODUL TUTOR (MULTI-MAPEL, SOAL ONLINE/OFFLINE, CETAK FISIK)
+# 2. MODUL TUTOR (DENGAN VALIDASI STATUS AKTIF & PERSIAPAN MULTI-MAPEL LENGKAP)
 # ==========================================
 elif peran == "🔒 Pengajar / Tutor":
     st.subheader("🔒 Login Pengajar Portal")
@@ -336,7 +336,9 @@ elif peran == "🔒 Pengajar / Tutor":
             for row in data:
                 if str(row.get("Username")).strip().lower() == username.strip().lower() and str(row.get("PIN_Password")).strip() == pin.strip():
                     user_found = True
-                    if str(row.get("Status", "Aktif")).strip().lower() == "nonaktif":
+                    # Validasi ketat status tutor harus aktif
+                    status_tutor = str(row.get("Status", "Aktif")).strip().lower()
+                    if status_tutor == "nonaktif":
                         is_active = False
                     else:
                         st.session_state.tutor_logged_in = True
@@ -346,7 +348,7 @@ elif peran == "🔒 Pengajar / Tutor":
             if not user_found:
                 st.error("Username atau PIN salah!")
             elif not is_active:
-                st.error("🚫 Akun Anda sudah Nonaktif.")
+                st.error("🚫 **Akun Pengajar Anda sudah Nonaktif.**")
     else:
         st.success(f"👨‍🏫 **Tutor Aktif:** {st.session_state.tutor_nama}")
         if st.button("Logout Pengajar"):
@@ -362,9 +364,10 @@ elif peran == "🔒 Pengajar / Tutor":
             st.header("📖 Persiapan Sesi Pembelajaran & Materi Multi-Mapel")
             ws_siswa = sheet.worksheet("Data_Siswa")
             data_siswa_all = ws_siswa.get_all_records()
+            # Hanya ambil siswa yang aktif
             siswa_aktif = [s.get("Nama_Lengkap") for s in data_siswa_all if str(s.get("Status", "Aktif")).strip().lower() != "nonaktif" and s.get("Nama_Lengkap")]
             
-            search_query = st.text_input("🔍 Ketik Nama Siswa yang Sedang Diajar (Cth: Nazma):").strip().lower()
+            search_query = st.text_input("🔍 Ketik Nama Siswa Aktif yang Sedang Diajar (Cth: Nazma):").strip().lower()
             selected_siswa = None
             
             if search_query:
@@ -384,7 +387,7 @@ elif peran == "🔒 Pengajar / Tutor":
                 
                 # 1. Pemilihan Multi-Mapel (2-3 Mapel per Pertemuan)
                 mapel_pilihan_tutor = st.multiselect(
-                    "Pilih Mapel yang Akan Dibahas Hari Ini (Bisa Lebih dari 1):",
+                    "Pilih Mapel yang Akan Dibahas Hari Ini (Bisa Lebih dari 1 dalam 1 Pertemuan):",
                     ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA (Fisika/Kimia/Biologi)", "Bahasa Indonesia", "PKN", "Olimpiade (OSN)"]
                 )
                 
@@ -392,11 +395,17 @@ elif peran == "🔒 Pengajar / Tutor":
                     st.success(f"✨ Sesi hari ini mencakup mapel: **{', '.join(mapel_pilihan_tutor)}**")
                     
                     with st.form("form_persiapan_materi"):
-                        st.markdown("### 🛠️ Siapkan Tugas & Materi untuk Siswa")
-                        instruksi_tutor = st.text_area("Instruksi / Catatan Pengerjaan untuk Siswa:", placeholder="Contoh: Kerjakan latihan soal matematika dan baca materi IPAS halaman 10-15.")
+                        st.markdown("### 🛠️ Siapkan Tugas & Soal (Online & Offline Multi-File)")
                         
-                        # Upload Soal/Modul Offline (Multi-File / Browse File Manager / Drive)
-                        link_file_offline = st.text_input("Link File Offline / Drive / PDF (Bisa masukkan beberapa tautan file):", placeholder="Tempel link Google Drive / file manager di sini")
+                        sumber_soal = st.selectbox("Pilih Sumber Soal Online:", [
+                            "Ambil Otomatis dari Master Bank Soal (Spreadsheet)",
+                            "Buat/Input Instruksi & Soal Manual untuk Sesi Ini"
+                        ])
+                        
+                        instruksi_tutor = st.text_area("Instruksi / Catatan Pengerjaan untuk Siswa:", placeholder="Contoh: Kerjakan soal latihan online di akunmu dan pelajari file materi terlampir.")
+                        
+                        # Browse / Input File Offline dari Drive / File Manager (Mendukung Multi-File)
+                        link_file_offline = st.text_area("Link File/Modul Offline (Drive / File Manager - Bisa lebih dari 1 link pisahkan dengan baris baru):", placeholder="https://drive.google.com/... (File Mapel 1)\nhttps://drive.google.com/... (File Mapel 2)")
                         
                         btn_simpan_tugas = st.form_submit_button("📤 Simpan & Kirim Materi ke Akun Siswa")
                         
@@ -413,10 +422,10 @@ elif peran == "🔒 Pengajar / Tutor":
                                         datetime.now().strftime("%Y-%m-%d"),
                                         selected_siswa,
                                         m_item,
-                                        instruksi_tutor,
+                                        f"[{sumber_soal}] {instruksi_tutor}",
                                         link_file_offline
                                     ])
-                                st.success(f"✅ Materi dan soal untuk {len(mapel_pilihan_tutor)} mapel berhasil dikirim dan otomatis tampil di akun {selected_siswa}!")
+                                st.success(f"✅ Materi multi-mapel untuk {selected_siswa} berhasil dikirim dan otomatis tampil di akun siswa!")
                             except Exception as ex_t:
                                 st.error(f"Gagal menyimpan tugas: {ex_t}")
 
@@ -513,14 +522,17 @@ elif peran == "🔒 Pengajar / Tutor":
                         except Exception as ex:
                             st.error(f"Gagal: {ex}")
 
-        # TAB 2: PORTOFOLLIO TERKUNCI (AMAN DARI DATA RAHASIA)
+        # TAB 2: PORTOFOLIO TERKUNCI (AMAN DARI DATA RAHASIA TERBUKA SEMUA)
         with tutor_tab2:
-            st.header("📊 Portofolio & Histori Sesi Siswa")
+            st.header("📊 Portofolio & Histori Sesi Siswa (Privasi Aman)")
             st.caption("Pilih nama siswa di bawah ini secara spesifik untuk melihat portofolio pribadinya saja.")
             
             ws_siswa = sheet.worksheet("Data_Siswa")
             data_siswa_all = ws_siswa.get_all_records()
-            pilih_siswa_histori = st.selectbox("Pilih Nama Siswa:", ["-- Pilih Siswa --"] + [s.get("Nama_Lengkap") for s in data_siswa_all if s.get("Nama_Lengkap")])
+            # Hanya tampilkan nama siswa aktif untuk dipilih secara spesifik
+            list_nama_aktif = [s.get("Nama_Lengkap") for s in data_siswa_all if str(s.get("Status", "Aktif")).strip().lower() != "nonaktif" and s.get("Nama_Lengkap")]
+            
+            pilih_siswa_histori = st.selectbox("Pilih Nama Siswa:", ["-- Pilih Siswa --"] + list_nama_aktif)
             
             if pilih_siswa_histori != "-- Pilih Siswa --":
                 st.subheader(f"📈 Grafik Perkembangan Nilai: {pilih_siswa_histori}")
@@ -646,6 +658,11 @@ elif peran == "👨‍👩‍👧 Orang Tua":
         
         for row in data_siswa:
             if str(row.get("Nama_Lengkap")).strip().lower() == nama_anak.strip().lower() and str(row.get("PIN_Ortu")).strip() == pin_ortu.strip():
+                # Validasi status aktif siswa
+                if str(row.get("Status", "Aktif")).strip().lower() == "nonaktif":
+                    st.error("🚫 Akun siswa ini sudah Nonaktif.")
+                    break
+                
                 ortu_found = True
                 st.success(f"Selamat datang Orang Tua dari **{row.get('Nama_Lengkap')}** 👋")
                 st.markdown(f"**Jenjang:** {row.get('Jenjang')} | **Koleksi Poin Undian Anak:** `{row.get('Poin', 0)} Poin`")
