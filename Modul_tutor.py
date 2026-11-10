@@ -150,7 +150,7 @@ if peran == "🎓 Siswa":
                 if tugas_anak:
                     for idx_t, t in enumerate(tugas_anak, 1):
                         st.markdown(f"#### 📌 Mapel: **{t.get('Mapel')}** *(Tanggal: {t.get('Tanggal')})*")
-                        st.write(f"**Instruksi Tutor:** {t.get('Instruksi')}")
+                        st.write(f"**Instruksi & Soal Tutor:** {t.get('Instruksi')}")
                         if t.get('File_Offline'):
                             st.markdown(f"📎 **File / Modul Offline Sesi Ini:** [{t.get('File_Offline')}]({t.get('File_Offline')})")
                         st.markdown("---")
@@ -209,7 +209,7 @@ if peran == "🎓 Siswa":
                                 
                             opsi_raw = str(s.get('Opsi_Jawaban', ''))
                             
-                            # Render berdasarkan ragam bentuk soal
+                            # Render berdasarkan ragam bentuk soal lengkap
                             if bentuk_soal == "Pilihan Ganda" or opsi_raw and opsi_raw != "nan":
                                 opsi_list = [o.strip() for o in opsi_raw.split("|") if o.strip()]
                                 jawaban_user[idx] = st.radio(f"Pilih Jawaban No {idx}:", opsi_list, key=f"soal_{idx}")
@@ -336,7 +336,6 @@ elif peran == "🔒 Pengajar / Tutor":
             for row in data:
                 if str(row.get("Username")).strip().lower() == username.strip().lower() and str(row.get("PIN_Password")).strip() == pin.strip():
                     user_found = True
-                    # Validasi ketat status tutor harus aktif
                     status_tutor = str(row.get("Status", "Aktif")).strip().lower()
                     if status_tutor == "nonaktif":
                         is_active = False
@@ -364,7 +363,6 @@ elif peran == "🔒 Pengajar / Tutor":
             st.header("📖 Persiapan Sesi Pembelajaran & Materi Multi-Mapel")
             ws_siswa = sheet.worksheet("Data_Siswa")
             data_siswa_all = ws_siswa.get_all_records()
-            # Hanya ambil siswa yang aktif
             siswa_aktif = [s.get("Nama_Lengkap") for s in data_siswa_all if str(s.get("Status", "Aktif")).strip().lower() != "nonaktif" and s.get("Nama_Lengkap")]
             
             search_query = st.text_input("🔍 Ketik Nama Siswa Aktif yang Sedang Diajar (Cth: Nazma):").strip().lower()
@@ -402,10 +400,10 @@ elif peran == "🔒 Pengajar / Tutor":
                             "Buat/Input Instruksi & Soal Manual untuk Sesi Ini"
                         ])
                         
-                        instruksi_tutor = st.text_area("Instruksi / Catatan Pengerjaan untuk Siswa:", placeholder="Contoh: Kerjakan soal latihan online di akunmu dan pelajari file materi terlampir.")
+                        instruksi_tutor = st.text_area("Instruksi / Soal Pengerjaan untuk Siswa:", placeholder="Contoh: Kerjakan soal latihan online di akunmu dan pelajari file materi terlampir.")
                         
-                        # Browse / Input File Offline dari Drive / File Manager (Mendukung Multi-File)
-                        link_file_offline = st.text_area("Link File/Modul Offline (Drive / File Manager - Bisa lebih dari 1 link pisahkan dengan baris baru):", placeholder="https://drive.google.com/... (File Mapel 1)\nhttps://drive.google.com/... (File Mapel 2)")
+                        # Browse / Input File Offline dari Drive / File Manager (Mendukung Multi-File / Banyak Link)
+                        link_file_offline = st.text_area("Link File/Modul Offline (Drive / File Manager - Bisa masukkan beberapa link dipisah baris baru):", placeholder="https://drive.google.com/... (File Mapel 1)\nhttps://drive.google.com/... (File Mapel 2)")
                         
                         btn_simpan_tugas = st.form_submit_button("📤 Simpan & Kirim Materi ke Akun Siswa")
                         
@@ -522,17 +520,25 @@ elif peran == "🔒 Pengajar / Tutor":
                         except Exception as ex:
                             st.error(f"Gagal: {ex}")
 
-        # TAB 2: PORTOFOLIO TERKUNCI (AMAN DARI DATA RAHASIA TERBUKA SEMUA)
+        # TAB 2: PORTOFOLLIO TERKUNCI (AMAN DARI DATA RAHASIA)
         with tutor_tab2:
             st.header("📊 Portofolio & Histori Sesi Siswa (Privasi Aman)")
-            st.caption("Pilih nama siswa di bawah ini secara spesifik untuk melihat portofolio pribadinya saja.")
+            st.caption("Ketik nama siswa secara spesifik untuk melihat portofolio pribadinya (daftar anak disembunyikan demi kerahasiaan).")
             
             ws_siswa = sheet.worksheet("Data_Siswa")
             data_siswa_all = ws_siswa.get_all_records()
-            # Hanya tampilkan nama siswa aktif untuk dipilih secara spesifik
             list_nama_aktif = [s.get("Nama_Lengkap") for s in data_siswa_all if str(s.get("Status", "Aktif")).strip().lower() != "nonaktif" and s.get("Nama_Lengkap")]
             
-            pilih_siswa_histori = st.selectbox("Pilih Nama Siswa:", ["-- Pilih Siswa --"] + list_nama_aktif)
+            # Pencarian spesifik untuk menjaga privasi (tidak memunculkan daftar keseluruhan secara terbuka)
+            search_portofolio = st.text_input("🔍 Ketik Nama Siswa untuk Membuka Portofolio:").strip().lower()
+            pilih_siswa_histori = "-- Pilih Siswa --"
+            
+            if search_portofolio:
+                hasil_p_match = [n for n in list_nama_aktif if search_portofolio in n.strip().lower()]
+                if hasil_p_match:
+                    pilih_siswa_histori = st.selectbox("Pilih Hasil Pencarian Siswa:", ["-- Pilih Siswa --"] + hasil_p_match)
+                else:
+                    st.warning("Nama siswa tidak ditemukan.")
             
             if pilih_siswa_histori != "-- Pilih Siswa --":
                 st.subheader(f"📈 Grafik Perkembangan Nilai: {pilih_siswa_histori}")
@@ -658,7 +664,6 @@ elif peran == "👨‍👩‍👧 Orang Tua":
         
         for row in data_siswa:
             if str(row.get("Nama_Lengkap")).strip().lower() == nama_anak.strip().lower() and str(row.get("PIN_Ortu")).strip() == pin_ortu.strip():
-                # Validasi status aktif siswa
                 if str(row.get("Status", "Aktif")).strip().lower() == "nonaktif":
                     st.error("🚫 Akun siswa ini sudah Nonaktif.")
                     break
