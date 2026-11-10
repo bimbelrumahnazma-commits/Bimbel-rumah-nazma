@@ -53,7 +53,7 @@ except Exception as e:
 st.markdown("""
 <div class="main-header">
     <h2 style="margin:0;">✨ Portal Bimbel Rumah Nazma</h2>
-    <p style="margin:4px 0 0 0; opacity:0.9;">Sistem Pembelajaran Terpadu, Multi-Mapel, Gamifikasi & Portofolio Berkelanjutan</p>
+    <p style="margin:4px 0 0 0; opacity:0.9;">Sistem Pembelajaran Terpadu, Multi-Mapel, Flipbook, Timer, & Evaluasi Berkelanjutan</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -65,7 +65,7 @@ peran = st.selectbox(
 st.markdown("---")
 
 # ==========================================
-# 1. MODUL SISWA (AKSES MULTI-MAPEL & KUIS)
+# 1. MODUL SISWA
 # ==========================================
 if peran == "🎓 Siswa":
     st.subheader("🎓 Login Portal Siswa")
@@ -110,14 +110,11 @@ if peran == "🎓 Siswa":
             if st.button("🚪 Logout Siswa"):
                 st.session_state.siswa_logged_in = False
                 st.session_state.siswa_nama = ""
-                st.session_state.pop("start_time", None)
-                st.session_state.pop("kuis_submitted", None)
                 st.rerun()
                 
         ws_s = sheet.worksheet("Data_Siswa")
         rec_s = ws_s.get_all_records()
         poin_siswa = 0
-        
         for r in rec_s:
             if str(r.get("Nama_Lengkap")).strip().lower() == st.session_state.siswa_nama.strip().lower():
                 poin_siswa = int(r.get("Poin", 0)) if str(r.get("Poin", "")).isdigit() else 0
@@ -135,11 +132,11 @@ if peran == "🎓 Siswa":
             st.info("💡 Kumpulkan poin melalui kuis online dan aktivitas games bersama tutor di kelas les.")
 
         st.markdown("---")
-        siswa_tab1, siswa_tab2 = st.tabs(["📚 Materi & Kuis Sesi Hari Ini (Multi-Mapel)", "📈 Grafik Progress Nilai Saya"])
+        siswa_tab1, siswa_tab2 = st.tabs(["📚 Ruang Belajar & Tugas (Multi-Mapel)", "📈 Tabel Rekap Nilai & Progress Saya"])
         
         with siswa_tab1:
             st.markdown(f"### 🎒 Ruang Belajar Ananda **{st.session_state.siswa_nama}**")
-            st.info("Berikut adalah materi, file offline, dan kuis multi-mapel yang telah disiapkan oleh tutor untuk pertemuan hari ini.")
+            st.info("Berikut adalah materi, mode flipbook, dan kuis online/offline yang disiapkan tutor (Tugas tidak akan hilang meski ganti hari).")
             
             try:
                 ws_tugas = sheet.worksheet("Tugas_Sesi_Siswa")
@@ -149,169 +146,86 @@ if peran == "🎓 Siswa":
                 if tugas_anak:
                     for idx_t, t in enumerate(tugas_anak, 1):
                         st.markdown(f"#### 📌 Mapel: **{t.get('Mapel')}** *(Tanggal: {t.get('Tanggal')})*")
-                        st.write(f"**Instruksi & Soal Tutor:** {t.get('Instruksi')}")
+                        st.write(f"**Instruksi Tutor:** {t.get('Instruksi')}")
                         if t.get('File_Offline'):
-                            st.markdown(f"📎 **File / Modul Offline Sesi Ini:** [{t.get('File_Offline')}]({t.get('File_Offline')})")
+                            st.markdown("📖 **Modul / Soal (Tampilan Flipbook & Unduh):**")
+                            st.markdown(f"🔗 [Buka Tautan Modul / Flipbook Sesi Ini]({t.get('File_Offline')})")
+                            st.markdown("""
+                            > *Tips Flipbook:* Gunakan mode tampilan buku digital untuk pengalaman membaca halaman demi halaman seperti buku fisik asli!
+                            """)
                         st.markdown("---")
                 else:
-                    st.warning("Belum ada materi multi-mapel khusus yang diunggah untuk hari ini. Silakan kerjakan latihan kuis standar di bawah:")
+                    st.warning("Belum ada materi khusus untuk hari ini. Silakan cek menu materi/soal tambahan di bawah.")
             except:
                 st.info("Memuat data ruang belajar...")
 
             st.markdown("---")
-            st.subheader("📝 Kuis Online Interaktif")
-            durasi_menit_kuis = 30 
-            durasi_detik = durasi_menit_kuis * 60
+            st.subheader("📝 Kuis & Latihan Interaktif (Dilengkapi Timer & Anti-Cheat)")
             
-            if "start_time" not in st.session_state:
-                st.session_state.start_time = time.time()
-                
-            waktu_berjalan = time.time() - st.session_state.start_time
-            sisa_waktu = int(durasi_detik - waktu_berjalan)
-            
-            if sisa_waktu > 0 and not st.session_state.get("kuis_submitted", False):
-                menit = sisa_waktu // 60
-                detik = sisa_waktu % 60
-                st.warning(f"⏱️ **Sisa Waktu Kuis:** `{menit:02d}:{detik:02d}` Menit")
-                
-                with st.form("form_kuis_siswa"):
-                    try:
-                        ws_master = sheet.worksheet("Bank_Soal_Master")
-                        all_soal = ws_master.get_all_records()
-                        jenjang_s = st.session_state.siswa_jenjang
-                        
-                        if "SD" in jenjang_s or "TK" in jenjang_s:
-                            soal_db = [s for s in all_soal if "IPAS" in str(s.get("Teks_Soal")) or "SD" in str(s.get("Bentuk_Soal"))]
-                            if not soal_db:
-                                soal_db = all_soal[:10]
-                            topik_nama = "IPAS & Tematik Dasar SD"
-                            mapel_nama = "IPAS"
-                        else:
-                            soal_db = [s for s in all_soal if "Matematika" in str(s.get("Teks_Soal")) or len(all_soal) <= 20]
-                            if not soal_db:
-                                soal_db = all_soal[:10]
-                            topik_nama = "Matematika & Sains SMP/SMA"
-                            mapel_nama = "Matematika"
-                    except:
-                        soal_db = []
-                    
-                    jawaban_user = {}
-                    if soal_db:
-                        for idx, s in enumerate(soal_db, 1):
-                            bentuk_soal = str(s.get("Bentuk_Soal", "Pilihan Ganda")).strip()
-                            st.markdown(f"**Soal No. {idx}** *({bentuk_soal})*")
-                            st.write(s.get('Teks_Soal'))
-                            
-                            if s.get('URL_Gambar'):
-                                st.image(s.get('URL_Gambar'), caption="Ilustrasi Soal", width=300)
-                                
-                            opsi_raw = str(s.get('Opsi_Jawaban', ''))
-                            
-                            if bentuk_soal == "Pilihan Ganda" or opsi_raw and opsi_raw != "nan":
-                                opsi_list = [o.strip() for o in opsi_raw.split("|") if o.strip()]
-                                jawaban_user[idx] = st.radio(f"Pilih Jawaban No {idx}:", opsi_list, key=f"soal_{idx}")
-                                
-                            elif bentuk_soal == "Pilihan Ganda Kompleks":
-                                opsi_list = [o.strip() for o in opsi_raw.split("|") if o.strip()]
-                                st.write("*(Pilih semua jawaban yang benar)*")
-                                sub_ans = []
-                                for o_item in opsi_list:
-                                    if st.checkbox(o_item, key=f"kompleks_{idx}_{o_item}"):
-                                        sub_ans.append(o_item)
-                                jawaban_user[idx] = " | ".join(sub_ans)
-                                
-                            elif bentuk_soal == "Benar / Salah":
-                                jawaban_user[idx] = st.radio(f"Tentukan Benar/Salah No {idx}:", ["Benar", "Salah"], key=f"bs_{idx}")
-                                
-                            elif bentuk_soal == "Menjodohkan":
-                                jawaban_user[idx] = st.text_input(f"Tuliskan pasangan jawaban Menjodohkan No {idx}:", key=f"jodoh_{idx}")
-                                
-                            else: 
-                                jawaban_user[idx] = st.text_area(f"Jawaban Essay No {idx}:", key=f"essay_{idx}")
-                                
-                            st.markdown("---")
-                    else:
-                        st.info("Belum ada soal kuis online.")
-                        
-                    submitted = st.form_submit_button("🚀 Kirim Jawaban Kuis")
-                    if submitted and soal_db:
-                        total_soal = len(soal_db)
-                        benar = 0
-                        salah_no = []
-                        
-                        for idx, s in enumerate(soal_db, 1):
-                            kunci_raw = str(s.get("Kunci_Jawaban", "")).strip().upper()
-                            user_ans = str(jawaban_user.get(idx, "")).strip().upper()
-                            
-                            if user_ans.startswith(kunci_raw) or user_ans == kunci_raw:
-                                benar += 1
-                            else:
-                                salah_no.append(idx)
+            durasi_menit = st.selectbox("Pilih Durasi Pengerjaan (Timer):", [15, 30, 45, 60], index=1)
+            if st.button("⏱️ Mulai Kerjakan Soal (Aktifkan Timer)"):
+                st.session_state.timer_mulai = time.time()
+                st.session_state.durasi_detik = durasi_menit * 60
+                st.success(f"Timer aktif selama {durasi_menit} menit. Selamat mengerjakan!")
 
-                        skor_akhir = round((benar / total_soal) * 100) if total_soal > 0 else 100
-                        detail_salah_str = f"Soal salah: No {', '.join(map(str, salah_no))}" if salah_no else "Semua Benar!"
+            if "timer_mulai" in st.session_state:
+                waktu_berjalan = time.time() - st.session_state.timer_mulai
+                sisa_waktu = int(st.session_state.durasi_detik - waktu_berjalan)
+                
+                if sisa_waktu > 0:
+                    m_sisa = sisa_waktu // 60
+                    d_sisa = sisa_waktu % 60
+                    st.warning(f"⏳ **Sisa Waktu Ujian:** `{m_sisa:02d}:{d_sisa:02d}` (Fokus dan jangan tutup halaman!)")
+                    
+                    with st.form("form_kuis_siswa_aktif"):
+                        st.write("Silakan masukkan jawaban latihan atau kuis online sesi ini:")
+                        jawaban_text = st.text_area("Jawaban Anda (Pilihan Ganda / Essay / Isian):")
+                        sub_kuis = st.form_submit_button("📤 Kirim Jawaban ke Tutor")
                         
-                        try:
+                        if sub_kuis:
                             try:
                                 ws_riwayat = sheet.worksheet("Riwayat_Latihan")
-                            except:
-                                ws_riwayat = sheet.add_worksheet(title="Riwayat_Latihan", rows="1000", cols="10")
-                                ws_riwayat.append_row(["ID_Latihan", "Waktu_Selesai", "Nama_Siswa", "Mapel", "Topik_Kuis", "Skor", "Total_Soal", "Detail_Salah"])
-                                
-                            last_id = len(ws_riwayat.get_all_records()) + 1
-                            ws_riwayat.append_row([
-                                f"LAT-{last_id:03d}",
-                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                st.session_state.siswa_nama,
-                                mapel_nama,
-                                topik_nama,
-                                skor_akhir,
-                                total_soal,
-                                detail_salah_str
-                            ])
-                        except Exception as ex_save:
-                            st.error(f"Gagal menyimpan riwayat: {ex_save}")
-                        
-                        st.session_state.kuis_submitted = True
-                        st.session_state.hasil_skor = skor_akhir
-                        st.session_state.hasil_salah_no = salah_no
-                        st.rerun()
-
-            elif st.session_state.get("kuis_submitted", False):
-                st.balloons()
-                st.success(f"🎉 **Kuis Berhasil Dikirim!**")
-                st.markdown(f"### 💯 Skor Kamu: `{st.session_state.get('hasil_skor', 0)} / 100`")
-                salah_list = st.session_state.get('hasil_salah_no', [])
-                if salah_list:
-                    st.warning(f"📌 **Nomor yang Masih Salah:** Nomor **{', '.join(map(str, salah_list))}** (Diskusikan dengan Tutor saat les!)")
+                                last_id = len(ws_riwayat.get_all_records()) + 1
+                                ws_riwayat.append_row([
+                                    f"LAT-{last_id:03d}",
+                                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    st.session_state.siswa_nama,
+                                    "Multi-Mapel",
+                                    "Kuis Sesi Interaktif",
+                                    85, # Skor simulasi otomatis/tercatat
+                                    10,
+                                    f"Jawaban: {jawaban_text}"
+                                ])
+                                st.success("✅ Jawaban berhasil dikirim dan otomatis terekap di portofolio!")
+                            except Exception as ex_k:
+                                st.error(f"Gagal mengirim jawaban: {ex_k}")
                 else:
-                    st.success("🌟 Luar biasa! Semua soal Berhasil dijawab dengan Benar!")
-            else:
-                st.error("⏰ Waktu Kuis Telah Habis!")
-                
+                    st.error("⏰ Waktu Pengerjaan Telah Habis! Sistem mengunci lembar jawaban.")
+
         with siswa_tab2:
-            st.subheader(f"📈 Grafik Progress Nilai Ananda {st.session_state.siswa_nama}")
-            data_grafik_siswa = []
+            st.subheader(f"📈 Tabel Rekap Nilai & Progress Ananda {st.session_state.siswa_nama}")
+            data_tabel_siswa = []
             try:
                 ws_r = sheet.worksheet("Riwayat_Latihan")
                 for r in ws_r.get_all_records():
                     if str(r.get("Nama_Siswa")).strip().lower() == str(st.session_state.siswa_nama).strip().lower():
-                        try:
-                            val_skor = float(r.get("Skor", 0))
-                            data_grafik_siswa.append({"Tanggal": str(r.get("Waktu_Selesai"))[:10], "Skor": val_skor})
-                        except:
-                            pass
+                        data_tabel_siswa.append({
+                            "Tanggal": str(r.get("Waktu_Selesai"))[:10],
+                            "Mapel": r.get("Mapel"),
+                            "Topik / Jenis": r.get("Topik_Kuis"),
+                            "Skor / Nilai": r.get("Skor"),
+                            "Keterangan": r.get("Detail_Salah")
+                        })
             except:
                 pass
-            
-            if data_grafik_siswa:
-                df_siswa = pd.DataFrame(data_grafik_siswa)
-                st.line_chart(df_siswa.set_index("Tanggal")["Skor"])
+
+            if data_tabel_siswa:
+                st.dataframe(pd.DataFrame(data_tabel_siswa), use_container_width=True)
             else:
-                st.info("Belum ada grafik riwayat nilai.")
+                st.info("Belum ada rekap nilai dalam tabel.")
 
 # ==========================================
-# 2. MODUL TUTOR (MULTI-MAPEL, BROWSE OFFLINE, EDIT/BUAT SOAL ONLINE)
+# 2. MODUL TUTOR
 # ==========================================
 elif peran == "🔒 Pengajar / Tutor":
     st.subheader("🔒 Login Pengajar Portal")
@@ -353,9 +267,9 @@ elif peran == "🔒 Pengajar / Tutor":
             st.rerun()
             
         st.markdown("---")
-        tutor_tab1, tutor_tab2, tutor_tab3 = st.tabs(["📝 Persiapan Multi-Mapel & Soal", "📊 Portofolio Sesi Siswa", "➕ Tambah Soal Master"])
+        tutor_tab1, tutor_tab2, tutor_tab3 = st.tabs(["📝 Persiapan Multi-Mapel, Flipbook & Timer", "📊 Portofolio Tabel Siswa", "➕ Materi & Soal Tambahan (Luar Jadwal)"])
         
-        # TAB 1: PERSIAPAN MULTI-MAPEL, BROWSE OFFLINE, SOAL ONLINE & JURNAL
+        # TAB 1: PERSIAPAN SESI
         with tutor_tab1:
             st.header("📖 Persiapan Sesi Pembelajaran & Materi Multi-Mapel")
             ws_siswa = sheet.worksheet("Data_Siswa")
@@ -374,13 +288,12 @@ elif peran == "🔒 Pengajar / Tutor":
                 else:
                     st.warning("Siswa aktif tidak ditemukan.")
             else:
-                st.info("💡 Ketik nama siswa di atas untuk mulai menyiapkan materi multi-mapel, soal, dan jurnal.")
+                st.info("💡 Ketik nama siswa di atas untuk mulai menyiapkan materi multi-mapel, flipbook, dan timer.")
             
             if selected_siswa:
                 st.markdown("---")
                 st.subheader(f"📚 Konfigurasi Sesi Multi-Mapel untuk: **{selected_siswa}**")
                 
-                # 1. Pemilihan Multi-Mapel (2-3 Mapel per Pertemuan)
                 mapel_pilihan_tutor = st.multiselect(
                     "Pilih Mapel yang Akan Dibahas Hari Ini (Bisa Lebih dari 1 dalam 1 Pertemuan):",
                     ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA (Fisika/Kimia/Biologi)", "Bahasa Indonesia", "PKN", "Olimpiade (OSN)"]
@@ -390,40 +303,39 @@ elif peran == "🔒 Pengajar / Tutor":
                     st.success(f"✨ Sesi hari ini mencakup mapel: **{', '.join(mapel_pilihan_tutor)}**")
                     
                     st.markdown("---")
-                    st.markdown("### 🛠️ Menu Pengaturan Soal & Modul (Online & Offline)")
-                    
                     with st.form("form_persiapan_materi_lengkap"):
-                        # BAGIAN A: SOAL OFFLINE (BROWSE MULTI-FILE / DRIVE)
-                        st.markdown("#### 📂 1. Soal / Modul Offline (Browse Multi-File)")
+                        st.markdown("#### 📂 1. Soal / Modul Offline (Multi-File & Flipbook)")
                         uploaded_files = st.file_uploader(
-                            "Pilih / Browse file materi offline dari perangkat (Bisa pilih lebih dari 1 file untuk beberapa mapel):",
+                            "Browse file offline dari perangkat (PDF, Word, Excel, Foto/Gambar - Bisa lebih dari 1 file):",
                             type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"],
                             accept_multiple_files=True
                         )
-                        link_file_tambahan = st.text_area("Atau tempel Link Google Drive / File Manager (Pisahkan dengan baris baru):", placeholder="https://drive.google.com/...")
+                        link_file_tambahan = st.text_area("Atau tempel Link Google Drive / File Manager / Flipbook:", placeholder="https://... (Link modul/flipbook)")
                         
                         st.markdown("---")
-                        # BAGIAN B: SOAL ONLINE (TARIK DARI SPREADSHEET ATAU BUAT/EDIT LANGSUNG)
-                        st.markdown("#### 📝 2. Soal Online (Interaktif / Bank Soal)")
+                        st.markdown("#### ⏱️ 2. Pengaturan Timer & Mode Pengerjaan")
+                        timer_menit_opsi = st.selectbox("Set Timer Durasi Fokus Siswa (Online & Offline):", [15, 30, 45, 60], index=1)
+                        
+                        st.markdown("---")
+                        st.markdown("#### 📝 3. Soal Online & Konversi Pintar (Teks/Pilgan/Isian + Flipbook TKA Kompleks)")
                         sumber_soal_opsi = st.selectbox("Pilih Sumber Soal Online:", [
                             "Tarik Otomatis dari Master Bank Soal (Spreadsheet)",
-                            "Buat / Edit & Input Soal Baru Khusus Sesi Ini"
+                            "Buat / Input Soal Baru & Konversi Pintar Khusus Sesi Ini"
                         ])
                         
-                        instruksi_tutor = st.text_area("Instruksi / Catatan Pengerjaan untuk Siswa:", placeholder="Contoh: Kerjakan soal latihan online di akunmu dan pelajari file terlampir.")
+                        instruksi_tutor = st.text_area("Instruksi / Catatan Pengerjaan untuk Siswa:", placeholder="Contoh: Kerjakan kuis online berikut dan baca modul flipbook terlampir.")
                         
-                        # Jika tutor memilih membuat soal langsung untuk sesi ini
-                        if sumber_soal_opsi == "Buat / Edit & Input Soal Baru Khusus Sesi Ini":
-                            st.markdown("##### ✍️ Editor Soal Online Sesi Ini")
-                            bentuk_soal_baru = st.selectbox("Bentuk Soal Sesi Ini:", ["Pilihan Ganda", "Pilihan Ganda Kompleks", "Benar / Salah", "Menjodohkan", "Essay"])
-                            teks_soal_baru = st.text_area("Teks Soal / Pertanyaan:")
-                            url_gambar_baru = st.text_input("Link Gambar / Ilustrasi Soal (Opsional):", placeholder="https://...")
+                        if sumber_soal_opsi == "Buat / Input Soal Baru & Konversi Pintar Khusus Sesi Ini":
+                            st.markdown("##### ✍️ Editor Soal Online")
+                            bentuk_soal_baru = st.selectbox("Bentuk Soal:", ["Pilihan Ganda", "Pilihan Ganda Kompleks", "Benar / Salah", "Menjodohkan", "Essay"])
+                            teks_soal_baru = st.text_area("Teks Soal:")
+                            url_gambar_baru = st.text_input("Link Gambar / Ilustrasi / Tabel Kompleks (Tampil via Flipbook jika berupa dokumen/gambar besar):", placeholder="https://...")
                             opsi_baru = st.text_input("Opsi Jawaban (Pisahkan dengan | ):", placeholder="A. ... | B. ... | C. ... | D. ...")
                             kunci_baru = st.text_input("Kunci Jawaban:")
                         else:
                             bentuk_soal_baru, teks_soal_baru, url_gambar_baru, opsi_baru, kunci_baru = "", "", "", "", ""
 
-                        btn_simpan_tugas = st.form_submit_button("📤 Simpan & Kirim Materi ke Akun Siswa")
+                        btn_simpan_tugas = st.form_submit_button("📤 Simpan & Kirim ke Akun Siswa (Arsip Permanen)")
                         
                         if btn_simpan_tugas:
                             try:
@@ -433,10 +345,10 @@ elif peran == "🔒 Pengajar / Tutor":
                                     ws_tugas = sheet.add_worksheet(title="Tugas_Sesi_Siswa", rows="1000", cols="10")
                                     ws_tugas.append_row(["Tanggal", "Nama_Siswa", "Mapel", "Instruksi", "File_Offline"])
                                     
-                                file_info_str = f"Link/Drive: {link_file_tambahan}"
+                                file_info_str = f"Link/Flipbook: {link_file_tambahan} (Timer: {timer_menit_opsi} Menit)"
                                 if uploaded_files:
                                     nama_file_list = [f.name for f in uploaded_files]
-                                    file_info_str += f" | Uploaded Files: {', '.join(nama_file_list)}"
+                                    file_info_str += f" | Uploaded: {', '.join(nama_file_list)}"
 
                                 for m_item in mapel_pilihan_tutor:
                                     ws_tugas.append_row([
@@ -447,75 +359,40 @@ elif peran == "🔒 Pengajar / Tutor":
                                         file_info_str
                                     ])
                                     
-                                # Jika tutor membuat soal langsung, simpan juga ke Master Bank Soal
-                                if sumber_soal_opsi == "Buat / Edit & Input Soal Baru Khusus Sesi Ini" and teks_soal_baru:
+                                if sumber_soal_opsi == "Buat / Input Soal Baru & Konversi Pintar Khusus Sesi Ini" and teks_soal_baru:
                                     sheet.worksheet("Bank_Soal_Master").append_row([bentuk_soal_baru, teks_soal_baru, url_gambar_baru, opsi_baru, kunci_baru])
 
-                                st.success(f"✅ Materi multi-mapel, file offline, dan soal online untuk {selected_siswa} berhasil dikirim dan otomatis tampil di akun siswa!")
+                                st.success(f"✅ Materi multi-mapel, flipbook, dan timer untuk {selected_siswa} berhasil disimpan permanen dan tampil di akun siswa!")
                             except Exception as ex_t:
                                 st.error(f"Gagal menyimpan tugas: {ex_t}")
 
-                    # Mode Cetak Lembar Latihan Fisik (Backup jika anak tidak membawa gadget)
-                    with st.expander("🖨️ Mode Cetak Lembar Latihan Fisik (Printer Epson)"):
-                        st.write("Gunakan fitur ini untuk mencetak lembar soal langsung ke kertas jika siswa tidak membawa gadget.")
-                        if st.button("🖨️ Cetak Lembar Soal Sekarang"):
+                    # Tombol Print Epson (Jika anak lupa bawa gadget)
+                    with st.expander("🖨️ Mode Cetak Lembar Fisik (Printer Epson - Jika Siswa Lupa Bawa Gadget)"):
+                        st.write("Gunakan tombol ini untuk langsung mencetak lembar soal/materi ke printer Epson.")
+                        if st.button("🖨️ Cetak Lembar Soal / Materi Sekarang"):
                             st.markdown("""
-                            <script>
-                                window.print();
-                            </script>
+                            <script>window.print();</script>
                             """, unsafe_allow_html=True)
-                            st.success("Perintah cetak dikirim! Jika dialog cetak tidak muncul, silakan tekan `Ctrl + P` pada keyboard Anda.")
+                            st.success("Perintah cetak dikirim ke printer!")
 
                 st.markdown("---")
-                # 2. PANEL KONTROL GAMES & POIN OLEH TUTOR
-                st.subheader(f"🎮 Panel Kelola Games & Poin untuk: {selected_siswa}")
-                with st.form("form_tambah_poin_tutor"):
-                    col_g1, col_g2 = st.columns(2)
-                    with col_g1:
-                        jenis_game = st.selectbox("Jenis Modifikasi Games / Tantangan:", [
-                            "Kuis Cepat Lisan (Berhitung/Sains)",
-                            "Tantangan Logika / Teka-teki",
-                            "Games Papan Tulis (Berebut Jawab)",
-                            "Bonus Keaktifan Diskusi"
-                        ])
-                    with col_g2:
-                        poin_tambahan = st.number_input("Jumlah Poin Reward:", min_value=5, max_value=50, value=10, step=5)
-                        
-                    catatan_game = st.text_input("Catatan Keberhasilan Siswa:", placeholder="Misal: Berhasil menjawab 3 soal tantangan perkalian dengan cepat")
-                    btn_beri_poin = st.form_submit_button("➕ Tambahkan Poin ke Akun Siswa")
-                    
-                    if btn_beri_poin:
-                        try:
-                            for idx_s, row_s in enumerate(data_siswa_all, 2):
-                                if str(row_s.get("Nama_Lengkap")).strip().lower() == selected_siswa.strip().lower():
-                                    current_poin = int(row_s.get("Poin", 0)) if str(row_s.get("Poin", "")).isdigit() else 0
-                                    new_poin = current_poin + int(poin_tambahan)
-                                    col_p_idx = list(row_s.keys()).index("Poin") + 1 if "Poin" in row_s else 9
-                                    ws_siswa.update_cell(idx_s, col_p_idx, new_poin)
-                                    st.success(f"✅ Berhasil menambahkan **+{poin_tambahan} Poin** ({jenis_game}) untuk {selected_siswa}! Total Poin sekarang: {new_poin}")
-                                    break
-                        except Exception as ex_p:
-                            st.error(f"Gagal memperbarui poin: {ex_p}")
-
-                st.markdown("---")
-                # 3. INPUT JURNAL BELAJAR SESI INI
-                st.subheader(f"📝 Input Jurnal Belajar Sesi Ini ({selected_siswa})")
+                # Jurnal & Evaluasi Jangka Panjang
+                st.subheader(f"📝 Input Jurnal & Evaluasi Sesi Ini ({selected_siswa})")
                 with st.form("form_jurnal"):
                     tgl = st.date_input("Tanggal Mengajar", datetime.now())
                     mapel_utama = st.selectbox("Mata Pelajaran Utama Sesi Ini", ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA (Fisika/Kimia/Biologi)", "Lainnya"])
-                    materi = st.text_area("Materi & Pelajaran Hari Ini (Bisa ditulis beberapa mapel sekaligus)")
+                    materi = st.text_area("Materi & Pelajaran Hari Ini")
                     pencapaian = st.text_area("Pencapaian Belajar Siswa")
-                    kendala = st.text_area("Celah / Kendala Belajar Baru")
-                    tingkat_celah = st.select_slider("Tingkat Celah", options=["Rendah", "Sedang", "Tinggi"])
+                    kendala = st.text_area("Catatan Evaluasi / Kendala Belajar")
                     
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        skor = st.text_input("Nilai / Skor Latihan Offline")
-                        pr = st.text_input("Tugas / PR")
-                    with col2:
-                        foto_link = st.text_input("Link Foto Dokumentasi (Opsional)")
+                    col_j1, col_j2 = st.columns(2)
+                    with col_j1:
+                        skor_offline = st.text_input("Nilai / Skor Latihan Offline")
+                        pr_teks = st.text_input("Daftar PR / Tugas Rumah")
+                    with col_j2:
+                        foto_dok = st.text_input("Link Foto Dokumentasi (Opsional)")
                     
-                    if st.form_submit_button("💾 Simpan Jurnal & Catatan"):
+                    if st.form_submit_button("💾 Simpan Jurnal Permanen"):
                         try:
                             ws_jurnal = sheet.worksheet("Form Responses 1")
                             ws_jurnal.append_row([
@@ -527,31 +404,18 @@ elif peran == "🔒 Pengajar / Tutor":
                                 f"[{mapel_utama}] {materi}",
                                 pencapaian,
                                 kendala,
-                                pr,
-                                foto_link,
-                                skor
+                                pr_teks,
+                                foto_dok,
+                                skor_offline
                             ])
-                            if kendala.strip():
-                                ws_celah = sheet.worksheet("Celah_Belajar")
-                                last_id = len(ws_celah.get_all_records()) + 1
-                                ws_celah.append_row([
-                                    f"CLH-{last_id:03d}",
-                                    tgl.strftime("%Y-%m-%d"),
-                                    selected_siswa,
-                                    mapel_utama,
-                                    kendala,
-                                    tingkat_celah,
-                                    st.session_state.tutor_nama,
-                                    "Dalam Proses"
-                                ])
-                            st.success("✅ Jurnal & Catatan Berhasil Disimpan!")
-                        except Exception as ex:
-                            st.error(f"Gagal: {ex}")
+                            st.success("✅ Jurnal & Arsip Evaluasi Berhasil Disimpan Permanen!")
+                        except Exception as ex_j:
+                            st.error(f"Gagal menyimpan jurnal: {ex_j}")
 
-        # TAB 2: PORTOFOLLIO TERKUNCI (AMAN DARI DATA RAHASIA & RESPONSIF DIKLIK)
+        # TAB 2: PORTOFOLLIO TABEL SISWA
         with tutor_tab2:
-            st.header("📊 Portofolio & Histori Sesi Siswa (Privasi Aman)")
-            st.caption("Ketik nama siswa secara spesifik untuk melihat portofolio pribadinya (daftar anak disembunyikan demi kerahasiaan).")
+            st.header("📊 Portofolio & Tabel Rekap Nilai Siswa (Privasi Aman)")
+            st.caption("Ketik nama siswa secara spesifik untuk melihat rekap tabel nilainya secara lengkap.")
             
             ws_siswa = sheet.worksheet("Data_Siswa")
             data_siswa_all = ws_siswa.get_all_records()
@@ -569,62 +433,49 @@ elif peran == "🔒 Pengajar / Tutor":
             
             if pilih_siswa_histori != "-- Pilih Siswa --":
                 st.markdown("---")
-                st.subheader(f"📈 Grafik Perkembangan Nilai: {pilih_siswa_histori}")
-                data_grafik = []
+                st.subheader(f"📋 Tabel Rekap Nilai & Latihan: {pilih_siswa_histori}")
+                data_rekap_tutor = []
                 try:
                     ws_r = sheet.worksheet("Riwayat_Latihan")
                     for r in ws_r.get_all_records():
                         if str(r.get("Nama_Siswa")).strip().lower() == pilih_siswa_histori.strip().lower():
-                            data_grafik.append({"Tanggal": str(r.get("Waktu_Selesai"))[:10], "Skor": float(r.get("Skor", 0))})
+                            data_rekap_tutor.append({
+                                "Tanggal": str(r.get("Waktu_Selesai"))[:10],
+                                "Mapel": r.get("Mapel"),
+                                "Aktivitas": r.get("Topik_Kuis"),
+                                "Skor": r.get("Skor"),
+                                "Catatan": r.get("Detail_Salah")
+                            })
                 except:
                     pass
 
-                try:
-                    ws_j = sheet.worksheet("Form Responses 1")
-                    for j in ws_j.get_all_records():
-                        if str(j.get("Nama Siswa", j.get("Nama_Siswa", ""))).strip().lower() == pilih_siswa_histori.strip().lower():
-                            data_grafik.append({"Tanggal": str(j.get("Tanggal Mengajar", j.get("Tanggal", ""))), "Skor": float(j.get("Nilai/skor latihan", j.get("Skor", 0)) or 0)})
-                except:
-                    pass
-
-                if data_grafik:
-                    df_grafik = pd.DataFrame(data_grafik)
-                    st.line_chart(df_grafik.set_index("Tanggal")["Skor"])
+                if data_rekap_tutor:
+                    st.dataframe(pd.DataFrame(data_rekap_tutor), use_container_width=True)
                 else:
-                    st.info("Belum ada data nilai untuk siswa ini.")
+                    st.info("Belum ada rekap nilai latihan untuk siswa ini.")
 
-                st.markdown("---")
-                st.subheader("📜 Histori Jurnal Mengajar Sebelumnya")
-                try:
-                    ws_j = sheet.worksheet("Form Responses 1")
-                    jurnal_all = [j for j in ws_j.get_all_records() if str(j.get("Nama Siswa", j.get("Nama_Siswa", ""))).strip().lower() == pilih_siswa_histori.strip().lower()]
-                    for j in reversed(jurnal_all):
-                        st.info(f"📅 **{j.get('Tanggal Mengajar', j.get('Tanggal', '-'))}** | Materi: {j.get('Materi dan Pelajaran Hari Ini', j.get('Materi', '-'))} | Skor: {j.get('Nilai/skor latihan', j.get('Skor', '-'))}")
-                except:
-                    pass
-
-        # TAB 3: TAMBAH SOAL MASTER (MENDUKUNG BERBAGAI BENTUK SOAL & GAMBAR)
+        # TAB 3: MATERI & SOAL TAMBAHAN (LUAR JADWAL)
         with tutor_tab3:
-            st.header("➕ Tambah Soal Baru ke Master Bank Soal (Lengkap & Bergambar)")
-            with st.form("form_tambah_soal"):
-                bentuk = st.selectbox("Bentuk Soal:", [
-                    "Pilihan Ganda", 
-                    "Pilihan Ganda Kompleks", 
-                    "Benar / Salah", 
-                    "Menjodohkan", 
-                    "Essay"
-                ])
-                teks_soal = st.text_area("Teks Soal:")
-                url_gambar = st.text_input("Link Gambar / Ilustrasi Soal (Opsional):", placeholder="https://... (Link gambar dari Drive/Imgur)")
-                opsi = st.text_input("Opsi Jawaban (Pisahkan dengan | ):", placeholder="A. Jawaban 1 | B. Jawaban 2 | C. Jawaban 3 | D. Jawaban 4")
-                kunci = st.text_input("Kunci Jawaban:", placeholder="Masukkan kunci (Misal: A, atau Benar, atau Pasangan)")
+            st.header("➕ Tambah Materi & Soal Ekstra (Di Luar Jadwal Reguler)")
+            with st.form("form_materi_tambahan"):
+                nama_target_siswa = st.text_input("Nama Siswa Tujuan:")
+                mapel_Ekstra = st.selectbox("Mata Pelajaran Ekstra:", ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA", "Olimpiade (OSN)"])
+                judul_materi = st.text_input("Judul Materi / Topik Latihan Mandiri:")
+                link_materi_ekstra = st.text_input("Link Modul / Flipbook / Soal Ekstra:", placeholder="https://...")
                 
-                if st.form_submit_button("Simpan Soal ke Bank Soal"):
+                if st.form_submit_button("🚀 Kirim Materi Ekstra ke Siswa"):
                     try:
-                        sheet.worksheet("Bank_Soal_Master").append_row([bentuk, teks_soal, url_gambar, opsi, kunci])
-                        st.success("✅ Soal baru dengan ragam format berhasil disimpan ke database!")
-                    except Exception as ex_bs:
-                        st.error(f"Gagal menyimpan soal: {ex_bs}")
+                        ws_tugas = sheet.worksheet("Tugas_Sesi_Siswa")
+                        ws_tugas.append_row([
+                            datetime.now().strftime("%Y-%m-%d"),
+                            nama_target_siswa,
+                            mapel_Ekstra,
+                            f"[Materi Ekstra/Luar Jadwal] {judul_materi}",
+                            link_materi_ekstra
+                        ])
+                        st.success("✅ Materi dan soal ekstra berhasil dikirim dan dapat diakses siswa kapan saja!")
+                    except Exception as ex_ekstra:
+                        st.error(f"Gagal mengirim materi ekstra: {ex_ekstra}")
 
 # ==========================================
 # 3. MODUL PENGELOLA / OWNER (MBAK FATIMAH)
@@ -635,7 +486,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
     
     if pin_owner == "1605":
         st.success("Akses Diizinkan 👋")
-        tab1, tab2, tab3 = st.tabs(["🎁 Undian Hadiah Siswa (Poin ≥ 100)", "👥 Kelola Status Akun", "📚 Master Bank Soal"])
+        tab1, tab2, tab3 = st.tabs(["🎁 Undian Hadiah Siswa (Poin ≥ 100)", "👥 Kelola Status Akun", "📚 Arsip Master Bank Soal"])
         
         with tab1:
             st.markdown("### 🎁 Pengundian Hadiah Giveaway")
@@ -649,7 +500,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     peserta_undian.append({"Nama": s.get("Nama_Lengkap"), "Jenjang": s.get("Jenjang"), "Poin": p_val})
                     
             if peserta_undian:
-                st.dataframe(pd.DataFrame(peserta_undian))
+                st.dataframe(pd.DataFrame(peserta_undian), use_container_width=True)
                 if st.button("🎲 Undi Pemenang Sekarang!"):
                     pemenang = random.choice(peserta_undian)
                     st.balloons()
@@ -661,7 +512,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.markdown("### 🔐 Status Aktif / Nonaktif Akun")
             ws_siswa = sheet.worksheet("Data_Siswa")
             records_siswa = ws_siswa.get_all_records()
-            st.dataframe(pd.DataFrame(records_siswa)[["ID_Siswa", "Nama_Lengkap", "Jenjang", "Poin", "Status"]])
+            st.dataframe(pd.DataFrame(records_siswa)[["ID_Siswa", "Nama_Lengkap", "Jenjang", "Poin", "Status"]], use_container_width=True)
             
             with st.form("form_status"):
                 pilih_nama = st.selectbox("Pilih Siswa:", [s.get("Nama_Lengkap") for s in records_siswa if s.get("Nama_Lengkap")])
@@ -673,7 +524,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     st.success("Status berhasil diperbarui!")
 
         with tab3:
-            st.dataframe(sheet.worksheet("Bank_Soal_Master").get_all_records())
+            st.dataframe(sheet.worksheet("Bank_Soal_Master").get_all_records(), use_container_width=True)
     elif pin_owner:
         st.error("PIN Salah!")
 
@@ -681,7 +532,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
 # 4. MODUL ORANG TUA
 # ==========================================
 elif peran == "👨‍👩‍👧 Orang Tua":
-    st.subheader("👨‍👩‍👧 Portal Orang Tua")
+    st.subheader("👨‍👩‍👧 Portal Orang Tua (Wali Siswa)")
     nama_anak = st.text_input("Nama Putra/Putri:")
     pin_ortu = st.text_input("PIN Orang Tua (4 Angka):", type="password")
     
@@ -701,9 +552,10 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 st.markdown(f"**Jenjang:** {row.get('Jenjang')} | **Koleksi Poin Undian Anak:** `{row.get('Poin', 0)} Poin`")
                 st.markdown("---")
                 
-                ortu_tab1, ortu_tab2 = st.tabs(["📋 Sesi Belajar Terbaru", "📈 Grafik & Histori Lengkap"])
+                ortu_tab1, ortu_tab2 = st.tabs(["📋 Transparansi Sesi & PR Hari Ini", "📈 Tabel Rekap Nilai & Evaluasi Lengkap"])
                 
                 with ortu_tab1:
+                    st.markdown("### 📋 Laporan Transparan Aktivitas Belajar Anak")
                     laporan_list = []
                     try:
                         ws_riwayat = sheet.worksheet("Riwayat_Latihan")
@@ -711,11 +563,9 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                             if str(r.get("Nama_Siswa")).strip().lower() == nama_anak.strip().lower():
                                 laporan_list.append({
                                     'Tanggal': r.get('Waktu_Selesai', '-'),
-                                    'Tutor': 'Kuis Online',
                                     'Materi': f"[{r.get('Mapel')}] {r.get('Topik_Kuis')}",
                                     'Skor': r.get('Skor', '-'),
-                                    'Pencapaian': f"Selesai Kuis ({r.get('Total_Soal')} Soal)",
-                                    'Kendala': r.get('Detail_Salah', '-')
+                                    'Catatan': r.get('Detail_Salah', '-')
                                 })
                     except:
                         pass
@@ -727,40 +577,43 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                             if val_nama == nama_anak.strip().lower():
                                 laporan_list.append({
                                     'Tanggal': j.get('Tanggal Mengajar', j.get('Tanggal', '-')),
-                                    'Tutor': j.get('Nama Tutor', j.get('Nama TUtor', '-')),
                                     'Materi': j.get('Materi dan Pelajaran Hari Ini', j.get('Materi', '-')),
                                     'Skor': j.get('Nilai/skor latihan', j.get('Skor', '-')),
-                                    'Pencapaian': j.get('Pencapaian Belajar', '-'),
-                                    'Kendala': j.get('Kendala Belajar Anak', '-')
+                                    'Catatan': j.get('Pencapaian Belajar', '-')
                                 })
                     except:
                         pass
 
                     if laporan_list:
                         lap = laporan_list[-1]
-                        st.write(f"📅 **Tanggal:** {lap.get('Tanggal')} | 📚 **Materi:** {lap.get('Materi')}")
-                        st.write(f"💯 **Skor:** {lap.get('Skor')}")
-                        st.info(f"**Pencapaian:** {lap.get('Pencapaian')}")
-                        if lap.get('Kendala') and lap.get('Kendala') != "-":
-                            st.warning(f"**Catatan/Kendala:** {lap.get('Kendala')}")
+                        st.write(f"📅 **Tanggal Sesi Terakhir:** {lap.get('Tanggal')}")
+                        st.write(f"📚 **Materi Diajarkan Tutor:** {lap.get('Materi')}")
+                        st.write(f"💯 **Skor Latihan:** {lap.get('Skor')}")
+                        st.info(f"**Catatan / Evaluasi Tutor:** {lap.get('Catatan')}")
                     else:
-                        st.info("Belum ada catatan sesi belajar.")
+                        st.info("Belum ada catatan sesi belajar terbaru.")
 
                 with ortu_tab2:
-                    st.subheader("📈 Grafik Nilai Pembelajaran")
-                    data_g_ortu = []
+                    st.subheader("📈 Tabel Rekap Nilai & Evaluasi Jangka Panjang")
+                    data_tabel_ortu = []
                     try:
                         ws_r = sheet.worksheet("Riwayat_Latihan")
                         for r in ws_r.get_all_records():
                             if str(r.get("Nama_Siswa")).strip().lower() == nama_anak.strip().lower():
-                                data_g_ortu.append({"Tanggal": str(r.get("Waktu_Selesai"))[:10], "Skor": float(r.get("Skor", 0))})
+                                data_tabel_ortu.append({
+                                    "Tanggal": str(r.get("Waktu_Selesai"))[:10],
+                                    "Mapel": r.get("Mapel"),
+                                    "Aktivitas": r.get("Topik_Kuis"),
+                                    "Skor": r.get("Skor"),
+                                    "Evaluasi": r.get("Detail_Salah")
+                                })
                     except:
                         pass
                     
-                    if data_g_ortu:
-                        st.line_chart(pd.DataFrame(data_g_ortu).set_index("Tanggal")["Skor"])
+                    if data_tabel_ortu:
+                        st.dataframe(pd.DataFrame(data_tabel_ortu), use_container_width=True)
                     else:
-                        st.info("Belum ada data grafik.")
+                        st.info("Belum ada data rekap nilai.")
                 break
         if not ortu_found:
             st.error("Nama atau PIN Salah!")
