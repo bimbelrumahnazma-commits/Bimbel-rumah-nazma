@@ -8,6 +8,33 @@ import random
 import json
 import uuid
 
+
+# Daftar mata pelajaran dan program Bimbel Rumah Nazma
+MAPEL_OPTIONS = [
+    # PAUD / TK
+    "Calistung", "Tematik TK", "Pendidikan Agama",
+
+    # SD
+    "Matematika SD", "Bahasa Indonesia SD", "IPAS SD",
+    "Bahasa Inggris SD", "Pendidikan Pancasila SD", "PAI SD",
+    "PJOK SD", "Seni Rupa SD", "Seni Musik SD", "Bahasa Arab SD",
+
+    # SMP
+    "Matematika SMP", "Bahasa Indonesia SMP", "Bahasa Inggris SMP",
+    "IPA SMP", "IPS SMP", "Pendidikan Pancasila SMP", "PAI SMP",
+    "Informatika SMP", "PJOK SMP", "Seni Budaya SMP", "Prakarya SMP",
+
+    # SMA
+    "Matematika SMA", "Bahasa Indonesia SMA", "Bahasa Inggris SMA",
+    "Fisika SMA", "Kimia SMA", "Biologi SMA", "Ekonomi SMA",
+    "Geografi SMA", "Sosiologi SMA", "Sejarah SMA", "PAI SMA",
+    "Informatika SMA",
+
+    # Program khusus / persiapan tes
+    "OSN SD", "OSN SMP", "OSN SMA",
+    "TOEFL", "SKD", "UTBK", "TKA",
+]
+
 # =========================================================
 # KONFIGURASI HALAMAN
 # =========================================================
@@ -451,7 +478,7 @@ elif peran == "🔒 Pengajar / Tutor":
                     with st.form(f"form_tugas_baru_{selected_siswa}"):
                         mapel_tugas = st.selectbox(
                             "Mata pelajaran:",
-                            ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA (Fisika/Kimia/Biologi)", "Bahasa Indonesia", "PKN", "Olimpiade (OSN)"]
+                            MAPEL_OPTIONS
                         )
                         judul_tugas = st.text_input("Judul / topik tugas:")
                         jenis_tugas = st.radio("Jenis pengerjaan:", ["Online", "Offline"], horizontal=True)
@@ -575,7 +602,7 @@ elif peran == "🔒 Pengajar / Tutor":
                 st.subheader("📝 Jurnal dan Evaluasi Sesi")
                 with st.form(f"form_jurnal_v2_{selected_siswa}"):
                     tanggal_sesi = st.date_input("Tanggal sesi:", datetime.now().date())
-                    mapel_diajarkan = st.multiselect("Mata pelajaran yang diajarkan:", ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA (Fisika/Kimia/Biologi)", "Bahasa Indonesia", "PKN", "Olimpiade (OSN)"])
+                    mapel_diajarkan = st.multiselect("Mata pelajaran yang diajarkan:", MAPEL_OPTIONS)
                     st.markdown("#### Evaluasi per mata pelajaran")
                     evaluasi_mapel = {}
                     for idx, mp in enumerate(mapel_diajarkan):
@@ -706,7 +733,7 @@ elif peran == "🔒 Pengajar / Tutor":
                 nama_target_siswa = st.text_input("Nama Siswa Tujuan:")
                 mapel_ekstra = st.selectbox(
                     "Mata Pelajaran:",
-                    ["Matematika", "IPAS / Tematik", "Bahasa Inggris", "IPA", "Olimpiade (OSN)"]
+                    MAPEL_OPTIONS
                 )
                 judul_materi = st.text_input("Judul Materi / Topik:")
                 link_materi_ekstra = st.text_input("Link Modul / Flipbook / Soal:")
