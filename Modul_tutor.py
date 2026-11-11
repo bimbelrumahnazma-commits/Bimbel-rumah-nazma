@@ -9,6 +9,8 @@ import json
 import uuid
 import requests
 import base64
+import re
+import streamlit.components.v1 as components
 
 
 # Daftar mata pelajaran dan program Bimbel Rumah Nazma
@@ -86,6 +88,33 @@ try:
 except Exception as e:
     st.error(f"Gagal terhubung ke Google Sheets: {e}")
     st.stop()
+
+
+def tampilkan_lampiran_siswa(link_or_file):
+    """Tampilkan lampiran Google Drive langsung di portal siswa bila berupa URL."""
+    link = str(link_or_file or "").strip()
+    if not link:
+        return
+
+    # Google Drive file URL dari Apps Script biasanya berbentuk /file/d/FILE_ID/view.
+    drive_id = None
+    if "drive.google.com" in link:
+        match = re.search(r"/file/d/([A-Za-z0-9_-]+)", link)
+        if not match:
+            match = re.search(r"[?&]id=([A-Za-z0-9_-]+)", link)
+        if match:
+            drive_id = match.group(1)
+
+    if drive_id:
+        preview_url = f"https://drive.google.com/file/d/{drive_id}/preview"
+        st.markdown("#### 📖 Materi dari Tutor")
+        components.iframe(preview_url, height=720, scrolling=True)
+        st.markdown(f"[↗ Buka materi di tab baru]({link})")
+    elif link.lower().startswith(("http://", "https://")):
+        st.markdown("#### 📖 Materi dari Tutor")
+        st.markdown(f"[Buka materi / flipbook]({link})")
+    else:
+        st.info(f"Lampiran tercatat: {link}. Tautan materi belum tersedia.")
 
 
 def upload_lampiran_ke_drive(file_bytes, file_name, mime_type):
@@ -451,11 +480,7 @@ if peran == "🎓 Siswa":
                         st.write(f"**Diberikan:** {t.get('Tanggal', '-')}")
                         st.write(f"**Durasi:** {t.get('Timer_Menit', '-') } menit")
                         if t.get("File_Offline"):
-                            link_or_file = str(t.get("File_Offline", ""))
-                            if link_or_file.startswith("http"):
-                                st.markdown(f"[📖 Buka materi / file]({link_or_file})")
-                            else:
-                                st.info(f"Lampiran tercatat: {link_or_file}. File belum tentu tersedia untuk dibuka.")
+                            tampilkan_lampiran_siswa(t.get("File_Offline", ""))
                         soal_json = str(t.get("Soal_JSON", "") or "")
                         try:
                             daftar_soal = json.loads(soal_json) if soal_json else []
