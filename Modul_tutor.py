@@ -99,143 +99,136 @@ def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
     return ws
 
 
-TASK_HEADERS = [
-    "ID_Tugas", "Tanggal", "Nama_Siswa", "Mapel", "Judul_Tugas",
-    "Jenis_Tugas", "Sumber", "Instruksi", "File_Offline", "Timer_Menit",
-    "Tenggat", "Soal_JSON", "Status_Tugas", "Tutor"
-]
-ANSWER_HEADERS = ["ID_Jawaban", "ID_Tugas", "Nama_Siswa", "Waktu_Kirim", "Jawaban_JSON", "Status"]
-
-
 def baca_records_aman(ws):
-    """Baca baris berdasarkan header, aman untuk header kosong/duplikat."""
+    """Membaca sheet tanpa gspread get_all_records agar header kosong/duplikat tidak mematikan aplikasi."""
     values = ws.get_all_values()
-    if len(values) < 2:
+    if not values:
         return []
-    headers, used = [], set()
-    for i, raw in enumerate(values[0]):
-        name = str(raw).strip() or f"Kolom_{i + 1}"
-        base, suffix = name, 2
+    raw_headers = [str(x).strip() for x in values[0]]
+    headers = []
+    used = set()
+    for i, name in enumerate(raw_headers):
+        if not name:
+            name = f"_kolom_{i+1}"
+        base = name
+        suffix = 2
         while name in used:
             name = f"{base}_{suffix}"
             suffix += 1
         used.add(name)
         headers.append(name)
-    result = []
+    records = []
     for row in values[1:]:
-        if any(str(x).strip() for x in row):
-            result.append({h: row[i] if i < len(row) else "" for i, h in enumerate(headers)})
-    return result
-
-
-def get_tasks_worksheet(create=False):
-    """Satu sumber penyimpanan tugas untuk Tutor dan siswa."""
-    try:
-        ws = sheet.worksheet("Tugas_Sesi_Siswa_v2")
-    except gspread.WorksheetNotFound:
-        if not create:
-            return None
-        ws = sheet.add_worksheet(title="Tugas_Sesi_Siswa_v2", rows="2000", cols="20")
-        ws.append_row(TASK_HEADERS)
-        return ws
-    if ws.row_values(1) != TASK_HEADERS:
-        raise ValueError("Header Tugas_Sesi_Siswa_v2 tidak sesuai. Data tidak diubah.")
-    return ws
+        if not any(str(v).strip() for v in row):
+            continue
+        records.append({h: (row[i] if i < len(row) else "") for i, h in enumerate(headers)})
+    return records
 
 
 def get_bank_soal():
-    """Membaca Bank_Soal_Master_v2 sesuai kolom yang sudah disepakati."""
     ws = sheet.worksheet("Bank_Soal_Master_v2")
     records = baca_records_aman(ws)
-    hasil = []
-    for row in records:
-        aktif = str(row.get("Aktif", "Ya")).strip().lower()
-        if aktif not in ["tidak", "nonaktif", "false", "0"]:
-            hasil.append(row)
-    return hasil
+    return [r for r in records if str(r.get("Aktif", "Ya")).strip().lower() not in ["tidak", "nonaktif", "false", "0"]]
+
+
+TASK_HEADERS = ["ID_Tugas", "Tanggal", "Nama_Siswa", "Mapel", "Judul_Tugas", "Jenis_Tugas", "Sumber", "Instruksi", "File_Offline", "Timer_Menit", "Tenggat", "Soal_JSON", "Status_Tugas", "Tutor"]
+ANSWER_HEADERS = ["ID_Jawaban", "ID_Penugasan", "ID_Siswa", "Nomor_Soal", "Jawaban", "Status_Jawaban", "Waktu_Tersimpan", "Waktu_Dikumpulkan"]
 
 
 def get_student_tasks():
-    """Baca tugas V2; jika belum ada, baca sheet lama tanpa mengubahnya."""
-    ws = get_tasks_worksheet(create=False)
-    if ws is not None:
-        return baca_records_aman(ws)
+    """Membaca tugas dari sheet V2, dengan konversi aman untuk sheet lama."""
     try:
-        legacy = sheet.worksheet("Tugas_Sesi_Siswa")
+        ws = sheet.worksheet("Tugas_Sesi_Siswa_v2")
+        records = baca_records_aman(ws)
+        return records
     except gspread.WorksheetNotFound:
-        return []
-    converted = []
-    for r in baca_records_aman(legacy):
-        if not str(r.get("Nama_Siswa", "")).strip():
-            continue
-        converted.append({
-            "ID_Tugas": r.get("ID_Tugas", ""),
-            "Tanggal": r.get("Tanggal", ""),
-            "Nama_Siswa": r.get("Nama_Siswa", ""),
-            "Mapel": r.get("Mapel", ""),
-            "Judul_Tugas": r.get("Judul_Tugas", r.get("Instruksi", "Materi")),
-            "Jenis_Tugas": r.get("Jenis_Tugas", "Offline"),
-            "Sumber": r.get("Sumber", "Data lama"),
-            "Instruksi": r.get("Instruksi", ""),
-            "File_Offline": r.get("File_Offline", ""),
-            "Timer_Menit": r.get("Timer_Menit", ""),
-            "Tenggat": r.get("Tenggat", ""),
-            "Soal_JSON": r.get("Soal_JSON", ""),
-            "Status_Tugas": r.get("Status_Tugas", "Diberikan"),
-            "Tutor": r.get("Tutor", "")
-        })
-    return converted
+        try:
+            ws = sheet.worksheet("Tugas_Sesi_Siswa")
+            old = baca_records_aman(ws)
+        except gspread.WorksheetNotFound:
+            return []
+        converted = []
+        for r in old:
+            if r.get("ID_Tugas") or r.get("Nama_Siswa"):
+                converted.append({**r, "Judul_Tugas": r.get("Judul_Tugas", r.get("Instruksi", "")), "Soal_JSON": r.get("Soal_JSON", "")})
+        return converted
 
 
 def get_answers_worksheet():
-    ws = get_or_create_worksheet("DB_Jawaban_Siswa", ANSWER_HEADERS)
-    if ws.row_values(1) != ANSWER_HEADERS:
-        raise ValueError("Header DB_Jawaban_Siswa tidak sesuai. Data tidak ditulis.")
+    try:
+        ws = sheet.worksheet("DB_Jawaban_Siswa")
+    except gspread.WorksheetNotFound:
+        ws = sheet.add_worksheet(title="DB_Jawaban_Siswa", rows="3000", cols="8")
+        ws.append_row(ANSWER_HEADERS)
+    headers = ws.row_values(1)
+    if headers != ANSWER_HEADERS:
+        raise ValueError("Header DB_Jawaban_Siswa tidak sesuai. Struktur yang dibutuhkan: " + ", ".join(ANSWER_HEADERS))
     return ws
 
 
+def baca_jawaban_tergabung(ws):
+    """Gabungkan baris per-soal menjadi format internal yang dipakai tampilan siswa/tutor."""
+    rows = baca_records_aman(ws)
+    grouped = {}
+    for r in rows:
+        task_id = str(r.get("ID_Penugasan", "")).strip()
+        student_id = str(r.get("ID_Siswa", "")).strip()
+        if not task_id or not student_id:
+            continue
+        key = (task_id, student_id)
+        item = grouped.setdefault(key, {"ID_Jawaban": r.get("ID_Jawaban", ""), "ID_Tugas": task_id, "ID_Siswa": student_id, "Jawaban": {}, "Status": r.get("Status_Jawaban", "Draft"), "Waktu_Kirim": r.get("Waktu_Dikumpulkan", "")})
+        nomor = str(r.get("Nomor_Soal", "")).strip()
+        if nomor:
+            item["Jawaban"][nomor] = r.get("Jawaban", "")
+        status = str(r.get("Status_Jawaban", "Draft"))
+        if "menunggu" in status.lower() or "dikirim" in status.lower():
+            item["Status"] = "Dikirim - Menunggu Penilaian"
+        elif status.lower() == "sudah dinilai":
+            item["Status"] = "Sudah Dinilai"
+        item["Waktu_Kirim"] = r.get("Waktu_Dikumpulkan", "") or item["Waktu_Kirim"]
+    result = []
+    try:
+        siswa_rows = baca_records_aman(sheet.worksheet("Data_Siswa"))
+        names = {str(x.get("ID_Siswa", "")).strip(): x.get("Nama_Lengkap", "") for x in siswa_rows}
+    except Exception:
+        names = {}
+    for item in grouped.values():
+        item["Nama_Siswa"] = names.get(item["ID_Siswa"], item["ID_Siswa"])
+        item["Jawaban_JSON"] = json.dumps(item["Jawaban"], ensure_ascii=False)
+        result.append(item)
+    return result
+
+
+def simpan_jawaban_per_soal(task_id, student_id, answers, submitted=False):
+    ws = get_answers_worksheet()
+    rows = baca_records_aman(ws)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    status = "Dikirim - Menunggu Penilaian" if submitted else "Draft"
+    existing = {}
+    for row_num, row in enumerate(rows, start=2):
+        if str(row.get("ID_Penugasan", "")) == str(task_id) and str(row.get("ID_Siswa", "")) == str(student_id):
+            existing[str(row.get("Nomor_Soal", ""))] = row_num
+    for nomor, jawaban in answers.items():
+        nomor = str(nomor)
+        waktu_kirim = now if submitted else ""
+        values = [str(jawaban) if not isinstance(jawaban, (list, dict)) else json.dumps(jawaban, ensure_ascii=False), status, now, waktu_kirim]
+        if nomor in existing:
+            row_num = existing[nomor]
+            ws.update(f"E{row_num}:H{row_num}", [values])
+        else:
+            ws.append_row(["JWB-" + uuid.uuid4().hex[:10].upper(), task_id, student_id, nomor] + values)
+
+
 def simpan_draft_jawaban():
-    """Autosave jawaban per perubahan widget; satu record aktif per siswa dan tugas."""
     task_id = st.session_state.get("_draft_task_id", "")
-    student = st.session_state.get("siswa_nama", "")
+    student_id = st.session_state.get("siswa_id", "")
     answers = st.session_state.get("_draft_answers", {})
-    if not task_id or not student:
-        return
-    ws = get_answers_worksheet()
-    records = baca_records_aman(ws)
-    found_row = None
-    for idx, row in enumerate(records, start=2):
-        if (str(row.get("ID_Tugas", "")) == task_id
-                and str(row.get("Nama_Siswa", "")).strip().lower() == student.strip().lower()
-                and str(row.get("Status", "")).lower() != "dikirim - menunggu penilaian"):
-            found_row = idx
-            break
-    payload = json.dumps(answers, ensure_ascii=False)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if found_row:
-        ws.update(f"D{found_row}:F{found_row}", [[now, payload, "Draft"]])
-    else:
-        ws.append_row([
-            "JWB-" + uuid.uuid4().hex[:10].upper(), task_id, student,
-            now, payload, "Draft"
-        ])
+    if task_id and student_id and answers:
+        simpan_jawaban_per_soal(task_id, student_id, answers, submitted=False)
 
 
-def simpan_pengiriman_jawaban(task_id, student, answers):
-    ws = get_answers_worksheet()
-    records = baca_records_aman(ws)
-    payload = json.dumps(answers, ensure_ascii=False)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    for idx, row in enumerate(records, start=2):
-        if (str(row.get("ID_Tugas", "")) == task_id
-                and str(row.get("Nama_Siswa", "")).strip().lower() == student.strip().lower()
-                and str(row.get("Status", "")).lower() == "draft"):
-            ws.update(f"D{idx}:F{idx}", [[now, payload, "Dikirim - Menunggu Penilaian"]])
-            return
-    ws.append_row([
-        "JWB-" + uuid.uuid4().hex[:10].upper(), task_id, student,
-        now, payload, "Dikirim - Menunggu Penilaian"
-    ])
+def simpan_pengiriman_jawaban(task_id, student_id, answers):
+    simpan_jawaban_per_soal(task_id, student_id, answers, submitted=True)
 
 
 def normalisasi_opsi(teks):
@@ -246,17 +239,44 @@ def normalisasi_opsi(teks):
 
 def simpan_tugas_dan_soal(
     nama_siswa, mapel, instruksi, timer, daftar_soal,
-    file_info="", tutor="", judul_tugas="", jenis_tugas="Online",
-    sumber="Bank Soal Bersama (Spreadsheet)", tenggat=""
+    file_info="", tutor=""
 ):
-    """Simpan tugas dengan struktur V2 yang sama dengan halaman siswa."""
-    ws = get_tasks_worksheet(create=True)
+    """Simpan tugas dengan ID unik. Data soal disimpan sebagai JSON di kolom Soal_JSON."""
+    ws = get_or_create_worksheet(
+        "Tugas_Sesi_Siswa",
+        [
+            "ID_Tugas", "Tanggal", "Nama_Siswa", "Mapel", "Instruksi",
+            "File_Offline", "Timer_Menit", "Soal_JSON", "Status_Tugas", "Tutor"
+        ],
+        cols="20"
+    )
+
+    # Jika sheet lama masih memakai 5 kolom, tambahkan header baru tanpa menghapus data.
+    headers = ws.row_values(1)
+    required = [
+        "ID_Tugas", "Tanggal", "Nama_Siswa", "Mapel", "Instruksi",
+        "File_Offline", "Timer_Menit", "Soal_JSON", "Status_Tugas", "Tutor"
+    ]
+    if headers != required:
+        # Sheet lama tetap dipertahankan; buat sheet versi baru agar data lama tidak bergeser.
+        ws = get_or_create_worksheet(
+            "Tugas_Sesi_Siswa_v2",
+            required,
+            cols="20"
+        )
+
     id_tugas = "TGS-" + uuid.uuid4().hex[:10].upper()
     ws.append_row([
-        id_tugas, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        nama_siswa, mapel, judul_tugas or instruksi or "Tugas",
-        jenis_tugas, sumber, instruksi, file_info, timer, tenggat,
-        json.dumps(daftar_soal, ensure_ascii=False), "Diberikan", tutor
+        id_tugas,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        nama_siswa,
+        mapel,
+        instruksi,
+        file_info,
+        timer,
+        json.dumps(daftar_soal, ensure_ascii=False),
+        "Diberikan",
+        tutor
     ])
     return id_tugas
 
@@ -290,6 +310,7 @@ if peran == "🎓 Siswa":
         st.session_state.siswa_logged_in = False
         st.session_state.siswa_nama = ""
         st.session_state.siswa_jenjang = ""
+        st.session_state.siswa_id = ""
 
     if not st.session_state.siswa_logged_in:
         nama_siswa = st.text_input("Nama Lengkap / Panggilan Siswa:")
@@ -312,6 +333,7 @@ if peran == "🎓 Siswa":
                     else:
                         st.session_state.siswa_logged_in = True
                         st.session_state.siswa_nama = row.get("Nama_Lengkap")
+                        st.session_state.siswa_id = str(row.get("ID_Siswa", "")).strip()
                         st.session_state.siswa_jenjang = str(row.get("Jenjang", "SD")).strip().upper()
                         st.rerun()
                     break
@@ -330,6 +352,7 @@ if peran == "🎓 Siswa":
             if st.button("🚪 Logout"):
                 st.session_state.siswa_logged_in = False
                 st.session_state.siswa_nama = ""
+                st.session_state.siswa_id = ""
                 st.session_state.siswa_jenjang = ""
                 st.rerun()
 
@@ -344,7 +367,7 @@ if peran == "🎓 Siswa":
 
         try:
             jawaban_ws = get_answers_worksheet()
-            jawaban_records = baca_records_aman(jawaban_ws)
+            jawaban_records = baca_jawaban_tergabung(jawaban_ws)
         except Exception as e:
             jawaban_records = []
             st.warning(f"Data jawaban belum dapat dibaca: {e}")
@@ -463,7 +486,7 @@ if peran == "🎓 Siswa":
                                     current_answers = {}
                                     for i in range(1, len(daftar_soal) + 1):
                                         current_answers[str(i)] = st.session_state.get(f"student_{task_id}_{i}", "")
-                                    simpan_pengiriman_jawaban(task_id, nama_aktif, current_answers)
+                                    simpan_pengiriman_jawaban(task_id, st.session_state.get("siswa_id", ""), current_answers)
                                     st.success("Jawaban berhasil dikirim. Tutor akan memeriksanya.")
                                     st.rerun()
                             else:
@@ -503,7 +526,7 @@ if peran == "🎓 Siswa":
                         "Skor": r.get("Skor"),
                         "Catatan": r.get("Detail_Salah")
                     }
-                    for r in ws_r.get_all_records()
+                    for r in baca_records_aman(ws_r)
                     if str(r.get("Nama_Siswa", "")).strip().lower() == nama_aktif.strip().lower()
                 ]
                 if data_tabel_siswa:
@@ -724,19 +747,27 @@ elif peran == "🔒 Pengajar / Tutor":
                     with col_kirim:
                         if st.button("📤 Simpan & Kirim Semua Tugas", type="primary", key=f"kirim_semua_{selected_siswa}"):
                             try:
-                                ws_tugas = get_tasks_worksheet(create=True)
-                                for item in daftar_draft:
-                                    id_tugas = "TGS-" + uuid.uuid4().hex[:10].upper()
-                                    file_info = item["Link"] or item["Nama_File"]
-                                    ws_tugas.append_row([
-                                        id_tugas, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), selected_siswa,
-                                        item["Mapel"], item["Judul"], item["Jenis"], item["Sumber"], item["Instruksi"],
-                                        file_info, item["Timer"], item["Tenggat"], json.dumps(item["Soal"], ensure_ascii=False),
-                                        "Diberikan", st.session_state.tutor_nama
-                                    ])
-                                st.session_state[draft_key] = []
-                                st.success(f"{len(daftar_draft)} tugas berhasil disimpan untuk {selected_siswa}.")
-                                st.rerun()
+                                ws_tugas = get_or_create_worksheet(
+                                    "Tugas_Sesi_Siswa_v2",
+                                    ["ID_Tugas", "Tanggal", "Nama_Siswa", "Mapel", "Judul_Tugas", "Jenis_Tugas", "Sumber", "Instruksi", "File_Offline", "Timer_Menit", "Tenggat", "Soal_JSON", "Status_Tugas", "Tutor"]
+                                )
+                                headers_now = ws_tugas.row_values(1)
+                                required_headers = ["ID_Tugas", "Tanggal", "Nama_Siswa", "Mapel", "Judul_Tugas", "Jenis_Tugas", "Sumber", "Instruksi", "File_Offline", "Timer_Menit", "Tenggat", "Soal_JSON", "Status_Tugas", "Tutor"]
+                                if headers_now != required_headers:
+                                    st.error("Header Tugas_Sesi_Siswa_v2 berbeda dari struktur yang diperlukan. Data tidak ditulis agar tidak bergeser.")
+                                else:
+                                    for item in daftar_draft:
+                                        id_tugas = "TGS-" + uuid.uuid4().hex[:10].upper()
+                                        file_info = item["Link"] or item["Nama_File"]
+                                        ws_tugas.append_row([
+                                            id_tugas, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), selected_siswa,
+                                            item["Mapel"], item["Judul"], item["Jenis"], item["Sumber"], item["Instruksi"],
+                                            file_info, item["Timer"], item["Tenggat"], json.dumps(item["Soal"], ensure_ascii=False),
+                                            "Diberikan", st.session_state.tutor_nama
+                                        ])
+                                    st.session_state[draft_key] = []
+                                    st.success(f"{len(daftar_draft)} tugas berhasil disimpan untuk {selected_siswa}.")
+                                    st.rerun()
                             except Exception as e:
                                 st.error(f"Gagal menyimpan tugas: {e}")
                     with col_hapus:
@@ -790,7 +821,7 @@ elif peran == "🔒 Pengajar / Tutor":
 
             try:
                 ws_jawaban = sheet.worksheet("DB_Jawaban_Siswa")
-                jawaban_records = baca_records_aman(ws_jawaban)
+                jawaban_records = baca_jawaban_tergabung(ws_jawaban)
             except gspread.WorksheetNotFound:
                 jawaban_records = []
 
@@ -837,11 +868,11 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.session_state.tutor_nama,
                                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             ])
-                            cell = ws_jawaban.find(item.get("ID_Jawaban"))
-                            if cell:
-                                headers = ws_jawaban.row_values(1)
-                                status_col = headers.index("Status") + 1
-                                ws_jawaban.update_cell(cell.row, status_col, "Sudah Dinilai")
+                            # Tandai seluruh baris soal pada penugasan/siswa sebagai sudah dinilai.
+                            all_rows = baca_records_aman(ws_jawaban)
+                            for row_num, row in enumerate(all_rows, start=2):
+                                if str(row.get("ID_Penugasan", "")) == str(item.get("ID_Tugas", "")) and str(row.get("ID_Siswa", "")) == str(item.get("ID_Siswa", "")):
+                                    ws_jawaban.update_cell(row_num, 6, "Sudah Dinilai")
                             st.success("Penilaian tersimpan.")
                             st.rerun()
                 else:
@@ -856,7 +887,7 @@ elif peran == "🔒 Pengajar / Tutor":
                 try:
                     ws_r = sheet.worksheet("Riwayat_Latihan")
                     data_rekap = []
-                    for r in ws_r.get_all_records():
+                    for r in baca_records_aman(ws_r):
                         if str(r.get("Nama_Siswa", "")).strip().lower() == nama_portofolio.strip().lower():
                             data_rekap.append({
                                 "Tanggal": str(r.get("Waktu_Selesai", ""))[:10],
@@ -887,15 +918,26 @@ elif peran == "🔒 Pengajar / Tutor":
                 link_materi_ekstra = st.text_input("Link Modul / Flipbook / Soal:")
                 if st.form_submit_button("🚀 Kirim Materi Ekstra"):
                     try:
-                        ws_tugas = get_tasks_worksheet(create=True)
+                        ws_tugas = get_or_create_worksheet(
+                            "Tugas_Sesi_Siswa_v2", TASK_HEADERS, cols="20"
+                        )
+                        if ws_tugas.row_values(1) != TASK_HEADERS:
+                            raise ValueError("Header Tugas_Sesi_Siswa_v2 tidak sesuai. Data tidak ditulis.")
                         ws_tugas.append_row([
                             "TGS-" + uuid.uuid4().hex[:10].upper(),
                             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            nama_target_siswa.strip(), mapel_ekstra,
-                            judul_materi.strip() or "Materi Tambahan",
-                            "Offline", "Link Google Drive / Flipbook",
-                            f"[Materi Ekstra] {judul_materi}", link_materi_ekstra.strip(),
-                            0, "", "[]", "Diberikan", st.session_state.tutor_nama
+                            nama_target_siswa,
+                            mapel_ekstra,
+                            judul_materi,
+                            "Materi Tambahan",
+                            "Link Modul / Flipbook / Soal",
+                            f"[Materi Ekstra] {judul_materi}",
+                            link_materi_ekstra,
+                            0,
+                            "",
+                            "[]",
+                            "Diberikan",
+                            st.session_state.tutor_nama
                         ])
                         st.success("Materi tambahan berhasil dikirim.")
                     except Exception as e:
@@ -1017,7 +1059,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                     laporan_list = []
                     try:
                         ws_riwayat = sheet.worksheet("Riwayat_Latihan")
-                        for r in ws_riwayat.get_all_records():
+                        for r in baca_records_aman(ws_riwayat):
                             if str(r.get("Nama_Siswa", "")).strip().lower() == nama_anak.strip().lower():
                                 laporan_list.append({
                                     "Tanggal": r.get("Waktu_Selesai", "-"),
@@ -1063,7 +1105,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                     data_tabel_ortu = []
                     try:
                         ws_r = sheet.worksheet("Riwayat_Latihan")
-                        for r in ws_r.get_all_records():
+                        for r in baca_records_aman(ws_r):
                             if str(r.get("Nama_Siswa", "")).strip().lower() == nama_anak.strip().lower():
                                 data_tabel_ortu.append({
                                     "Tanggal": str(r.get("Waktu_Selesai", ""))[:10],
