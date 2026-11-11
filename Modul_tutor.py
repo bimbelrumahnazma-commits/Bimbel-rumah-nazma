@@ -90,31 +90,112 @@ except Exception as e:
     st.stop()
 
 
+SUMBER_BANK = "Bank Soal Bersama (Spreadsheet)"
+SUMBER_DRIVE = "Link Google Drive / Flipbook"
+SUMBER_UPLOAD = "Upload dari perangkat"
+
+
+def drive_id_dari_url(url):
+    m = re.search(r"/file/d/([A-Za-z0-9_-]+)", url) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", url)
+    return m.group(1) if m else None
+
+
+def jenis_dari_mime(mime, nama=""):
+    m = (mime or "").lower()
+    n = (nama or "").lower()
+    if m.startswith("image/") or n.endswith((".png", ".jpg", ".jpeg")):
+        return "img"
+    if m == "application/pdf" or n.endswith(".pdf"):
+        return "pdf"
+    return "doc"
+
+
+def parse_lampiran(teks):
+    """'img::https://..|pdf::https://..' -> [('img', 'https://..'), ...]. Data lama (1 URL polos) tetap terbaca."""
+    hasil = []
+    for bagian in str(teks or "").split("|"):
+        bagian = bagian.strip()
+        if not bagian:
+            continue
+        if "::" in bagian:
+            jenis, url = bagian.split("::", 1)
+        else:
+            jenis, url = "link", bagian
+        url = url.strip()
+        if url.lower().startswith(("http://", "https://")):
+            hasil.append((jenis.strip(), url))
+    return hasil
+
+
+def img_url(url):
+    fid = drive_id_dari_url(url)
+    return f"https://lh3.googleusercontent.com/d/{fid}=w1200" if fid else url
+
+
+def flipbook_gambar(urls, tinggi=700):
+    """Flipbook: foto-foto menjadi halaman buku yang bisa dibalik / digeser."""
+    imgs = json.dumps([img_url(u) for u in urls])
+    html = """
+<style>
+  body { margin:0; font-family:sans-serif; background:#2b2b2b; }
+  #book { margin:0 auto; }
+  .page { background:#fff; }
+  .page img { width:100%; height:100%; object-fit:contain; display:block; }
+  .nav { text-align:center; padding:10px; color:#fff; }
+  .nav button { padding:8px 14px; border:0; border-radius:8px; margin:0 6px; font-size:15px; }
+</style>
+<div id="book"></div>
+<div class="nav">
+  <button onclick="pf.flipPrev()">◀ Sebelumnya</button>
+  <span id="info"></span>
+  <button onclick="pf.flipNext()">Berikutnya ▶</button>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.js"></script>
+<script>
+  const imgs = __IMGS__;
+  const book = document.getElementById('book');
+  imgs.forEach(src => {
+    const d = document.createElement('div');
+    d.className = 'page';
+    d.innerHTML = '<img src="' + src + '">';
+    book.appendChild(d);
+  });
+  const pf = new St.PageFlip(book, {
+    width: 420, height: 588, size: 'stretch',
+    minWidth: 260, maxWidth: 520, minHeight: 360, maxHeight: 728,
+    showCover: false, usePortrait: true, mobileScrollSupport: false
+  });
+  pf.loadFromHTML(document.querySelectorAll('.page'));
+  const info = document.getElementById('info');
+  const total = pf.getPageCount();
+  info.textContent = '1 / ' + total;
+  pf.on('flip', e => { info.textContent = (e.data + 1) + ' / ' + total; });
+</script>
+""".replace("__IMGS__", imgs)
+    components.html(html, height=tinggi)
+
+
 def tampilkan_lampiran_siswa(link_or_file):
-    """Tampilkan lampiran Google Drive langsung di portal siswa bila berupa URL."""
-    link = str(link_or_file or "").strip()
-    if not link:
+    """Tampilkan semua lampiran tugas: foto jadi flipbook, PDF/dokumen/link jadi pratinjau."""
+    teks = str(link_or_file or "").strip()
+    if not teks:
+        return
+    items = parse_lampiran(teks)
+    if not items:
+        st.info(f"Lampiran tercatat: {teks}. Tautan materi belum tersedia.")
         return
 
-    # Google Drive file URL dari Apps Script biasanya berbentuk /file/d/FILE_ID/view.
-    drive_id = None
-    if "drive.google.com" in link:
-        match = re.search(r"/file/d/([A-Za-z0-9_-]+)", link)
-        if not match:
-            match = re.search(r"[?&]id=([A-Za-z0-9_-]+)", link)
-        if match:
-            drive_id = match.group(1)
+    st.markdown("#### 📖 Materi dari Tutor")
+    gambar = [u for j, u in items if j == "img"]
+    lainnya = [u for j, u in items if j != "img"]
 
-    if drive_id:
-        preview_url = f"https://drive.google.com/file/d/{drive_id}/preview"
-        st.markdown("#### 📖 Materi dari Tutor")
-        components.iframe(preview_url, height=720, scrolling=True)
-        st.markdown(f"[↗ Buka materi di tab baru]({link})")
-    elif link.lower().startswith(("http://", "https://")):
-        st.markdown("#### 📖 Materi dari Tutor")
-        st.markdown(f"[Buka materi / flipbook]({link})")
-    else:
-        st.info(f"Lampiran tercatat: {link}. Tautan materi belum tersedia.")
+    if gambar:
+        flipbook_gambar(gambar)
+    for u in lainnya:
+        fid = drive_id_dari_url(u) if "drive.google.com" in u else None
+        src_iframe = f"https://drive.google.com/file/d/{fid}/preview" if fid else u
+        components.iframe(src_iframe, height=720, scrolling=True)
+        st.markdown(f"[↗ Buka materi di tab baru]({u})")
 
 
 def upload_lampiran_ke_drive(file_bytes, file_name, mime_type):
@@ -189,10 +270,39 @@ def baca_records_aman(ws):
     return records
 
 
+def ambil(row, *names, default=""):
+    """Ambil nilai baris sheet dari beberapa kemungkinan nama kolom."""
+    lower = {str(k).strip().lower(): v for k, v in row.items()}
+    for n in names:
+        v = lower.get(n.strip().lower())
+        if v not in (None, ""):
+            return v
+    return default
+
+
 def get_bank_soal():
     ws = sheet.worksheet("Bank_Soal_Master_v2")
-    records = baca_records_aman(ws)
-    return [r for r in records if str(r.get("Aktif", "Ya")).strip().lower() not in ["tidak", "nonaktif", "false", "0"]]
+    hasil = []
+    for i, r in enumerate(baca_records_aman(ws), start=1):
+        aktif = str(ambil(r, "Aktif", "Status", default="Ya")).strip().lower()
+        if aktif in ["tidak", "nonaktif", "false", "0"]:
+            continue
+        if not str(ambil(r, "Teks_Soal")).strip():
+            continue
+        jm = str(ambil(r, "Jenjang_Dan_Mapel")).strip()
+        hasil.append({
+            # Kalau belum ada kolom ID_Soal, dibuat otomatis dari nomor baris.
+            "ID_Soal": str(ambil(r, "ID_Soal", "Kode_Soal", default=f"S-{i:04d}")),
+            "Jenjang": str(ambil(r, "Jenjang", default=jm)),
+            "Mapel": str(ambil(r, "Mapel", default=jm)),
+            "Topik": str(ambil(r, "Topik", "Bab_Atau_Topik")),
+            "Bentuk_Soal": str(ambil(r, "Bentuk_Soal")),
+            "Teks_Soal": str(ambil(r, "Teks_Soal")),
+            "Url_Gambar": str(ambil(r, "Url_Gambar", "URL_Gambar")),
+            "Opsi": str(ambil(r, "Opsi", "Opsi_Jawaban")),
+            "Kunci": str(ambil(r, "Kunci", "Kunci_Jawaban")),
+        })
+    return hasil
 
 
 TASK_HEADERS = ["ID_Tugas", "Tanggal", "Nama_Siswa", "Mapel", "Judul_Tugas", "Jenis_Tugas", "Sumber", "Instruksi", "File_Offline", "Timer_Menit", "Tenggat", "Soal_JSON", "Status_Tugas", "Tutor"]
@@ -473,10 +583,10 @@ if peran == "🎓 Siswa":
                     task_id = str(t.get("ID_Tugas", ""))
                     status = status_by_task.get(task_id, "Belum dikerjakan")
                     with st.expander(
-                        f"{t.get('Mapel', 'Mapel')} · {t.get('Instruksi', 'Tugas')} · {status}",
+                        f"{t.get('Mapel', 'Mapel')} · {t.get('Judul_Tugas') or t.get('Instruksi') or 'Tugas'} · {status}",
                         expanded=False
                     ):
-                        st.write(f"**Instruksi Tutor:** {t.get('Instruksi', '-')}")
+                        st.write(f"**Instruksi Tutor:** {t.get('Instruksi') or '-'}")
                         st.write(f"**Diberikan:** {t.get('Tanggal', '-')}")
                         st.write(f"**Durasi:** {t.get('Timer_Menit', '-') } menit")
                         if t.get("File_Offline"):
@@ -687,116 +797,120 @@ elif peran == "🔒 Pengajar / Tutor":
                     st.session_state[draft_key] = []
 
                 with st.expander("➕ Buat tugas baru", expanded=True):
-                    with st.form(f"form_tugas_baru_{selected_siswa}"):
-                        mapel_tugas = st.selectbox(
-                            "Mata pelajaran:",
-                            MAPEL_OPTIONS
-                        )
-                        judul_tugas = st.text_input("Judul / topik tugas:")
-                        jenis_tugas = st.radio("Jenis pengerjaan:", ["Online", "Offline"], horizontal=True)
-                        sumber_tugas = st.selectbox(
-                            "Sumber materi / soal:",
-                            ["Bank Soal Bersama (Spreadsheet)", "Link Google Drive / Flipbook", "Upload dari perangkat"]
-                        )
-                        instruksi_tugas = st.text_area("Instruksi untuk siswa:")
-                        timer_tugas = st.selectbox("Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=2, format_func=lambda x: "Tanpa timer" if x == 0 else f"{x} menit")
-                        tenggat_tugas = st.date_input("Tanggal tenggat:", value=datetime.now().date())
-                        link_tugas = st.text_input("Link Drive / Flipbook (jika digunakan):", placeholder="https://...")
-                        file_tugas = st.file_uploader("Pilih file dari perangkat (opsional):", type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"], key=f"upload_tugas_{selected_siswa}")
+                    n_form = st.session_state.get("form_n", 0)
+                    k = f"{selected_siswa}_{n_form}"
 
-                        bank = []
-                        soal_dipilih = []
-                        if sumber_tugas == "Bank Soal Bersama (Spreadsheet)":
-                            try:
-                                bank = get_bank_soal()
-                                if bank:
-                                    jenjang_filter = st.selectbox("Filter jenjang soal:", ["Semua"] + sorted({str(q.get("Jenjang", "")).strip() for q in bank if q.get("Jenjang")}))
-                                    mapel_filter = st.selectbox("Filter mapel soal:", ["Semua"] + sorted({str(q.get("Mapel", "")).strip() for q in bank if q.get("Mapel")}))
-                                    topik_filter = st.selectbox("Filter topik soal:", ["Semua"] + sorted({str(q.get("Topik", "")).strip() for q in bank if q.get("Topik")}))
-                                    bank_filter = [q for q in bank if (jenjang_filter == "Semua" or str(q.get("Jenjang", "")).strip() == jenjang_filter) and (mapel_filter == "Semua" or str(q.get("Mapel", "")).strip() == mapel_filter) and (topik_filter == "Semua" or str(q.get("Topik", "")).strip() == topik_filter)]
-                                    labels = [f"{q.get('ID_Soal', 'TANPA-ID')} | {str(q.get('Teks_Soal', ''))[:100]}" for q in bank_filter]
-                                    selected_labels = st.multiselect("Pilih soal untuk tugas ini:", labels)
-                                    for label in selected_labels:
-                                        q = bank_filter[labels.index(label)]
-                                        soal_dipilih.append({
-                                            "ID_Soal": str(q.get("ID_Soal", "")),
-                                            "Jenjang": str(q.get("Jenjang", "")),
-                                            "Mapel": str(q.get("Mapel", "")),
-                                            "Topik": str(q.get("Topik", "")),
-                                            "Bentuk_Soal": str(q.get("Bentuk_Soal", "")),
-                                            "Teks_Soal": str(q.get("Teks_Soal", "")),
-                                            "Url_Gambar": str(q.get("Url_Gambar", "")),
-                                            "Opsi_List": normalisasi_opsi(q.get("Opsi", "")),
-                                            "Kunci": str(q.get("Kunci", ""))
-                                        })
-                                else:
-                                    st.info("Bank Soal_Master_v2 belum berisi soal aktif.")
-                            except Exception as e:
-                                st.error(f"Bank soal belum dapat dibaca: {e}")
-                        tambah_draft = st.form_submit_button("Tambahkan ke daftar tugas")
+                    mapel_tugas = st.selectbox("Mata pelajaran:", MAPEL_OPTIONS, key=f"mp_{k}")
+                    judul_tugas = st.text_input("Judul / topik tugas:", key=f"jd_{k}")
+                    jenis_tugas = st.radio("Jenis pengerjaan:", ["Online", "Offline"], horizontal=True, key=f"jn_{k}")
+                    sumber_tugas = st.radio(
+                        "Sumber materi / soal:",
+                        [SUMBER_BANK, SUMBER_DRIVE, SUMBER_UPLOAD],
+                        key=f"sm_{k}"
+                    )
+                    instruksi_tugas = st.text_area("Instruksi untuk siswa:", key=f"in_{k}")
+                    timer_tugas = st.selectbox(
+                        "Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=2,
+                        format_func=lambda x: "Tanpa timer" if x == 0 else f"{x} menit", key=f"tm_{k}"
+                    )
+                    tenggat_tugas = st.date_input("Tanggal tenggat:", value=datetime.now().date(), key=f"tg_{k}")
+
+                    link_tugas = ""
+                    file_tugas = []
+                    soal_dipilih = []
+
+                    if sumber_tugas == SUMBER_BANK:
+                        try:
+                            bank = get_bank_soal()
+                        except Exception as e:
+                            bank = []
+                            st.error(f"Bank soal belum dapat dibaca: {e}")
+                        if not bank:
+                            st.info("Bank Soal_Master_v2 belum berisi soal aktif.")
+                        else:
+                            jenjang_filter = st.selectbox(
+                                "Filter jenjang soal:",
+                                ["Semua"] + sorted({q["Jenjang"] for q in bank if q["Jenjang"]}), key=f"fj_{k}")
+                            mapel_filter = st.selectbox(
+                                "Filter mapel soal:",
+                                ["Semua"] + sorted({q["Mapel"] for q in bank if q["Mapel"]}), key=f"fm_{k}")
+                            topik_filter = st.selectbox(
+                                "Filter topik soal:",
+                                ["Semua"] + sorted({q["Topik"] for q in bank if q["Topik"]}), key=f"ft_{k}")
+                            bank_filter = [
+                                q for q in bank
+                                if (jenjang_filter == "Semua" or q["Jenjang"] == jenjang_filter)
+                                and (mapel_filter == "Semua" or q["Mapel"] == mapel_filter)
+                                and (topik_filter == "Semua" or q["Topik"] == topik_filter)
+                            ]
+                            idx_dipilih = st.multiselect(
+                                f"Pilih soal untuk tugas ini ({len(bank_filter)} soal tersedia):",
+                                options=list(range(len(bank_filter))),
+                                format_func=lambda i: f"{bank_filter[i]['ID_Soal']} | {bank_filter[i]['Teks_Soal'][:100]}",
+                                key=f"ps_{k}"
+                            )
+                            for i in idx_dipilih:
+                                q = bank_filter[i]
+                                soal_dipilih.append({
+                                    "ID_Soal": q["ID_Soal"], "Jenjang": q["Jenjang"], "Mapel": q["Mapel"],
+                                    "Topik": q["Topik"], "Bentuk_Soal": q["Bentuk_Soal"],
+                                    "Teks_Soal": q["Teks_Soal"], "Url_Gambar": q["Url_Gambar"],
+                                    "Opsi_List": normalisasi_opsi(q["Opsi"]), "Kunci": q["Kunci"],
+                                })
+
+                    elif sumber_tugas == SUMBER_DRIVE:
+                        link_tugas = st.text_area(
+                            "Link Google Drive / Flipbook (satu link per baris):",
+                            placeholder="https://...", key=f"lk_{k}"
+                        )
+
+                    else:  # SUMBER_UPLOAD
+                        file_tugas = st.file_uploader(
+                            "Pilih file dari perangkat (boleh banyak):",
+                            type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"],
+                            accept_multiple_files=True,
+                            key=f"up_{k}"
+                        )
+
+                    tambah_draft = st.button("Tambahkan ke daftar tugas", key=f"tambah_{k}")
 
                     if tambah_draft:
+                        link_list = [x.strip() for x in link_tugas.splitlines() if x.strip()]
+                        daftar_file = list(file_tugas or [])
+
                         if not judul_tugas.strip():
                             st.error("Judul / topik tugas wajib diisi.")
-                        elif (
-                            sumber_tugas == "Bank Soal Bersama (Spreadsheet)"
-                            and not soal_dipilih
-                            and file_tugas is None
-                            and not link_tugas.strip()
-                        ):
-                            st.error(
-                                "Pilih soal dari Bank Soal, atau lampirkan file / "
-                                "masukkan link materi sebagai alternatif."
-                            )
-                        elif (
-                            sumber_tugas == "Link Google Drive / Flipbook"
-                            and not link_tugas.strip()
-                            and file_tugas is None
-                        ):
-                            st.error("Masukkan link Drive / Flipbook atau lampirkan file dari perangkat.")
-                        elif (
-                            sumber_tugas == "Upload dari perangkat"
-                            and file_tugas is None
-                            and not link_tugas.strip()
-                        ):
-                            st.error("Pilih file yang akan dilampirkan atau masukkan link materi.")
+                        elif sumber_tugas == SUMBER_BANK and not soal_dipilih:
+                            st.error("Pilih minimal satu soal dari Bank Soal.")
+                        elif sumber_tugas == SUMBER_DRIVE and not link_list:
+                            st.error("Masukkan minimal satu link Drive / Flipbook.")
+                        elif sumber_tugas == SUMBER_DRIVE and any(not l.lower().startswith(("http://", "https://")) for l in link_list):
+                            st.error("Setiap link harus diawali https://")
+                        elif sumber_tugas == SUMBER_UPLOAD and not daftar_file:
+                            st.error("Pilih minimal satu file yang akan dilampirkan.")
+                        elif any(len(f.getvalue()) > 10 * 1024 * 1024 for f in daftar_file):
+                            st.error("Ukuran tiap lampiran maksimal 10 MB. Kompres file lalu unggah kembali.")
                         else:
-                            # Simpan isi file sementara di draft; file diunggah ke Drive
+                            # Isi file disimpan sementara di draft; file diunggah ke Drive
                             # saat Tutor menekan tombol Simpan & Kirim Semua Tugas.
-                            file_meta = ""
-                            file_bytes = None
-                            file_mime = ""
-                            if file_tugas is not None:
-                                file_meta = file_tugas.name
-                                file_bytes = file_tugas.getvalue()
-                                file_mime = file_tugas.type or "application/octet-stream"
-                                if len(file_bytes) > 10 * 1024 * 1024:
-                                    st.error("Ukuran lampiran maksimal 10 MB. Kompres file lalu unggah kembali.")
-                                    st.stop()
-
-                            sumber_final = sumber_tugas
-                            if sumber_tugas == "Bank Soal Bersama (Spreadsheet)" and not soal_dipilih:
-                                if file_tugas is not None and link_tugas.strip():
-                                    sumber_final = "Upload perangkat + Link"
-                                elif file_tugas is not None:
-                                    sumber_final = "Upload dari perangkat"
-                                elif link_tugas.strip():
-                                    sumber_final = "Link Google Drive / Flipbook"
-
+                            files = [
+                                {"name": f.name, "bytes": f.getvalue(),
+                                 "mime": f.type or "application/octet-stream"}
+                                for f in daftar_file
+                            ]
                             st.session_state[draft_key].append({
                                 "Mapel": mapel_tugas,
                                 "Judul": judul_tugas.strip(),
                                 "Jenis": jenis_tugas,
-                                "Sumber": sumber_final,
+                                "Sumber": sumber_tugas,
                                 "Instruksi": instruksi_tugas.strip(),
                                 "Timer": timer_tugas,
                                 "Tenggat": tenggat_tugas.strftime("%Y-%m-%d"),
-                                "Link": link_tugas.strip(),
-                                "Nama_File": file_meta,
-                                "File_Bytes": file_bytes,
-                                "File_Mime": file_mime,
+                                "Links": link_list,
+                                "Files": files,
                                 "Soal": soal_dipilih
                             })
+                            st.session_state["form_n"] = n_form + 1  # kosongkan form setelah ditambahkan
                             st.success("Tugas masuk ke daftar draft. Tekan Simpan & Kirim setelah semua tugas selesai ditambahkan.")
                             st.rerun()
 
@@ -808,10 +922,10 @@ elif peran == "🔒 Pengajar / Tutor":
                             st.write(f"Sumber: {item['Sumber']}")
                             st.write(f"Timer: {'Tanpa timer' if item['Timer'] == 0 else str(item['Timer']) + ' menit'} | Tenggat: {item['Tenggat']}")
                             st.write(f"Jumlah soal: {len(item['Soal'])}")
-                            if item["Link"]:
-                                st.write(f"Link: {item['Link']}")
-                            if item["Nama_File"]:
-                                st.info(f"Lampiran siap diunggah ke Google Drive saat tugas dikirim: {item['Nama_File']}")
+                            for l in item["Links"]:
+                                st.write(f"Link: {l}")
+                            for f in item["Files"]:
+                                st.info(f"Lampiran siap diunggah ke Google Drive saat tugas dikirim: {f['name']}")
                     col_kirim, col_hapus = st.columns(2)
                     with col_kirim:
                         if st.button("📤 Simpan & Kirim Semua Tugas", type="primary", key=f"kirim_semua_{selected_siswa}"):
@@ -829,14 +943,13 @@ elif peran == "🔒 Pengajar / Tutor":
                                     # ditulis setelah semua unggahan berhasil.
                                     hasil_kirim = []
                                     for item in daftar_draft:
-                                        file_info = item["Link"]
-                                        if item.get("File_Bytes") is not None:
-                                            file_info = upload_lampiran_ke_drive(
-                                                item["File_Bytes"],
-                                                item["Nama_File"],
-                                                item.get("File_Mime", "application/octet-stream")
-                                            )
-                                        hasil_kirim.append((item, file_info))
+                                        entri = []
+                                        for f in item["Files"]:
+                                            url = upload_lampiran_ke_drive(f["bytes"], f["name"], f["mime"])
+                                            entri.append(f"{jenis_dari_mime(f['mime'], f['name'])}::{url}")
+                                        for l in item["Links"]:
+                                            entri.append(f"link::{l}")
+                                        hasil_kirim.append((item, "|".join(entri)))
 
                                     for item, file_info in hasil_kirim:
                                         id_tugas = "TGS-" + uuid.uuid4().hex[:10].upper()
