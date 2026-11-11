@@ -526,22 +526,49 @@ elif peran == "🔒 Pengajar / Tutor":
                     if tambah_draft:
                         if not judul_tugas.strip():
                             st.error("Judul / topik tugas wajib diisi.")
-                        elif sumber_tugas == "Bank Soal Bersama (Spreadsheet)" and not soal_dipilih:
-                            st.error("Pilih minimal satu soal dari bank soal.")
-                        elif sumber_tugas == "Link Google Drive / Flipbook" and not link_tugas.strip():
-                            st.error("Masukkan link Drive / Flipbook.")
-                        elif sumber_tugas == "Upload dari perangkat" and file_tugas is None:
-                            st.error("Pilih file yang akan dilampirkan.")
+                        elif (
+                            sumber_tugas == "Bank Soal Bersama (Spreadsheet)"
+                            and not soal_dipilih
+                            and file_tugas is None
+                            and not link_tugas.strip()
+                        ):
+                            st.error(
+                                "Pilih soal dari Bank Soal, atau lampirkan file / "
+                                "masukkan link materi sebagai alternatif."
+                            )
+                        elif (
+                            sumber_tugas == "Link Google Drive / Flipbook"
+                            and not link_tugas.strip()
+                            and file_tugas is None
+                        ):
+                            st.error("Masukkan link Drive / Flipbook atau lampirkan file dari perangkat.")
+                        elif (
+                            sumber_tugas == "Upload dari perangkat"
+                            and file_tugas is None
+                            and not link_tugas.strip()
+                        ):
+                            st.error("Pilih file yang akan dilampirkan atau masukkan link materi.")
                         else:
-                            # Upload perangkat belum disimpan permanen; simpan hanya metadata dan beri peringatan.
+                            # File upload saat ini baru mencatat metadata; penyimpanan permanen
+                            # memerlukan integrasi cloud pada tahap berikutnya.
                             file_meta = ""
                             if file_tugas is not None:
                                 file_meta = file_tugas.name
+
+                            sumber_final = sumber_tugas
+                            if sumber_tugas == "Bank Soal Bersama (Spreadsheet)" and not soal_dipilih:
+                                if file_tugas is not None and link_tugas.strip():
+                                    sumber_final = "Upload perangkat + Link"
+                                elif file_tugas is not None:
+                                    sumber_final = "Upload dari perangkat"
+                                elif link_tugas.strip():
+                                    sumber_final = "Link Google Drive / Flipbook"
+
                             st.session_state[draft_key].append({
                                 "Mapel": mapel_tugas,
                                 "Judul": judul_tugas.strip(),
                                 "Jenis": jenis_tugas,
-                                "Sumber": sumber_tugas,
+                                "Sumber": sumber_final,
                                 "Instruksi": instruksi_tugas.strip(),
                                 "Timer": timer_tugas,
                                 "Tenggat": tenggat_tugas.strftime("%Y-%m-%d"),
