@@ -7,6 +7,8 @@ import pandas as pd
 import random
 import json
 import uuid
+import requests
+import base64
 
 
 # Daftar mata pelajaran dan program Bimbel Rumah Nazma
@@ -84,6 +86,39 @@ try:
 except Exception as e:
     st.error(f"Gagal terhubung ke Google Sheets: {e}")
     st.stop()
+
+
+def upload_lampiran_ke_drive(file_bytes, file_name, mime_type):
+    """Unggah lampiran ke Google Drive melalui Apps Script milik akun Bimbel."""
+    try:
+        cfg = st.secrets["drive_upload"]
+        endpoint = str(cfg["web_app_url"]).strip()
+        token = str(cfg["token"]).strip()
+        if not endpoint or not token:
+            raise ValueError("URL Apps Script atau token upload belum diatur di Streamlit Secrets.")
+
+        payload = {
+            "token": token,
+            "fileName": file_name,
+            "mimeType": mime_type or "application/octet-stream",
+            "fileData": base64.b64encode(file_bytes).decode("ascii"),
+        }
+        folder_id = str(cfg.get("folder_id", "")).strip()
+        if folder_id:
+            payload["folderId"] = folder_id
+
+        response = requests.post(endpoint, json=payload, timeout=120)
+        response.raise_for_status()
+        try:
+            result = response.json()
+        except ValueError:
+            raise RuntimeError("Respons Apps Script bukan JSON. Periksa URL deployment Web App.")
+
+        if not result.get("success") or not result.get("url"):
+            raise RuntimeError(result.get("error", "Google Drive tidak mengembalikan link file."))
+        return str(result["url"])
+    except Exception as e:
+        raise RuntimeError(f"Gagal mengunggah lampiran '{file_name}': {e}")
 
 
 def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
@@ -701,11 +736,18 @@ elif peran == "🔒 Pengajar / Tutor":
                         ):
                             st.error("Pilih file yang akan dilampirkan atau masukkan link materi.")
                         else:
-                            # File upload saat ini baru mencatat metadata; penyimpanan permanen
-                            # memerlukan integrasi cloud pada tahap berikutnya.
+                            # Simpan isi file sementara di draft; file diunggah ke Drive
+                            # saat Tutor menekan tombol Simpan & Kirim Semua Tugas.
                             file_meta = ""
+                            file_bytes = None
+                            file_mime = ""
                             if file_tugas is not None:
                                 file_meta = file_tugas.name
+                                file_bytes = file_tugas.getvalue()
+                                file_mime = file_tugas.type or "application/octet-stream"
+                                if len(file_bytes) > 10 * 1024 * 1024:
+                                    st.error("Ukuran lampiran maksimal 10 MB. Kompres file lalu unggah kembali.")
+                                    st.stop()
 
                             sumber_final = sumber_tugas
                             if sumber_tugas == "Bank Soal Bersama (Spreadsheet)" and not soal_dipilih:
@@ -726,6 +768,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                 "Tenggat": tenggat_tugas.strftime("%Y-%m-%d"),
                                 "Link": link_tugas.strip(),
                                 "Nama_File": file_meta,
+                                "File_Bytes": file_bytes,
+                                "File_Mime": file_mime,
                                 "Soal": soal_dipilih
                             })
                             st.success("Tugas masuk ke daftar draft. Tekan Simpan & Kirim setelah semua tugas selesai ditambahkan.")
@@ -742,7 +786,7 @@ elif peran == "🔒 Pengajar / Tutor":
                             if item["Link"]:
                                 st.write(f"Link: {item['Link']}")
                             if item["Nama_File"]:
-                                st.warning(f"File dipilih: {item['Nama_File']}. Isi file belum tersimpan permanen; diperlukan integrasi penyimpanan cloud.")
+                                st.info(f"Lampiran siap diunggah ke Google Drive saat tugas dikirim: {item['Nama_File']}")
                     col_kirim, col_hapus = st.columns(2)
                     with col_kirim:
                         if st.button("📤 Simpan & Kirim Semua Tugas", type="primary", key=f"kirim_semua_{selected_siswa}"):
@@ -756,9 +800,21 @@ elif peran == "🔒 Pengajar / Tutor":
                                 if headers_now != required_headers:
                                     st.error("Header Tugas_Sesi_Siswa_v2 berbeda dari struktur yang diperlukan. Data tidak ditulis agar tidak bergeser.")
                                 else:
+                                    # Unggah seluruh lampiran terlebih dahulu. Baris tugas baru
+                                    # ditulis setelah semua unggahan berhasil.
+                                    hasil_kirim = []
                                     for item in daftar_draft:
+                                        file_info = item["Link"]
+                                        if item.get("File_Bytes") is not None:
+                                            file_info = upload_lampiran_ke_drive(
+                                                item["File_Bytes"],
+                                                item["Nama_File"],
+                                                item.get("File_Mime", "application/octet-stream")
+                                            )
+                                        hasil_kirim.append((item, file_info))
+
+                                    for item, file_info in hasil_kirim:
                                         id_tugas = "TGS-" + uuid.uuid4().hex[:10].upper()
-                                        file_info = item["Link"] or item["Nama_File"]
                                         ws_tugas.append_row([
                                             id_tugas, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), selected_siswa,
                                             item["Mapel"], item["Judul"], item["Jenis"], item["Sumber"], item["Instruksi"],
@@ -766,7 +822,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                             "Diberikan", st.session_state.tutor_nama
                                         ])
                                     st.session_state[draft_key] = []
-                                    st.success(f"{len(daftar_draft)} tugas berhasil disimpan untuk {selected_siswa}.")
+                                    st.success(f"{len(hasil_kirim)} tugas berhasil disimpan untuk {selected_siswa}. Lampiran yang dipilih sudah diunggah ke Google Drive.")
                                     st.rerun()
                             except Exception as e:
                                 st.error(f"Gagal menyimpan tugas: {e}")
