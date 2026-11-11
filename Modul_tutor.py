@@ -111,6 +111,70 @@ def get_bank_soal():
     return hasil
 
 
+def get_student_tasks():
+    """Baca tugas V2; jika belum ada, tampilkan daftar kosong tanpa error."""
+    try:
+        ws = sheet.worksheet("Tugas_Sesi_Siswa_v2")
+    except gspread.WorksheetNotFound:
+        try:
+            ws = sheet.worksheet("Tugas_Sesi_Siswa")
+        except gspread.WorksheetNotFound:
+            return []
+    return ws.get_all_records()
+
+
+def get_answers_worksheet():
+    return get_or_create_worksheet(
+        "DB_Jawaban_Siswa",
+        ["ID_Jawaban", "ID_Tugas", "Nama_Siswa",
+         "Waktu_Kirim", "Jawaban_JSON", "Status"]
+    )
+
+
+def simpan_draft_jawaban():
+    """Autosave jawaban per perubahan widget; satu record aktif per siswa dan tugas."""
+    task_id = st.session_state.get("_draft_task_id", "")
+    student = st.session_state.get("siswa_nama", "")
+    answers = st.session_state.get("_draft_answers", {})
+    if not task_id or not student:
+        return
+    ws = get_answers_worksheet()
+    records = ws.get_all_records()
+    found_row = None
+    for idx, row in enumerate(records, start=2):
+        if (str(row.get("ID_Tugas", "")) == task_id
+                and str(row.get("Nama_Siswa", "")).strip().lower() == student.strip().lower()
+                and str(row.get("Status", "")).lower() != "dikirim - menunggu penilaian"):
+            found_row = idx
+            break
+    payload = json.dumps(answers, ensure_ascii=False)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if found_row:
+        ws.update(f"D{found_row}:F{found_row}", [[now, payload, "Draft"]])
+    else:
+        ws.append_row([
+            "JWB-" + uuid.uuid4().hex[:10].upper(), task_id, student,
+            now, payload, "Draft", "", ""
+        ])
+
+
+def simpan_pengiriman_jawaban(task_id, student, answers):
+    ws = get_answers_worksheet()
+    records = ws.get_all_records()
+    payload = json.dumps(answers, ensure_ascii=False)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for idx, row in enumerate(records, start=2):
+        if (str(row.get("ID_Tugas", "")) == task_id
+                and str(row.get("Nama_Siswa", "")).strip().lower() == student.strip().lower()
+                and str(row.get("Status", "")).lower() == "draft"):
+            ws.update(f"D{idx}:F{idx}", [[now, payload, "Dikirim - Menunggu Penilaian"]])
+            return
+    ws.append_row([
+        "JWB-" + uuid.uuid4().hex[:10].upper(), task_id, student,
+        now, payload, "Dikirim - Menunggu Penilaian"
+    ])
+
+
 def normalisasi_opsi(teks):
     if not teks:
         return []
@@ -200,7 +264,6 @@ if peran == "🎓 Siswa":
             data = ws.get_all_records()
             siswa_found = False
             is_active = True
-
             for row in data:
                 if (
                     str(row.get("Nama_Lengkap", "")).strip().lower() == nama_siswa.strip().lower()
@@ -216,173 +279,203 @@ if peran == "🎓 Siswa":
                         st.session_state.siswa_jenjang = str(row.get("Jenjang", "SD")).strip().upper()
                         st.rerun()
                     break
-
             if not siswa_found:
                 st.error("Nama Siswa atau PIN Siswa salah!")
             elif not is_active:
                 st.error("🚫 Akun Siswa Anda sudah Nonaktif. Silakan hubungi pengelola.")
 
     else:
-        c_head1, c_head2 = st.columns([3, 1])
-        with c_head1:
-            st.success(
-                f"Halo, Ananda **{st.session_state.siswa_nama}** "
-                f"({st.session_state.siswa_jenjang})! Semangat Belajar! 🌟"
-            )
-        with c_head2:
-            if st.button("🚪 Logout Siswa"):
+        nama_aktif = st.session_state.siswa_nama
+        jenjang_aktif = st.session_state.siswa_jenjang
+        col_welcome, col_logout = st.columns([4, 1])
+        with col_welcome:
+            st.success(f"Halo, Ananda **{nama_aktif}** ({jenjang_aktif})! Semangat Belajar! 🌟")
+        with col_logout:
+            if st.button("🚪 Logout"):
                 st.session_state.siswa_logged_in = False
                 st.session_state.siswa_nama = ""
                 st.session_state.siswa_jenjang = ""
                 st.rerun()
 
-        ws_s = sheet.worksheet("Data_Siswa")
-        rec_s = ws_s.get_all_records()
-        poin_siswa = 0
-        for r in rec_s:
-            if str(r.get("Nama_Lengkap", "")).strip().lower() == st.session_state.siswa_nama.strip().lower():
-                try:
-                    poin_siswa = int(r.get("Poin", 0) or 0)
-                except (ValueError, TypeError):
-                    poin_siswa = 0
-                break
+        try:
+            tugas_anak = [
+                t for t in get_student_tasks()
+                if str(t.get("Nama_Siswa", "")).strip().lower() == nama_aktif.strip().lower()
+            ]
+        except Exception as e:
+            tugas_anak = []
+            st.error(f"Gagal membaca daftar tugas: {e}")
 
-        col_m1, col_m2 = st.columns(2)
-        with col_m1:
-            st.metric("🏆 Poin Koleksi Kamu", f"{poin_siswa} / 100 Poin")
-            st.progress(min(max(poin_siswa / 100.0, 0), 1))
-            if poin_siswa >= 100:
-                st.balloons()
-                st.success("🎉 Poinmu sudah mencapai 100! Kamu berhak ikut undian hadiah!")
-        with col_m2:
-            st.info("💡 Kumpulkan poin melalui kuis online dan aktivitas belajar bersama tutor.")
+        try:
+            jawaban_ws = get_answers_worksheet()
+            jawaban_records = jawaban_ws.get_all_records()
+        except Exception as e:
+            jawaban_records = []
+            st.warning(f"Data jawaban belum dapat dibaca: {e}")
 
-        st.markdown("---")
-        siswa_tab1, siswa_tab2 = st.tabs([
-            "📚 Ruang Belajar & Tugas",
-            "📈 Rekap Nilai & Progress"
+        jawaban_siswa = [
+            x for x in jawaban_records
+            if str(x.get("Nama_Siswa", "")).strip().lower() == nama_aktif.strip().lower()
+        ]
+        status_by_task = {}
+        for ans in jawaban_siswa:
+            status_by_task[str(ans.get("ID_Tugas", ""))] = str(ans.get("Status", "Draft"))
+
+        total = len(tugas_anak)
+        submitted = sum(1 for t in tugas_anak if "dikirim" in status_by_task.get(str(t.get("ID_Tugas", "")), "").lower())
+        marked_ids = {
+            str(n.get("ID_Tugas", "")) for n in sheet.worksheet("DB_Nilai_Tugas").get_all_records()
+        } if "DB_Nilai_Tugas" in [w.title for w in sheet.worksheets()] else set()
+        marked = sum(1 for t in tugas_anak if str(t.get("ID_Tugas", "")) in marked_ids)
+        draft_count = sum(1 for t in tugas_anak if status_by_task.get(str(t.get("ID_Tugas", "")), "").lower() == "draft")
+        pending = max(total - submitted - draft_count, 0)
+
+        st.markdown("### 🏠 Beranda Belajar")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Tugas diberikan", total)
+        m2.metric("Belum dikerjakan", pending)
+        m3.metric("Draft jawaban", draft_count)
+        m4.metric("Sudah dinilai", marked)
+
+        tab_tugas, tab_nilai, tab_riwayat = st.tabs([
+            "📚 Materi & Tugas", "📝 Hasil Penilaian", "📈 Riwayat Belajar"
         ])
 
-        with siswa_tab1:
-            st.markdown(f"### 🎒 Ruang Belajar Ananda **{st.session_state.siswa_nama}**")
-            st.info("Tugas yang diberikan tutor akan ditampilkan di sini.")
-
-            try:
-                # Tampilkan tugas dari sheet versi baru terlebih dahulu.
-                try:
-                    ws_tugas = sheet.worksheet("Tugas_Sesi_Siswa_v2")
-                except gspread.WorksheetNotFound:
-                    ws_tugas = sheet.worksheet("Tugas_Sesi_Siswa")
-
-                all_tugas = ws_tugas.get_all_records()
-                tugas_anak = [
-                    t for t in all_tugas
-                    if str(t.get("Nama_Siswa", "")).strip().lower()
-                    == st.session_state.siswa_nama.strip().lower()
-                ]
-
-                if tugas_anak:
-                    for t in tugas_anak:
-                        st.markdown(
-                            f"#### 📌 {t.get('Mapel', '-')} "
-                            f"— {t.get('Tanggal', '-')}"
-                        )
+        with tab_tugas:
+            st.markdown(f"### 🎒 Tugas Belajar Ananda {nama_aktif}")
+            if not tugas_anak:
+                st.info("Belum ada tugas yang diberikan Tutor.")
+            else:
+                for t in tugas_anak:
+                    task_id = str(t.get("ID_Tugas", ""))
+                    status = status_by_task.get(task_id, "Belum dikerjakan")
+                    with st.expander(
+                        f"{t.get('Mapel', 'Mapel')} · {t.get('Instruksi', 'Tugas')} · {status}",
+                        expanded=False
+                    ):
                         st.write(f"**Instruksi Tutor:** {t.get('Instruksi', '-')}")
+                        st.write(f"**Diberikan:** {t.get('Tanggal', '-')}")
+                        st.write(f"**Durasi:** {t.get('Timer_Menit', '-') } menit")
                         if t.get("File_Offline"):
-                            st.markdown(f"[📖 Buka Modul / Flipbook]({t.get('File_Offline')})")
+                            link_or_file = str(t.get("File_Offline", ""))
+                            if link_or_file.startswith("http"):
+                                st.markdown(f"[📖 Buka materi / file]({link_or_file})")
+                            else:
+                                st.info(f"Lampiran tercatat: {link_or_file}. File belum tentu tersedia untuk dibuka.")
+                        soal_json = str(t.get("Soal_JSON", "") or "")
+                        try:
+                            daftar_soal = json.loads(soal_json) if soal_json else []
+                        except (ValueError, TypeError):
+                            daftar_soal = []
 
-                        soal_json = t.get("Soal_JSON", "")
-                        if soal_json:
-                            try:
-                                daftar_soal = json.loads(soal_json)
-                            except (ValueError, TypeError):
-                                daftar_soal = []
+                        if daftar_soal:
+                            st.markdown("#### 📝 Lembar Jawaban Online")
+                            old_answer = {}
+                            for ans in jawaban_siswa:
+                                if str(ans.get("ID_Tugas", "")) == task_id:
+                                    try:
+                                        old_answer = json.loads(ans.get("Jawaban_JSON", "{}") or "{}")
+                                    except (ValueError, TypeError):
+                                        old_answer = {}
+                                    break
 
-                            if daftar_soal:
-                                st.markdown("**📝 Soal Online**")
-                                with st.form(f"jawab_{t.get('ID_Tugas', uuid.uuid4().hex)}"):
-                                    jawaban = {}
-                                    for i, soal in enumerate(daftar_soal, 1):
-                                        st.write(f"**{i}. {soal.get('Teks_Soal', '')}**")
-                                        if soal.get("Url_Gambar"):
-                                            st.image(soal["Url_Gambar"], use_container_width=True)
+                            st.session_state["_draft_task_id"] = task_id
+                            st.session_state["_draft_answers"] = dict(old_answer)
+                            for i, soal in enumerate(daftar_soal, 1):
+                                qkey = f"student_{task_id}_{i}"
+                                bentuk = str(soal.get("Bentuk_Soal", "")).lower()
+                                opsi = soal.get("Opsi_List", [])
+                                st.markdown(f"**{i}. {soal.get('Teks_Soal', '')}**")
+                                if soal.get("Url_Gambar"):
+                                    st.image(soal["Url_Gambar"], use_container_width=True)
 
-                                        bentuk = str(soal.get("Bentuk_Soal", "")).lower()
-                                        opsi = soal.get("Opsi_List", [])
+                                def _update_answer(question_no=i, widget_key=qkey):
+                                    st.session_state.setdefault("_draft_answers", {})
+                                    st.session_state["_draft_answers"][str(question_no)] = st.session_state.get(widget_key, "")
+                                    simpan_draft_jawaban()
 
-                                        if "pilihan ganda kompleks" in bentuk:
-                                            jawaban[str(i)] = st.multiselect(
-                                                f"Pilih jawaban nomor {i}:",
-                                                opsi,
-                                                key=f"ans_{t.get('ID_Tugas')}_{i}"
-                                            )
-                                        elif "pilihan ganda" in bentuk:
-                                            jawaban[str(i)] = st.radio(
-                                                f"Pilih jawaban nomor {i}:",
-                                                opsi,
-                                                key=f"ans_{t.get('ID_Tugas')}_{i}"
-                                            )
-                                        elif "benar" in bentuk:
-                                            jawaban[str(i)] = st.radio(
-                                                f"Jawaban nomor {i}:",
-                                                ["Benar", "Salah"],
-                                                horizontal=True,
-                                                key=f"ans_{t.get('ID_Tugas')}_{i}"
-                                            )
-                                        elif "menjodohkan" in bentuk:
-                                            jawaban[str(i)] = st.text_area(
-                                                f"Pasangan jawaban nomor {i} (tulis pasangan):",
-                                                key=f"ans_{t.get('ID_Tugas')}_{i}"
-                                            )
-                                        else:
-                                            jawaban[str(i)] = st.text_area(
-                                                f"Jawaban nomor {i}:",
-                                                key=f"ans_{t.get('ID_Tugas')}_{i}"
-                                            )
+                                if "pilihan ganda kompleks" in bentuk:
+                                    st.multiselect(
+                                        f"Pilih jawaban nomor {i}:",
+                                        opsi, default=old_answer.get(str(i), []),
+                                        key=qkey, on_change=_update_answer
+                                    )
+                                elif "pilihan ganda" in bentuk:
+                                    pilihan_default = old_answer.get(str(i), opsi[0] if opsi else None)
+                                    st.radio(
+                                        f"Pilih jawaban nomor {i}:",
+                                        opsi, index=opsi.index(pilihan_default) if pilihan_default in opsi else 0,
+                                        key=qkey, on_change=_update_answer
+                                    )
+                                elif "benar" in bentuk:
+                                    nilai_default = old_answer.get(str(i), "Benar")
+                                    pilihan_bs = ["Benar", "Salah"]
+                                    st.radio(
+                                        f"Jawaban nomor {i}:",
+                                        pilihan_bs, index=pilihan_bs.index(nilai_default) if nilai_default in pilihan_bs else 0,
+                                        horizontal=True, key=qkey, on_change=_update_answer
+                                    )
+                                else:
+                                    st.text_area(
+                                        f"Jawaban nomor {i}:",
+                                        value=str(old_answer.get(str(i), "")),
+                                        key=qkey, on_change=_update_answer
+                                    )
 
-                                    if st.form_submit_button("📤 Kirim Jawaban"):
-                                        ws_jawaban = get_or_create_worksheet(
-                                            "DB_Jawaban_Siswa",
-                                            [
-                                                "ID_Jawaban", "ID_Tugas", "Nama_Siswa",
-                                                "Waktu_Kirim", "Jawaban_JSON", "Status"
-                                            ]
-                                        )
-                                        ws_jawaban.append_row([
-                                            "JWB-" + uuid.uuid4().hex[:10].upper(),
-                                            t.get("ID_Tugas", ""),
-                                            st.session_state.siswa_nama,
-                                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                            json.dumps(jawaban, ensure_ascii=False),
-                                            "Dikirim - Menunggu Penilaian"
-                                        ])
-                                        st.success("Jawaban terkirim. Nilai akan diberikan tutor setelah diperiksa.")
-                        st.markdown("---")
-                else:
-                    st.info("Belum ada tugas yang diberikan tutor.")
-            except Exception as e:
-                st.warning(f"Tugas belum dapat dimuat: {e}")
+                            if status.lower() != "dikirim - menunggu penilaian":
+                                if st.button("📤 Kirim Jawaban", key=f"submit_{task_id}"):
+                                    current_answers = {}
+                                    for i in range(1, len(daftar_soal) + 1):
+                                        current_answers[str(i)] = st.session_state.get(f"student_{task_id}_{i}", "")
+                                    simpan_pengiriman_jawaban(task_id, nama_aktif, current_answers)
+                                    st.success("Jawaban berhasil dikirim. Tutor akan memeriksanya.")
+                                    st.rerun()
+                            else:
+                                st.info("Jawaban sudah dikirim dan sedang menunggu pemeriksaan Tutor.")
+                        else:
+                            st.info("Tugas ini tidak memiliki soal digital. Kerjakan melalui materi/lampiran yang diberikan Tutor.")
 
-        with siswa_tab2:
-            st.subheader(f"📈 Rekap Nilai {st.session_state.siswa_nama}")
+        with tab_nilai:
+            st.markdown("### 📝 Hasil Penilaian Tutor")
+            try:
+                nilai_records = sheet.worksheet("DB_Nilai_Tugas").get_all_records()
+            except gspread.WorksheetNotFound:
+                nilai_records = []
+            hasil_nilai = [
+                n for n in nilai_records
+                if str(n.get("Nama_Siswa", "")).strip().lower() == nama_aktif.strip().lower()
+            ]
+            if hasil_nilai:
+                for n in reversed(hasil_nilai):
+                    st.markdown(f"**{n.get('Mapel', 'Tugas')} — {n.get('ID_Tugas', '')}**")
+                    st.metric("Nilai", n.get("Nilai", "-"))
+                    st.write(f"Catatan Tutor: {n.get('Catatan', '-')}")
+                    st.caption(f"Diperiksa oleh {n.get('Tutor', '-')} · {n.get('Waktu_Penilaian', '-')}")
+                    st.divider()
+            else:
+                st.info("Belum ada hasil penilaian dari Tutor.")
+
+        with tab_riwayat:
+            st.markdown("### 📈 Riwayat Belajar")
             try:
                 ws_r = sheet.worksheet("Riwayat_Latihan")
-                data_tabel_siswa = []
-                for r in ws_r.get_all_records():
-                    if str(r.get("Nama_Siswa", "")).strip().lower() == st.session_state.siswa_nama.strip().lower():
-                        data_tabel_siswa.append({
-                            "Tanggal": str(r.get("Waktu_Selesai", ""))[:10],
-                            "Mapel": r.get("Mapel"),
-                            "Topik / Jenis": r.get("Topik_Kuis"),
-                            "Skor / Nilai": r.get("Skor"),
-                            "Keterangan": r.get("Detail_Salah")
-                        })
+                data_tabel_siswa = [
+                    {
+                        "Tanggal": str(r.get("Waktu_Selesai", ""))[:10],
+                        "Mapel": r.get("Mapel"),
+                        "Aktivitas": r.get("Topik_Kuis"),
+                        "Skor": r.get("Skor"),
+                        "Catatan": r.get("Detail_Salah")
+                    }
+                    for r in ws_r.get_all_records()
+                    if str(r.get("Nama_Siswa", "")).strip().lower() == nama_aktif.strip().lower()
+                ]
                 if data_tabel_siswa:
                     st.dataframe(pd.DataFrame(data_tabel_siswa), use_container_width=True)
                 else:
-                    st.info("Belum ada rekap nilai.")
-            except Exception as e:
-                st.info(f"Rekap nilai belum tersedia: {e}")
+                    st.info("Belum ada riwayat belajar.")
+            except gspread.WorksheetNotFound:
+                st.info("Riwayat belajar belum tersedia.")
 
 
 # =========================================================
