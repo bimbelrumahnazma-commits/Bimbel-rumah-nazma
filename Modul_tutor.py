@@ -347,7 +347,14 @@ def tampilkan_media_soal(soal):
 
     if audio.startswith(("https://", "http://")):
         st.markdown("🎧 **Audio soal**")
-        st.audio(media_direct_url(audio))
+        audio_id = drive_id(audio)
+        if audio_id:
+            # Gunakan pemutar preview resmi Google Drive. Link unduhan langsung
+            # dapat mengembalikan halaman konfirmasi, sehingga st.audio membaca 0:00.
+            preview_url = f"https://drive.google.com/file/d/{audio_id}/preview"
+            components.iframe(preview_url, height=150, scrolling=False)
+        else:
+            st.audio(audio)
         st.link_button("↗ Buka / Unduh Audio", audio, use_container_width=True)
 
     if video.startswith(("https://", "http://")):
