@@ -581,6 +581,54 @@ def get_answers_worksheet():
     return ws
 
 
+LAMPIRAN_JAWABAN_HEADERS = [
+    "ID_Lampiran", "ID_Tugas", "ID_Siswa", "Nama_File", "Mime_Type",
+    "URL_Drive", "Waktu_Upload", "Status_Lampiran"
+]
+
+
+def get_lampiran_jawaban_worksheet():
+    """Sheet terpisah agar struktur DB_Jawaban_Siswa lama tetap utuh."""
+    ws = get_or_create_worksheet("DB_Lampiran_Jawaban", LAMPIRAN_JAWABAN_HEADERS, rows="3000", cols="8")
+    if not header_cocok(ws.row_values(1), LAMPIRAN_JAWABAN_HEADERS):
+        raise ValueError("Header DB_Lampiran_Jawaban tidak sesuai. Data tidak ditulis.")
+    return ws
+
+
+def simpan_lampiran_jawaban(task_id, student_id, uploaded_files):
+    """Upload lampiran siswa ke Drive lalu simpan metadata dan URL-nya."""
+    if not uploaded_files:
+        return []
+    ws = get_lampiran_jawaban_worksheet()
+    now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    rows = []
+    hasil = []
+    for file_item in uploaded_files:
+        file_bytes = file_item.getvalue()
+        if len(file_bytes) > 10 * 1024 * 1024:
+            raise ValueError(f"File {file_item.name} melebihi batas 10 MB.")
+        mime = file_item.type or "application/octet-stream"
+        url = upload_lampiran_ke_drive(file_bytes, file_item.name, mime)
+        rows.append([
+            "LMP-" + uuid.uuid4().hex[:10].upper(), task_id, student_id,
+            file_item.name, mime, url, now, "Terkirim"
+        ])
+        hasil.append({"Nama_File": file_item.name, "URL_Drive": url, "Mime_Type": mime})
+    if rows:
+        ws.append_rows(rows, value_input_option="RAW")
+    return hasil
+
+
+def baca_lampiran_jawaban(task_id, student_id):
+    try:
+        ws = get_lampiran_jawaban_worksheet()
+        return [r for r in baca_records_aman(ws)
+                if str(r.get("ID_Tugas", "")).strip() == str(task_id).strip()
+                and str(r.get("ID_Siswa", "")).strip() == str(student_id).strip()]
+    except gspread.WorksheetNotFound:
+        return []
+
+
 def baca_jawaban_tergabung(ws):
     """Gabungkan baris per-soal menjadi format internal yang dipakai tampilan siswa/tutor."""
     rows = baca_records_aman(ws)
@@ -794,6 +842,20 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
 
         if daftar_soal:
             st.markdown("#### 📝 Lembar Jawaban Online")
+            file_jawaban = []
+            if not terkunci:
+                file_jawaban = st.file_uploader(
+                    "Lampirkan foto/PDF jawaban (opsional):",
+                    type=["jpg", "jpeg", "png", "pdf"],
+                    accept_multiple_files=True,
+                    key=f"lampiran_online_{task_id}"
+                )
+                if file_jawaban:
+                    st.caption("Maksimal 10 MB per file. File akan disimpan ke Google Drive saat jawaban dikirim.")
+            else:
+                lampiran_lama = baca_lampiran_jawaban(task_id, siswa_id)
+                for lamp in lampiran_lama:
+                    st.markdown(f"[📎 {lamp.get('Nama_File', 'Lampiran jawaban')}]({lamp.get('URL_Drive', '')})")
             old_answer = {}
             for ans in jawaban_siswa:
                 if str(ans.get("ID_Tugas", "")) == task_id:
@@ -898,10 +960,16 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                     boleh_kirim = st.checkbox("Saya yakin ingin mengirim walaupun masih ada soal yang kosong.",
                                               key=f"yakin_{task_id}")
                 if st.button("📤 Kirim Jawaban", key=f"submit_{task_id}", disabled=not boleh_kirim):
-                    ok = simpan_pengiriman_jawaban(task_id, siswa_id, current_answers)
-                    st.success("Jawaban berhasil dikirim. Tutor akan memeriksanya." if ok
-                               else "Jawaban untuk tugas ini sudah dikirim sebelumnya.")
-                    st.rerun()
+                    try:
+                        # Upload file lebih dulu; tabel jawaban online yang lama tidak diubah.
+                        if file_jawaban:
+                            simpan_lampiran_jawaban(task_id, siswa_id, file_jawaban)
+                        ok = simpan_pengiriman_jawaban(task_id, siswa_id, current_answers)
+                        st.success("Jawaban berhasil dikirim. Tutor akan memeriksanya." if ok
+                                   else "Jawaban untuk tugas ini sudah dikirim sebelumnya.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Pengiriman jawaban/lampiran gagal: {e}")
 
         elif adalah_materi(t):
             st.info("Ini materi bacaan dari Tutor, tidak ada yang perlu dikirim.")
@@ -911,16 +979,32 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                 st.info("Sudah ditandai selesai. Tutor akan memeriksa hasilnya." if kode == "dikirim"
                         else "Sudah dinilai oleh Tutor.")
             else:
-                st.info("Kerjakan melalui materi/lampiran dari Tutor, lalu tekan tombol di bawah setelah selesai.")
+                st.info("Kerjakan melalui materi/lampiran dari Tutor. Unggah foto/PDF hasil pekerjaan, lalu kirim kepada Tutor.")
                 catatan_siswa = st.text_area("Catatan untuk Tutor (opsional):", key=f"cat_{task_id}")
-                if st.button("✅ Saya sudah mengerjakan", key=f"selesai_{task_id}"):
-                    teks = "Sudah dikerjakan (offline)"
-                    if catatan_siswa.strip():
-                        teks += " — " + catatan_siswa.strip()
-                    ok = simpan_pengiriman_jawaban(task_id, siswa_id, {"0": teks})
-                    st.success("Tugas ditandai selesai. Tutor akan memeriksanya." if ok
-                               else "Tugas ini sudah ditandai selesai sebelumnya.")
-                    st.rerun()
+                file_jawaban_offline = st.file_uploader(
+                    "Unggah foto/PDF hasil pekerjaan:",
+                    type=["jpg", "jpeg", "png", "pdf"],
+                    accept_multiple_files=True,
+                    key=f"lampiran_offline_{task_id}"
+                )
+                if file_jawaban_offline:
+                    st.caption("Maksimal 10 MB per file. Pastikan foto jelas dan seluruh halaman terlihat.")
+                if st.button("📤 Kirim Hasil Pekerjaan", key=f"selesai_{task_id}"):
+                    try:
+                        teks = "Sudah dikerjakan (offline)"
+                        if catatan_siswa.strip():
+                            teks += " — " + catatan_siswa.strip()
+                        if not file_jawaban_offline and not catatan_siswa.strip():
+                            st.error("Unggah minimal satu foto/PDF atau isi catatan untuk Tutor.")
+                        else:
+                            if file_jawaban_offline:
+                                simpan_lampiran_jawaban(task_id, siswa_id, file_jawaban_offline)
+                            ok = simpan_pengiriman_jawaban(task_id, siswa_id, {"0": teks})
+                            st.success("Hasil pekerjaan berhasil dikirim. Tutor akan memeriksanya." if ok
+                                       else "Tugas ini sudah dikirim sebelumnya.")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Pengiriman hasil pekerjaan gagal: {e}")
 
 
 # =========================================================
@@ -1629,6 +1713,13 @@ elif peran == "🔒 Pengajar / Tutor":
                         pilih_jwb = st.selectbox("Pilih jawaban siswa:", list(opsi_jwb.keys()))
                         item = opsi_jwb[pilih_jwb]
                         st.write(f"**Siswa:** {item.get('Nama_Siswa')}")
+                        lampiran_item = baca_lampiran_jawaban(item.get("ID_Tugas", ""), item.get("ID_Siswa", ""))
+                        if lampiran_item:
+                            st.markdown("**📎 Lampiran jawaban siswa:**")
+                            for lamp in lampiran_item:
+                                st.markdown(f"[Buka {lamp.get('Nama_File', 'lampiran')}]({lamp.get('URL_Drive', '')})")
+                        else:
+                            st.caption("Tidak ada lampiran foto/PDF pada pengiriman ini.")
                         try:
                             jawaban_dict = json.loads(item.get("Jawaban_JSON", "{}"))
                         except (ValueError, TypeError):
