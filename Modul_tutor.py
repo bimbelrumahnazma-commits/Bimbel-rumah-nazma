@@ -336,7 +336,16 @@ def tampilkan_lampiran(url, tinggi=620):
     fid = drive_id(url)
     src = f"https://drive.google.com/file/d/{fid}/preview" if fid else url
     components.iframe(src, height=tinggi, scrolling=True)
-    st.markdown(f"[↗ Buka lampiran di tab baru]({url})")
+    fid = drive_id(url)
+    if fid:
+        url_unduh = f"https://drive.google.com/uc?export=download&id={fid}"
+    else:
+        url_unduh = url
+    col_buka, col_unduh = st.columns(2)
+    with col_buka:
+        st.link_button("↗ Buka lampiran", url, use_container_width=True)
+    with col_unduh:
+        st.link_button("⬇️ Unduh materi", url_unduh, use_container_width=True)
 
 
 def flipbook_gambar(urls, tinggi=700):
@@ -383,6 +392,8 @@ def tampilkan_materi(teks_lampiran):
     if gambar:
         st.markdown("#### 🖼️ Flipbook Materi")
         flipbook_gambar(gambar)
+        for i, url_gambar in enumerate(gambar, 1):
+            st.link_button(f"⬇️ Unduh halaman {i}", url_gambar, use_container_width=True)
     for jenis, url in lainnya:
         st.markdown("#### 📄 Dokumen PDF" if jenis == "pdf" else "#### 📎 Dokumen" if jenis == "doc" else "#### 🔗 Materi / Flipbook Eksternal")
         tampilkan_lampiran(url)
@@ -1629,8 +1640,21 @@ elif peran == "🔒 Pengajar / Tutor":
                 except Exception as e:
                     pilihan_pantau = []
                     st.error(f"Daftar siswa belum dapat dibaca: {e}")
-                if pilihan_pantau:
-                    nama_pantau = st.selectbox("Pilih siswa:", pilihan_pantau, key="pantau_siswa")
+                cari_pantau = st.text_input(
+                    "🔍 Cari nama siswa:",
+                    key="cari_pantau_siswa",
+                    placeholder="Ketik nama siswa..."
+                ).strip().lower()
+                hasil_pantau = [
+                    nama for nama in pilihan_pantau
+                    if cari_pantau and cari_pantau in str(nama).lower()
+                ]
+                if cari_pantau and hasil_pantau:
+                    nama_pantau = st.selectbox(
+                        "Pilih siswa yang cocok:",
+                        hasil_pantau,
+                        key="pantau_siswa_hasil"
+                    )
                     try:
                         sid_pantau = get_siswa_id_by_nama(nama_pantau)
                         semua_tugas = [t for t in get_student_tasks()
@@ -1691,6 +1715,10 @@ elif peran == "🔒 Pengajar / Tutor":
                                         st.error("Kolom Status_Tugas tidak ditemukan.")
                     except Exception as e:
                         st.error(f"Pantauan belum dapat ditampilkan: {e}")
+                elif cari_pantau:
+                    st.warning("Siswa aktif tidak ditemukan.")
+                else:
+                    st.info("Ketik nama siswa untuk melihat tugas dan PR.")
 
         elif menu_tutor == "📊 Portofolio Siswa":
                 st.header("📊 Portofolio & Pemeriksaan Jawaban Siswa")
@@ -1807,8 +1835,28 @@ elif peran == "🔒 Pengajar / Tutor":
                 except Exception as e:
                     siswa_pilihan_ekstra = []
                     st.error(f"Daftar siswa belum dapat dibaca: {e}")
+                cari_ekstra = st.text_input(
+                    "🔍 Cari nama siswa tujuan:",
+                    key="cari_siswa_materi_ekstra",
+                    placeholder="Ketik nama siswa..."
+                ).strip().lower()
+                hasil_ekstra = [
+                    nama for nama in siswa_pilihan_ekstra
+                    if cari_ekstra and cari_ekstra in str(nama).lower()
+                ]
+                nama_target_siswa = ""
+                if cari_ekstra:
+                    if hasil_ekstra:
+                        nama_target_siswa = st.selectbox(
+                            "Pilih siswa yang cocok:",
+                            hasil_ekstra,
+                            key="pilih_siswa_materi_ekstra"
+                        )
+                    else:
+                        st.warning("Nama siswa tidak ditemukan.")
+                else:
+                    st.info("Ketik nama siswa untuk mencari penerima materi.")
                 with st.form("form_materi_tambahan"):
-                    nama_target_siswa = st.selectbox("Siswa Tujuan:", siswa_pilihan_ekstra) if siswa_pilihan_ekstra else ""
                     mapel_ekstra = st.selectbox("Mata Pelajaran:", MAPEL_OPTIONS)
                     judul_materi = st.text_input("Judul Materi / Topik:")
                     link_materi_ekstra = st.text_area("Link Modul / Flipbook / Soal (satu link per baris):")
