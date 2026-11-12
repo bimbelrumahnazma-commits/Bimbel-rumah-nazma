@@ -395,8 +395,19 @@ def tampilkan_materi(teks_lampiran):
         for i, url_gambar in enumerate(gambar, 1):
             st.link_button(f"⬇️ Unduh halaman {i}", url_gambar, use_container_width=True)
     for jenis, url in lainnya:
-        st.markdown("#### 📄 Dokumen PDF" if jenis == "pdf" else "#### 📎 Dokumen" if jenis == "doc" else "#### 🔗 Materi / Flipbook Eksternal")
-        tampilkan_lampiran(url)
+        if jenis == "video":
+            st.markdown("#### 🎬 Video Pembelajaran")
+            fid = drive_id(url)
+            st.video(f"https://drive.google.com/uc?export=download&id={fid}" if fid else url)
+            st.link_button("↗ Buka / Unduh Video", url, use_container_width=True)
+        elif jenis == "audio":
+            st.markdown("#### 🎧 Audio Listening")
+            fid = drive_id(url)
+            st.audio(f"https://drive.google.com/uc?export=download&id={fid}" if fid else url)
+            st.link_button("↗ Buka / Unduh Audio", url, use_container_width=True)
+        else:
+            st.markdown("#### 📄 Dokumen PDF" if jenis == "pdf" else "#### 📎 Dokumen" if jenis == "doc" else "#### 🔗 Materi / Flipbook Eksternal")
+            tampilkan_lampiran(url)
 
 
 
@@ -618,6 +629,9 @@ def simpan_lampiran_jawaban(task_id, student_id, uploaded_files):
     """Upload lampiran siswa ke Drive lalu simpan metadata dan URL-nya."""
     if not uploaded_files:
         return []
+    total_bytes = sum(len(f.getvalue()) for f in uploaded_files)
+    if total_bytes > 40 * 1024 * 1024:
+        raise ValueError("Total lampiran satu pengiriman maksimal 40 MB.")
     ws = get_lampiran_jawaban_worksheet()
     now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
     rows = []
@@ -646,6 +660,60 @@ def baca_lampiran_jawaban(task_id, student_id):
                 and str(r.get("ID_Siswa", "")).strip() == str(student_id).strip()]
     except gspread.WorksheetNotFound:
         return []
+
+
+PESAN_ORTU_HEADERS = [
+    "ID_Pesan", "ID_Ortu", "ID_Siswa", "Nama_Siswa", "Pesan",
+    "URL_Lampiran", "Nama_File", "Mime_Type", "Waktu_Kirim",
+    "Status_Pesan", "Balasan_Tutor", "Nama_Tutor", "Waktu_Balasan"
+]
+
+
+def get_pesan_ortu_worksheet():
+    ws = get_or_create_worksheet("Pesan_Orangtua_Tutor", PESAN_ORTU_HEADERS, rows="3000", cols="13")
+    if not header_cocok(ws.row_values(1), PESAN_ORTU_HEADERS):
+        raise ValueError("Header Pesan_Orangtua_Tutor tidak sesuai. Data tidak ditulis.")
+    return ws
+
+
+def simpan_pesan_ortu(id_ortu, id_siswa, nama_siswa, pesan, files):
+    files = list(files or [])
+    if sum(len(f.getvalue()) for f in files) > 40 * 1024 * 1024:
+        raise ValueError("Total lampiran satu pesan maksimal 40 MB.")
+    ws = get_pesan_ortu_worksheet()
+    urls, names, mimes = [], [], []
+    for f in files or []:
+        data = f.getvalue()
+        if len(data) > 20 * 1024 * 1024:
+            raise ValueError(f"{f.name} melebihi batas 20 MB.")
+        mime = f.type or "application/octet-stream"
+        url = upload_lampiran_ke_drive(data, f.name, mime)
+        urls.append(url)
+        names.append(f.name)
+        mimes.append(mime)
+    if not str(pesan or "").strip() and not urls:
+        raise ValueError("Isi pesan atau lampirkan minimal satu foto/video.")
+    now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    ws.append_row([
+        "PES-" + uuid.uuid4().hex[:10].upper(), id_ortu, id_siswa, nama_siswa,
+        str(pesan or "").strip(), "|".join(urls), "|".join(names),
+        "|".join(mimes), now, "Menunggu Tutor", "", "", ""
+    ], value_input_option="RAW")
+    return True
+
+
+def tampilkan_media_url(url, mime="", nama="Lampiran"):
+    jenis = jenis_dari_mime(mime, nama)
+    fid = drive_id(url)
+    media_url = f"https://drive.google.com/uc?export=download&id={fid}" if fid else url
+    if jenis == "video":
+        st.video(media_url)
+    elif jenis == "audio":
+        st.audio(media_url)
+    elif jenis == "img":
+        st.image(img_url(url), caption=nama, use_container_width=True)
+    else:
+        st.link_button(f"📎 Buka {nama}", url, use_container_width=True)
 
 
 def baca_jawaban_tergabung(ws):
@@ -864,13 +932,14 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
             file_jawaban = []
             if not terkunci:
                 file_jawaban = st.file_uploader(
-                    "Lampirkan foto/PDF jawaban (opsional):",
-                    type=["jpg", "jpeg", "png", "pdf"],
+                    "Lampirkan foto, PDF, audio, atau video jawaban (opsional):",
+                    type=["jpg", "jpeg", "png", "webp", "pdf", "mp4", "mov", "webm", "m4v",
+                          "mp3", "wav", "m4a", "ogg", "aac"],
                     accept_multiple_files=True,
                     key=f"lampiran_online_{task_id}"
                 )
                 if file_jawaban:
-                    st.caption("Maksimal 10 MB per file. File akan disimpan ke Google Drive saat jawaban dikirim.")
+                    st.caption("Maksimal 20 MB per file. Audio/video akan disimpan ke Google Drive saat jawaban dikirim.")
             else:
                 lampiran_lama = baca_lampiran_jawaban(task_id, siswa_id)
                 for lamp in lampiran_lama:
@@ -998,16 +1067,17 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                 st.info("Sudah ditandai selesai. Tutor akan memeriksa hasilnya." if kode == "dikirim"
                         else "Sudah dinilai oleh Tutor.")
             else:
-                st.info("Kerjakan melalui materi/lampiran dari Tutor. Unggah foto/PDF hasil pekerjaan, lalu kirim kepada Tutor.")
+                st.info("Kerjakan melalui materi/lampiran dari Tutor. Unggah foto, PDF, audio, atau video hasil pekerjaan, lalu kirim kepada Tutor.")
                 catatan_siswa = st.text_area("Catatan untuk Tutor (opsional):", key=f"cat_{task_id}")
                 file_jawaban_offline = st.file_uploader(
-                    "Unggah foto/PDF hasil pekerjaan:",
-                    type=["jpg", "jpeg", "png", "pdf"],
+                    "Unggah foto, PDF, audio, atau video hasil pekerjaan:",
+                    type=["jpg", "jpeg", "png", "webp", "pdf", "mp4", "mov", "webm", "m4v",
+                          "mp3", "wav", "m4a", "ogg", "aac"],
                     accept_multiple_files=True,
                     key=f"lampiran_offline_{task_id}"
                 )
                 if file_jawaban_offline:
-                    st.caption("Maksimal 10 MB per file. Pastikan foto jelas dan seluruh halaman terlihat.")
+                    st.caption("Maksimal 20 MB per file. Pastikan video/audio dapat diputar dan suaranya jelas.")
                 if st.button("📤 Kirim Hasil Pekerjaan", key=f"selesai_{task_id}"):
                     try:
                         teks = "Sudah dikerjakan (offline)"
@@ -1334,7 +1404,8 @@ elif peran == "🔒 Pengajar / Tutor":
                 "📋 Pantau Tugas & PR",
                 "📊 Portofolio Siswa",
                 "📚 Materi Tambahan",
-                "🕒 Kehadiran Siswa"
+                "🕒 Kehadiran Siswa",
+                "📨 Pesan Orang Tua"
             ],
             label_visibility="collapsed",
             key="menu_navigasi_tutor"
@@ -1491,8 +1562,9 @@ elif peran == "🔒 Pengajar / Tutor":
                                                       placeholder="https://...", key=f"lk_{k}")
                         else:
                             file_tugas = st.file_uploader(
-                                "Pilih file dari perangkat (boleh banyak):",
-                                type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"],
+                                "Pilih materi/soal dari perangkat (PDF, dokumen, gambar, audio, video):",
+                                type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg", "webp",
+                                      "mp4", "mov", "webm", "m4v", "mp3", "wav", "m4a", "ogg", "aac"],
                                 accept_multiple_files=True, key=f"up_{k}"
                             )
 
@@ -1515,8 +1587,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.error("Setiap link harus diawali https://")
                             elif sumber_tugas == SUMBER_UPLOAD and not daftar_file:
                                 st.error("Pilih minimal satu file yang akan dilampirkan.")
-                            elif any(len(f.getvalue()) > 10 * 1024 * 1024 for f in daftar_file):
-                                st.error("Ukuran tiap lampiran maksimal 10 MB. Kompres file lalu unggah kembali.")
+                            elif any(len(f.getvalue()) > 20 * 1024 * 1024 for f in daftar_file):
+                                st.error("Ukuran tiap lampiran maksimal 20 MB. Kompres video/audio lalu unggah kembali.")
                             elif total_byte > 40 * 1024 * 1024:
                                 st.error("Total lampiran satu tugas maksimal 40 MB. Bagi menjadi beberapa tugas.")
                             else:
@@ -1859,17 +1931,34 @@ elif peran == "🔒 Pengajar / Tutor":
                 with st.form("form_materi_tambahan"):
                     mapel_ekstra = st.selectbox("Mata Pelajaran:", MAPEL_OPTIONS)
                     judul_materi = st.text_input("Judul Materi / Topik:")
-                    link_materi_ekstra = st.text_area("Link Modul / Flipbook / Soal (satu link per baris):")
+                    link_materi_ekstra = st.text_area("Link Modul / Flipbook / Soal (satu link per baris, opsional):")
+                    file_materi_ekstra = st.file_uploader(
+                        "Atau unggah PDF, gambar, audio listening, atau video:",
+                        type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg", "webp",
+                              "mp4", "mov", "webm", "m4v", "mp3", "wav", "m4a", "ogg", "aac"],
+                        accept_multiple_files=True,
+                        key="upload_materi_ekstra"
+                    )
                     if st.form_submit_button("🚀 Kirim Materi Ekstra"):
                         links_ekstra = [x.strip() for x in link_materi_ekstra.splitlines() if x.strip()]
+                        files_ekstra = list(file_materi_ekstra or [])
                         if not nama_target_siswa:
                             st.error("Pilih siswa tujuan.")
                         elif not judul_materi.strip():
                             st.error("Judul materi wajib diisi.")
-                        elif not links_ekstra or any(not l.lower().startswith(("http://", "https://")) for l in links_ekstra):
-                            st.error("Masukkan minimal satu link, dan setiap link harus diawali https://")
+                        elif not links_ekstra and not files_ekstra:
+                            st.error("Masukkan link atau unggah minimal satu file materi.")
+                        elif any(not l.lower().startswith(("http://", "https://")) for l in links_ekstra):
+                            st.error("Setiap link harus diawali https://")
+                        elif any(len(f.getvalue()) > 20 * 1024 * 1024 for f in files_ekstra):
+                            st.error("Ukuran tiap file maksimal 20 MB.")
                         else:
                             try:
+                                entri_materi = []
+                                for f in files_ekstra:
+                                    url = upload_lampiran_ke_drive(f.getvalue(), f.name, f.type or "application/octet-stream")
+                                    entri_materi.append(f"{jenis_dari_mime(f.type, f.name)}::{url}")
+                                entri_materi.extend(f"link::{l}" for l in links_ekstra)
                                 ws_tugas = get_or_create_worksheet("Tugas_Sesi_Siswa_v2", TASK_HEADERS)
                                 if not header_cocok(ws_tugas.row_values(1), TASK_HEADERS):
                                     raise ValueError("Header Tugas_Sesi_Siswa_v2 tidak sesuai. Data tidak ditulis.")
@@ -1877,9 +1966,9 @@ elif peran == "🔒 Pengajar / Tutor":
                                     "TGS-" + uuid.uuid4().hex[:10].upper(),
                                     waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"),
                                     nama_target_siswa, mapel_ekstra, judul_materi.strip(),
-                                    "Materi Tambahan", "Link Modul / Flipbook / Soal",
+                                    "Materi Tambahan", "Upload / Link Modul / Flipbook / Audio / Video",
                                     f"[Materi Ekstra] {judul_materi.strip()}",
-                                    "|".join(f"link::{l}" for l in links_ekstra),
+                                    "|".join(entri_materi),
                                     0, "", "[]", "Diberikan", st.session_state.tutor_nama
                                 ])
                                 st.success("Materi tambahan berhasil dikirim.")
@@ -1903,61 +1992,133 @@ elif peran == "🔒 Pengajar / Tutor":
                         if not pilihan_siswa:
                             st.info("Belum ada siswa aktif yang terhubung dengan tutor ini pada Relasi_Tutor_Siswa.")
                         else:
-                            opsi_siswa = {
-                                f"{r.get('Nama_Lengkap', 'Tanpa nama')} · {r.get('ID_Siswa', '')}": r
-                                for r in pilihan_siswa
-                            }
-                            pilihan_label = st.selectbox("Pilih siswa yang hadir:", list(opsi_siswa.keys()), key="attendance_student_select")
-                            siswa_pilih = opsi_siswa[pilihan_label]
-                            sid = str(siswa_pilih.get("ID_Siswa", "")).strip()
-                            st.write(f"**Siswa:** {siswa_pilih.get('Nama_Lengkap', '-')}")
-                            try:
-                                ws_att, active_row, active_rec = cari_sesi_aktif(sid, tutor_id)
-                                if active_rec:
-                                    st.info(f"Sesi aktif sejak pukul **{active_rec.get('Waktu_Hadir', '-')}** pada {active_rec.get('Tanggal_Sesi', '-')}")
-                                    if st.button("✅ Tandai Selesai Belajar", type="primary", key=f"finish_att_{sid}"):
-                                        ok, msg = tandai_selesai_belajar(sid, tutor_id)
-                                        (st.success if ok else st.error)(msg)
-                                        st.rerun()
-                                else:
-                                    catatan_hadir = st.text_input("Catatan kehadiran (opsional):", key=f"attendance_note_{sid}")
-                                    if st.button("🟢 Catat Hadir / Mulai Belajar", type="primary", key=f"start_att_{sid}"):
-                                        ok, msg = catat_kehadiran(sid, tutor_id, st.session_state.tutor_nama, catatan_hadir)
-                                        (st.success if ok else st.error)(msg)
-                                        st.rerun()
-                                tampilkan_riwayat_kehadiran(sid, "Riwayat Kehadiran Siswa")
+                            cari_hadir = st.text_input(
+                                "🔍 Cari nama siswa yang hadir:",
+                                key="attendance_student_search",
+                                placeholder="Ketik nama siswa..."
+                            ).strip().casefold()
+                            hasil_hadir = [
+                                r for r in pilihan_siswa
+                                if cari_hadir and cari_hadir in str(r.get("Nama_Lengkap", "")).casefold()
+                            ]
+                            if not cari_hadir:
+                                st.info("Ketik nama siswa untuk mencatat kehadiran.")
+                            elif not hasil_hadir:
+                                st.warning("Siswa tidak ditemukan pada daftar siswa yang terhubung dengan tutor ini.")
+                            if hasil_hadir:
+                                opsi_siswa = {
+                                    f"{r.get('Nama_Lengkap', 'Tanpa nama')} · {r.get('ID_Siswa', '')}": r
+                                    for r in hasil_hadir
+                                }
+                                pilihan_label = st.selectbox(
+                                    "Pilih siswa yang cocok:",
+                                    list(opsi_siswa.keys()),
+                                    key="attendance_student_select_search"
+                                )
+                                siswa_pilih = opsi_siswa[pilihan_label]
+                                sid = str(siswa_pilih.get("ID_Siswa", "")).strip()
+                                st.write(f"**Siswa:** {siswa_pilih.get('Nama_Lengkap', '-')}")
+                                try:
+                                    ws_att, active_row, active_rec = cari_sesi_aktif(sid, tutor_id)
+                                    if active_rec:
+                                        st.info(f"Sesi aktif sejak pukul **{active_rec.get('Waktu_Hadir', '-')}** pada {active_rec.get('Tanggal_Sesi', '-')}")
+                                        if st.button("✅ Tandai Selesai Belajar", type="primary", key=f"finish_att_{sid}"):
+                                            ok, msg = tandai_selesai_belajar(sid, tutor_id)
+                                            (st.success if ok else st.error)(msg)
+                                            st.rerun()
+                                    else:
+                                        catatan_hadir = st.text_input("Catatan kehadiran (opsional):", key=f"attendance_note_{sid}")
+                                        if st.button("🟢 Catat Hadir / Mulai Belajar", type="primary", key=f"start_att_{sid}"):
+                                            ok, msg = catat_kehadiran(sid, tutor_id, st.session_state.tutor_nama, catatan_hadir)
+                                            (st.success if ok else st.error)(msg)
+                                            st.rerun()
+                                    tampilkan_riwayat_kehadiran(sid, "Riwayat Kehadiran Siswa")
 
-                                # Koreksi hanya untuk catatan yang dibuat oleh tutor yang sedang login.
-                                records_tutor = [r for r in baca_records_aman(get_attendance_worksheet())
-                                                 if str(r.get("ID_Tutor", "")).strip() == tutor_id
-                                                 and str(r.get("ID_Siswa", "")).strip() == sid]
-                                if records_tutor:
-                                    with st.expander("✏️ Koreksi catatan kehadiran (wajib alasan)"):
-                                        rec_options = {
-                                            f"{r.get('Tanggal_Sesi', '')} | {r.get('Waktu_Hadir', '')} | {r.get('ID_Kehadiran', '')}": r
-                                            for r in records_tutor[-20:]
-                                        }
-                                        rec_label = st.selectbox("Pilih catatan:", list(rec_options.keys()), key=f"corr_rec_{sid}")
-                                        rec_selected = rec_options[rec_label]
-                                        kolom_koreksi = st.selectbox("Bagian yang dikoreksi:", ["Waktu_Hadir", "Waktu_Selesai_Belajar", "Status_Kehadiran"], key=f"corr_col_{sid}")
-                                        nilai_awal = str(rec_selected.get(kolom_koreksi, ""))
-                                        if kolom_koreksi == "Status_Kehadiran":
-                                            nilai_koreksi = st.selectbox("Nilai baru:", ["Hadir", "Selesai Belajar", "Tidak Hadir", "Izin"], index=["Hadir", "Selesai Belajar", "Tidak Hadir", "Izin"].index(nilai_awal) if nilai_awal in ["Hadir", "Selesai Belajar", "Tidak Hadir", "Izin"] else 0, key=f"corr_val_{sid}")
-                                        else:
-                                            nilai_koreksi = st.text_input("Nilai baru (format HH:MM:SS):", value=nilai_awal, key=f"corr_val_{sid}")
-                                        alasan_koreksi = st.text_area("Alasan koreksi:", key=f"corr_reason_{sid}")
-                                        if st.button("Simpan Koreksi", key=f"save_corr_{sid}"):
-                                            try:
-                                                ok, msg = koreksi_kehadiran(rec_selected.get("ID_Kehadiran", ""), kolom_koreksi, nilai_koreksi, alasan_koreksi, st.session_state.get("tutor_user_id", ""))
-                                                (st.success if ok else st.error)(msg)
-                                                if ok:
-                                                    st.rerun()
-                                            except Exception as e:
-                                                st.error(f"Koreksi gagal: {e}")
-                            except Exception as e:
-                                st.error(f"Modul kehadiran bermasalah: {e}")
+                                    # Koreksi hanya untuk catatan yang dibuat oleh tutor yang sedang login.
+                                    records_tutor = [r for r in baca_records_aman(get_attendance_worksheet())
+                                                     if str(r.get("ID_Tutor", "")).strip() == tutor_id
+                                                     and str(r.get("ID_Siswa", "")).strip() == sid]
+                                    if records_tutor:
+                                        with st.expander("✏️ Koreksi catatan kehadiran (wajib alasan)"):
+                                            rec_options = {
+                                                f"{r.get('Tanggal_Sesi', '')} | {r.get('Waktu_Hadir', '')} | {r.get('ID_Kehadiran', '')}": r
+                                                for r in records_tutor[-20:]
+                                            }
+                                            rec_label = st.selectbox("Pilih catatan:", list(rec_options.keys()), key=f"corr_rec_{sid}")
+                                            rec_selected = rec_options[rec_label]
+                                            kolom_koreksi = st.selectbox("Bagian yang dikoreksi:", ["Waktu_Hadir", "Waktu_Selesai_Belajar", "Status_Kehadiran"], key=f"corr_col_{sid}")
+                                            nilai_awal = str(rec_selected.get(kolom_koreksi, ""))
+                                            if kolom_koreksi == "Status_Kehadiran":
+                                                nilai_koreksi = st.selectbox("Nilai baru:", ["Hadir", "Selesai Belajar", "Tidak Hadir", "Izin"], index=["Hadir", "Selesai Belajar", "Tidak Hadir", "Izin"].index(nilai_awal) if nilai_awal in ["Hadir", "Selesai Belajar", "Tidak Hadir", "Izin"] else 0, key=f"corr_val_{sid}")
+                                            else:
+                                                nilai_koreksi = st.text_input("Nilai baru (format HH:MM:SS):", value=nilai_awal, key=f"corr_val_{sid}")
+                                            alasan_koreksi = st.text_area("Alasan koreksi:", key=f"corr_reason_{sid}")
+                                            if st.button("Simpan Koreksi", key=f"save_corr_{sid}"):
+                                                try:
+                                                    ok, msg = koreksi_kehadiran(rec_selected.get("ID_Kehadiran", ""), kolom_koreksi, nilai_koreksi, alasan_koreksi, st.session_state.get("tutor_user_id", ""))
+                                                    (st.success if ok else st.error)(msg)
+                                                    if ok:
+                                                        st.rerun()
+                                                except Exception as e:
+                                                    st.error(f"Koreksi gagal: {e}")
+                                except Exception as e:
+                                    st.error(f"Modul kehadiran bermasalah: {e}")
                     except Exception as e:
                         st.error(f"Data relasi tutor-siswa belum dapat dibaca: {e}")
+
+
+        elif menu_tutor == "📨 Pesan Orang Tua":
+            st.header("📨 Pesan dari Orang Tua")
+            try:
+                allowed_ids = siswa_tutor_terhubung(st.session_state.get("tutor_id", ""))
+                siswa_rows = baca_records_aman(sheet.worksheet("Data_Siswa"))
+                nama_by_id = {
+                    str(r.get("ID_SISWA", r.get("ID_Siswa", ""))).strip():
+                    str(r.get("Nama_Siswa", r.get("Nama_Lengkap", ""))).strip()
+                    for r in siswa_rows
+                }
+                ws_pesan = get_pesan_ortu_worksheet()
+                pesan_rows = [
+                    r for r in baca_records_aman(ws_pesan)
+                    if str(r.get("ID_Siswa", "")).strip() in allowed_ids
+                ]
+                if not pesan_rows:
+                    st.info("Belum ada pesan orang tua untuk siswa yang terhubung dengan akun tutor ini.")
+                else:
+                    for pesan in reversed(pesan_rows):
+                        with st.expander(
+                            f"{pesan.get('Nama_Siswa', 'Siswa')} · {pesan.get('Waktu_Kirim', '')} · {pesan.get('Status_Pesan', '')}",
+                            expanded=str(pesan.get("Status_Pesan", "")).lower().startswith("menunggu")
+                        ):
+                            st.write(pesan.get("Pesan", "") or "Orang tua mengirim lampiran tanpa catatan teks.")
+                            urls = str(pesan.get("URL_Lampiran", "")).split("|") if pesan.get("URL_Lampiran") else []
+                            names = str(pesan.get("Nama_File", "")).split("|") if pesan.get("Nama_File") else []
+                            mimes = str(pesan.get("Mime_Type", "")).split("|") if pesan.get("Mime_Type") else []
+                            for ix, url in enumerate(urls):
+                                nm = names[ix] if ix < len(names) else f"Lampiran {ix+1}"
+                                mt = mimes[ix] if ix < len(mimes) else ""
+                                tampilkan_media_url(url, mt, nm)
+                            if pesan.get("Balasan_Tutor"):
+                                st.markdown("**Balasan sebelumnya:**")
+                                st.write(pesan.get("Balasan_Tutor"))
+                            balasan = st.text_area(
+                                "Balasan / catatan untuk orang tua:",
+                                key=f"balas_pesan_{pesan.get('ID_Pesan')}"
+                            )
+                            if st.button("Kirim balasan", key=f"kirim_balas_{pesan.get('ID_Pesan')}"):
+                                if not balasan.strip():
+                                    st.warning("Tulis balasan terlebih dahulu.")
+                                else:
+                                    headers = ws_pesan.row_values(1)
+                                    row_num = int(pesan.get("_baris", 0))
+                                    ws_pesan.update_cell(row_num, headers.index("Balasan_Tutor")+1, balasan.strip())
+                                    ws_pesan.update_cell(row_num, headers.index("Nama_Tutor")+1, st.session_state.tutor_nama)
+                                    ws_pesan.update_cell(row_num, headers.index("Waktu_Balasan")+1, waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"))
+                                    ws_pesan.update_cell(row_num, headers.index("Status_Pesan")+1, "Sudah Dibalas")
+                                    st.success("Balasan tersimpan.")
+                                    st.rerun()
+            except Exception as e:
+                st.error(f"Pesan orang tua belum dapat dimuat: {e}")
 
 
     # =========================================================
@@ -2207,7 +2368,8 @@ elif peran == "👨‍👩‍👧 Orang Tua":
         menu_ortu = st.sidebar.radio(
             "MENU WALI MURID",
             ["🏠 Beranda Anak", "📋 Transparansi Sesi & PR",
-             "📈 Rekap Nilai & Evaluasi", "🕒 Kehadiran Anak"],
+             "📈 Rekap Nilai & Evaluasi", "🕒 Kehadiran Anak",
+             "💬 Pesan untuk Tutor"],
             label_visibility="visible",
             key="menu_navigasi_ortu"
         )
@@ -2282,3 +2444,51 @@ elif peran == "👨‍👩‍👧 Orang Tua":
 
         elif menu_ortu == "🕒 Kehadiran Anak":
             tampilkan_riwayat_kehadiran(id_anak_ortu, "Riwayat Kehadiran Anak")
+
+        elif menu_ortu == "💬 Pesan untuk Tutor":
+            st.header("💬 Pesan untuk Tutor")
+            st.caption("Kirim catatan dari sekolah, pertanyaan, atau hal yang perlu dibahas saat bimbel. Sertakan foto, audio, atau video bila diperlukan.")
+            with st.form(f"form_pesan_ortu_{id_anak_ortu}", clear_on_submit=True):
+                pesan_ortu = st.text_area(
+                    "Catatan untuk tutor:",
+                    placeholder="Contoh: Anak mendapat tugas grammar dari sekolah dan masih kesulitan memahami simple past tense."
+                )
+                lampiran_ortu = st.file_uploader(
+                    "Lampirkan foto, PDF, audio, atau video (opsional):",
+                    type=["jpg", "jpeg", "png", "webp", "pdf", "mp4", "mov", "webm", "m4v",
+                          "mp3", "wav", "m4a", "ogg", "aac"],
+                    accept_multiple_files=True,
+                    key=f"upload_pesan_ortu_{id_anak_ortu}"
+                )
+                st.caption("Maksimal 20 MB per file. Lampiran disimpan di Google Drive.")
+                kirim_pesan_ortu = st.form_submit_button("📤 Kirim ke Tutor")
+            if kirim_pesan_ortu:
+                try:
+                    simpan_pesan_ortu(
+                        st.session_state.ortu_id, id_anak_ortu, nama_anak_aktif,
+                        pesan_ortu, lampiran_ortu
+                    )
+                    st.success("Pesan berhasil dikirim ke daftar pesan tutor yang terhubung dengan anak.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Pesan belum berhasil dikirim: {e}")
+
+            st.markdown("### Riwayat pesan")
+            try:
+                ws_pesan = get_pesan_ortu_worksheet()
+                riwayat_pesan = [
+                    r for r in baca_records_aman(ws_pesan)
+                    if str(r.get("ID_Ortu", "")).strip() == str(st.session_state.ortu_id).strip()
+                    and str(r.get("ID_Siswa", "")).strip() == str(id_anak_ortu).strip()
+                ]
+                if not riwayat_pesan:
+                    st.info("Belum ada pesan yang dikirim.")
+                else:
+                    for pesan in reversed(riwayat_pesan):
+                        with st.expander(f"{pesan.get('Waktu_Kirim', '')} · {pesan.get('Status_Pesan', '')}"):
+                            st.write(pesan.get("Pesan", "") or "Pesan berupa lampiran.")
+                            if pesan.get("Balasan_Tutor"):
+                                st.markdown(f"**Balasan {pesan.get('Nama_Tutor', 'Tutor')}:**")
+                                st.write(pesan.get("Balasan_Tutor"))
+            except Exception as e:
+                st.warning(f"Riwayat pesan belum dapat dibaca: {e}")
