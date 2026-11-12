@@ -287,7 +287,11 @@ def ubah_soal_untuk_tugas(q):
         "Jenjang": str(q.get("Jenjang", "")), "Kelas": str(q.get("Kelas", "")),
         "Mapel": str(q.get("Mapel", "")), "Topik": str(q.get("Bab_Atau_Topik", "")),
         "Bentuk_Soal": bentuk, "Teks_Soal": str(q.get("Teks_Soal", "")),
-        "Url_Gambar": str(q.get("URL_Gambar", "")), "Opsi_List": opsi,
+        "Url_Gambar": str(q.get("URL_Gambar", "")).strip(),
+        "Url_Audio": str(q.get("URL_Audio", "")).strip(),
+        "Url_Video": str(q.get("URL_Video", "")).strip(),
+        "Url_Bacaan": str(q.get("URL_Bacaan", "")).strip(),
+        "Opsi_List": opsi,
         "Pasangan": pasangan, "Kunci": str(q.get("Kunci_Jawaban", "")),
         "Pembahasan": str(q.get("Pembahasan", "")),
     }
@@ -326,6 +330,33 @@ def parse_lampiran(teks):
 def img_url(url):
     fid = drive_id(url)
     return f"https://lh3.googleusercontent.com/d/{fid}=w1600" if fid else url
+
+
+def media_direct_url(url):
+    """Ubah link berbagi Google Drive menjadi URL unduhan untuk pemutar media."""
+    url = str(url or "").strip()
+    fid = drive_id(url)
+    return f"https://drive.google.com/uc?export=download&id={fid}" if fid else url
+
+
+def tampilkan_media_soal(soal):
+    """Tampilkan media pendukung soal; semua field bersifat opsional."""
+    audio = str(soal.get("Url_Audio", "") or "").strip()
+    video = str(soal.get("Url_Video", "") or "").strip()
+    bacaan = str(soal.get("Url_Bacaan", "") or "").strip()
+
+    if audio.startswith(("https://", "http://")):
+        st.markdown("🎧 **Audio soal**")
+        st.audio(media_direct_url(audio))
+        st.link_button("↗ Buka / Unduh Audio", audio, use_container_width=True)
+
+    if video.startswith(("https://", "http://")):
+        st.markdown("🎬 **Video soal**")
+        st.video(media_direct_url(video))
+        st.link_button("↗ Buka / Unduh Video", video, use_container_width=True)
+
+    if bacaan.startswith(("https://", "http://")):
+        st.link_button("📖 Buka bahan bacaan", bacaan, use_container_width=True)
 
 
 def tampilkan_lampiran(url, tinggi=620):
@@ -962,6 +993,7 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                 st.markdown(f"**{i}. {soal.get('Teks_Soal', '')}**")
                 if soal.get("Url_Gambar"):
                     st.image(img_url(soal["Url_Gambar"]), use_container_width=True)
+                tampilkan_media_soal(soal)
 
                 # Simpan HANYA soal ini, ke tugas ini (bukan tugas terakhir yang ditampilkan)
                 def _simpan_satu(nilai, question_no=i, tid=task_id):
