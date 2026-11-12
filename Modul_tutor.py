@@ -95,6 +95,9 @@ st.markdown("""
     .portal-card .card-icon { font-size: 1.65rem; margin-bottom: 7px; }
     .portal-card h4 { color: #183765; font-size: 1rem; margin: 0 0 5px 0; }
     .portal-card p { color: #64748b; font-size: .86rem; margin: 0; line-height: 1.4; }
+    [data-testid="stSidebar"] .stRadio > label { color: #ffffff !important; font-weight: 700; }
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: #f8fbff; }
+    .dashboard-section { background: #fff; border: 1px solid #dce6f3; border-radius: 16px; padding: 18px; margin-bottom: 14px; }
     div[data-testid="stTabs"] button { font-weight: 600; }
     div[data-testid="stButton"] button {
         border-radius: 10px; border: 1px solid #cbd9eb;
@@ -674,11 +677,31 @@ if peran == "🎓 Siswa":
         m3.metric("Draft jawaban", draft_count)
         m4.metric("Sudah dinilai", marked)
 
-        tab_tugas, tab_nilai, tab_riwayat = st.tabs([
-            "📚 Materi & Tugas", "📝 Hasil Penilaian", "📈 Riwayat Belajar"
-        ])
+        menu_siswa = st.sidebar.radio(
+            "MENU SISWA",
+            ["🏠 Beranda", "📚 Materi & Tugas", "📝 Hasil Penilaian", "📈 Riwayat Belajar"],
+            label_visibility="visible",
+            key="menu_navigasi_siswa"
+        )
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("**Ruang Belajar Siswa**")
+        st.sidebar.caption(f"Login sebagai: {nama_aktif}")
 
-        with tab_tugas:
+        if menu_siswa == "🏠 Beranda":
+            st.markdown(
+                f'<div class="portal-hero"><h2>Selamat Datang, {nama_aktif} 👋</h2>'
+                '<p>Ruang belajar pribadi Bimbel Rumah Nazma</p></div>',
+                unsafe_allow_html=True
+            )
+            st.markdown("#### Ringkasan Belajar")
+            ringkas = st.columns(4)
+            ringkas[0].metric("Tugas diberikan", total)
+            ringkas[1].metric("Belum dikerjakan", pending)
+            ringkas[2].metric("Draft jawaban", draft_count)
+            ringkas[3].metric("Sudah dinilai", marked)
+            st.info("Pilih menu di sebelah kiri untuk membuka materi, mengerjakan tugas, melihat nilai, atau memeriksa riwayat belajar.")
+
+        elif menu_siswa == "📚 Materi & Tugas":
             st.markdown(f"### 🎒 Tugas Belajar Ananda {nama_aktif}")
             if not tugas_anak:
                 st.info("Belum ada tugas yang diberikan Tutor.")
@@ -800,7 +823,7 @@ if peran == "🎓 Siswa":
                         else:
                             st.info("Tugas ini tidak memiliki soal digital. Kerjakan melalui materi/lampiran yang diberikan Tutor.")
 
-        with tab_nilai:
+        elif menu_siswa == "📝 Hasil Penilaian":
             st.markdown("### 📝 Hasil Penilaian Tutor")
             try:
                 nilai_records = sheet.worksheet("DB_Nilai_Tugas").get_all_records()
@@ -820,7 +843,7 @@ if peran == "🎓 Siswa":
             else:
                 st.info("Belum ada hasil penilaian dari Tutor.")
 
-        with tab_riwayat:
+        elif menu_siswa == "📈 Riwayat Belajar":
             st.markdown("### 📈 Riwayat Belajar")
             try:
                 ws_r = sheet.worksheet("Riwayat_Latihan")
@@ -1658,13 +1681,32 @@ elif peran == "👨‍👩‍👧 Orang Tua":
         )
         st.markdown("---")
 
-        ortu_tab1, ortu_tab2, ortu_tab3 = st.tabs([
-            "📋 Transparansi Sesi & PR",
-            "📈 Rekap Nilai & Evaluasi",
-            "🕒 Kehadiran Anak"
-        ])
+        st.markdown(
+            f'<div class="portal-hero"><h2>Beranda Belajar {nama_anak_aktif} 👋</h2>'
+            '<p>Pantau sesi, tugas, nilai, dan kehadiran anak</p></div>',
+            unsafe_allow_html=True
+        )
+        menu_ortu = st.sidebar.radio(
+            "MENU WALI MURID",
+            ["🏠 Beranda Anak", "📋 Transparansi Sesi & PR",
+             "📈 Rekap Nilai & Evaluasi", "🕒 Kehadiran Anak"],
+            label_visibility="visible",
+            key="menu_navigasi_ortu"
+        )
+        st.sidebar.markdown("---")
+        st.sidebar.caption(f"Wali murid: {st.session_state.ortu_nama}")
+        st.sidebar.caption(f"Anak aktif: {nama_anak_aktif}")
 
-        with ortu_tab1:
+        if menu_ortu == "🏠 Beranda Anak":
+            st.markdown("#### Ringkasan Anak")
+            st.markdown(
+                f"**Nama:** {nama_anak_aktif}  \n"
+                f"**Jenjang/Kelas:** {anak_aktif['Jenjang']} / {anak_aktif['Kelas']}  \n"
+                f"**Hubungan:** {anak_aktif['Hubungan'] or '-'}"
+            )
+            st.info("Gunakan menu di sebelah kiri untuk melihat laporan sesi, nilai, dan kehadiran anak.")
+
+        elif menu_ortu == "📋 Transparansi Sesi & PR":
             laporan_list = []
             try:
                 ws_riwayat = sheet.worksheet("Riwayat_Latihan")
@@ -1699,7 +1741,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
             else:
                 st.info("Belum ada catatan sesi atau PR untuk anak ini.")
 
-        with ortu_tab2:
+        elif menu_ortu == "📈 Rekap Nilai & Evaluasi":
             data_tabel_ortu = []
             try:
                 ws_r = sheet.worksheet("Riwayat_Latihan")
@@ -1720,6 +1762,6 @@ elif peran == "👨‍👩‍👧 Orang Tua":
             else:
                 st.info("Belum ada data rekap nilai.")
 
-        with ortu_tab3:
+        elif menu_ortu == "🕒 Kehadiran Anak":
             tampilkan_riwayat_kehadiran(id_anak_ortu, "Riwayat Kehadiran Anak")
 
