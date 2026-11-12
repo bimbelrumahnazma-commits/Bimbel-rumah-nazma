@@ -213,6 +213,14 @@ def baca_records_aman(ws):
         if not any(str(v).strip() for v in row):
             continue
         rec = {h: (row[i] if i < len(row) else "") for i, h in enumerate(headers)}
+        # Alias header agar kompatibel dengan variasi nama kolom di Google Sheets.
+        # Data_Siswa milik pengguna memakai Nama_Siswa, sedangkan modul lama
+        # membaca Nama_Lengkap. Sediakan keduanya tanpa mengubah struktur sheet.
+        if "Nama_Siswa" in rec and "Nama_Lengkap" not in rec:
+            rec["Nama_Lengkap"] = rec["Nama_Siswa"]
+        elif "Nama_Lengkap" in rec and "Nama_Siswa" not in rec:
+            rec["Nama_Siswa"] = rec["Nama_Lengkap"]
+
         # Header ID siswa bisa tertulis ID_Siswa atau ID_SISWA: sediakan keduanya.
         if "ID_SISWA" in rec and "ID_Siswa" not in rec:
             rec["ID_Siswa"] = rec["ID_SISWA"]
