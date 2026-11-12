@@ -10,6 +10,8 @@ import json
 import uuid
 import requests
 import base64
+import re
+import streamlit.components.v1 as components
 
 
 # Daftar mata pelajaran dan program Bimbel Rumah Nazma
@@ -244,6 +246,101 @@ def ubah_soal_untuk_tugas(q):
         "Pasangan": pasangan, "Kunci": str(q.get("Kunci_Jawaban", "")),
         "Pembahasan": str(q.get("Pembahasan", "")),
     }
+
+# =========================================================
+# LAMPIRAN MULTIFILE & FLIPBOOK
+# Format: img::URL|pdf::URL|doc::URL|link::URL. URL lama tetap didukung.
+# =========================================================
+def drive_id(url):
+    match = re.search(r"/d/([\w-]+)|[?&]id=([\w-]+)", str(url or ""))
+    return (match.group(1) or match.group(2)) if match else None
+
+
+def jenis_dari_mime(mime, nama=""):
+    mime, nama = str(mime or "").lower(), str(nama or "").lower()
+    if mime.startswith("image/") or nama.endswith((".png", ".jpg", ".jpeg")):
+        return "img"
+    if mime == "application/pdf" or nama.endswith(".pdf"):
+        return "pdf"
+    return "doc"
+
+
+def parse_lampiran(teks):
+    hasil = []
+    for bagian in str(teks or "").split("|"):
+        bagian = bagian.strip()
+        if not bagian:
+            continue
+        jenis, url = bagian.split("::", 1) if "::" in bagian else ("link", bagian)
+        jenis, url = jenis.strip().lower(), url.strip()
+        if url.startswith(("https://", "http://")):
+            hasil.append((jenis, url))
+    return hasil
+
+
+def img_url(url):
+    fid = drive_id(url)
+    return f"https://lh3.googleusercontent.com/d/{fid}=w1600" if fid else url
+
+
+def tampilkan_lampiran(url, tinggi=620):
+    url = str(url or "").strip()
+    if not url.startswith(("https://", "http://")):
+        st.warning("Lampiran belum tersedia. Hubungi tutor.")
+        return
+    fid = drive_id(url)
+    src = f"https://drive.google.com/file/d/{fid}/preview" if fid else url
+    components.iframe(src, height=tinggi, scrolling=True)
+    st.markdown(f"[↗ Buka lampiran di tab baru]({url})")
+
+
+def flipbook_gambar(urls, tinggi=700):
+    imgs = json.dumps([img_url(u) for u in urls], ensure_ascii=False)
+    html = r'''<!doctype html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+html,body{margin:0;padding:0;background:#1e293b;font-family:Arial,sans-serif}
+#book-wrap{width:100%;display:flex;justify-content:center;align-items:center;padding:8px 0;box-sizing:border-box}
+#book{margin:0 auto}.page{background:#fff;overflow:hidden}
+.page img{width:100%;height:100%;object-fit:contain;display:block}
+.nav{display:flex;justify-content:center;align-items:center;gap:12px;padding:10px;color:#fff;flex-wrap:wrap}
+.nav button{padding:9px 14px;border:0;border-radius:8px;background:#dbeafe;color:#123568;font-weight:600}
+#info{min-width:52px;text-align:center}#error{color:#fff;text-align:center;padding:12px}
+</style></head><body>
+<div id="book-wrap"><div id="book"></div></div>
+<div class="nav"><button id="prev">◀ Sebelumnya</button><span id="info">Memuat...</span><button id="next">Berikutnya ▶</button></div>
+<div id="error" hidden></div>
+<script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.js"></script>
+<script>
+(function(){
+ const imgs=__IMGS__, book=document.getElementById('book'), info=document.getElementById('info'), err=document.getElementById('error');
+ if(!Array.isArray(imgs)||!imgs.length){info.textContent='Tidak ada halaman.';return;}
+ if(typeof St==='undefined'||!St.PageFlip){err.hidden=false;err.textContent='Flipbook gagal dimuat. Periksa koneksi internet, atau buka foto melalui tautan lampiran.';info.textContent='';return;}
+ imgs.forEach(src=>{const d=document.createElement('div');d.className='page';const im=document.createElement('img');im.src=src;im.alt='Halaman materi';d.appendChild(im);book.appendChild(d);});
+ const pf=new St.PageFlip(book,{width:420,height:588,size:'stretch',minWidth:260,maxWidth:560,minHeight:360,maxHeight:784,showCover:false,usePortrait:true,mobileScrollSupport:true,drawShadow:true,flippingTime:600});
+ pf.loadFromHTML(book.querySelectorAll('.page'));
+ const update=()=>{info.textContent=(pf.getCurrentPageIndex()+1)+' / '+pf.getPageCount();};
+ document.getElementById('prev').addEventListener('click',()=>pf.flipPrev());
+ document.getElementById('next').addEventListener('click',()=>pf.flipNext());
+ pf.on('flip',update);setTimeout(update,250);
+})();
+</script></body></html>'''.replace('__IMGS__', imgs)
+    components.html(html, height=tinggi, scrolling=False)
+
+
+def tampilkan_materi(teks_lampiran):
+    items = parse_lampiran(teks_lampiran)
+    if not items:
+        st.warning("Lampiran belum tersedia. Hubungi tutor.")
+        return
+    gambar = [url for jenis, url in items if jenis == "img"]
+    lainnya = [(jenis, url) for jenis, url in items if jenis != "img"]
+    if gambar:
+        st.markdown("#### 🖼️ Flipbook Materi")
+        flipbook_gambar(gambar)
+    for jenis, url in lainnya:
+        st.markdown("#### 📄 Dokumen PDF" if jenis == "pdf" else "#### 📎 Dokumen" if jenis == "doc" else "#### 🔗 Materi / Flipbook Eksternal")
+        tampilkan_lampiran(url)
 
 
 
@@ -717,11 +814,8 @@ if peran == "🎓 Siswa":
                         st.write(f"**Diberikan:** {t.get('Tanggal', '-')}")
                         st.write(f"**Durasi:** {t.get('Timer_Menit', '-') } menit")
                         if t.get("File_Offline"):
-                            link_or_file = str(t.get("File_Offline", ""))
-                            if link_or_file.startswith("http"):
-                                st.markdown(f"[📖 Buka materi / file]({link_or_file})")
-                            else:
-                                st.info(f"Lampiran tercatat: {link_or_file}. File belum tentu tersedia untuk dibuka.")
+                            st.markdown("### 📖 Materi dari Tutor")
+                            tampilkan_materi(t.get("File_Offline"))
                         soal_json = str(t.get("Soal_JSON", "") or "")
                         try:
                             daftar_soal = json.loads(soal_json) if soal_json else []
@@ -1050,8 +1144,16 @@ elif peran == "🔒 Pengajar / Tutor":
                             instruksi_tugas = st.text_area("Instruksi untuk siswa:")
                             timer_tugas = st.selectbox("Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=2, format_func=lambda x: "Tanpa timer" if x == 0 else f"{x} menit")
                             tenggat_tugas = st.date_input("Tanggal tenggat:", value=datetime.now().date())
-                            link_tugas = st.text_input("Link Drive / Flipbook (jika digunakan):", placeholder="https://...")
-                            file_tugas = st.file_uploader("Pilih file dari perangkat (opsional):", type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"], key=f"upload_tugas_{selected_siswa}")
+                            link_tugas = st.text_area(
+                                "Link Drive / Flipbook (satu link per baris):",
+                                placeholder="https://...\nhttps://..."
+                            )
+                            file_tugas = st.file_uploader(
+                                "Pilih file dari perangkat (boleh banyak):",
+                                type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg"],
+                                accept_multiple_files=True,
+                                key=f"upload_tugas_{selected_siswa}"
+                            )
 
                             bank = []
                             soal_dipilih = []
@@ -1081,66 +1183,36 @@ elif peran == "🔒 Pengajar / Tutor":
                             tambah_draft = st.form_submit_button("Tambahkan ke daftar tugas")
 
                         if tambah_draft:
+                            link_list = [x.strip() for x in link_tugas.splitlines() if x.strip()]
+                            daftar_file = list(file_tugas or [])
+                            ada_lampiran = bool(daftar_file) or bool(link_list)
                             if not judul_tugas.strip():
                                 st.error("Judul / topik tugas wajib diisi.")
-                            elif (
-                                sumber_tugas == "Bank Soal Bersama (Spreadsheet)"
-                                and not soal_dipilih
-                                and file_tugas is None
-                                and not link_tugas.strip()
-                            ):
-                                st.error(
-                                    "Pilih soal dari Bank Soal, atau lampirkan file / "
-                                    "masukkan link materi sebagai alternatif."
-                                )
-                            elif (
-                                sumber_tugas == "Link Google Drive / Flipbook"
-                                and not link_tugas.strip()
-                                and file_tugas is None
-                            ):
-                                st.error("Masukkan link Drive / Flipbook atau lampirkan file dari perangkat.")
-                            elif (
-                                sumber_tugas == "Upload dari perangkat"
-                                and file_tugas is None
-                                and not link_tugas.strip()
-                            ):
-                                st.error("Pilih file yang akan dilampirkan atau masukkan link materi.")
+                            elif (sumber_tugas == "Bank Soal Bersama (Spreadsheet)" and not soal_dipilih and not ada_lampiran):
+                                st.error("Pilih soal dari Bank Soal, atau lampirkan file / masukkan link materi.")
+                            elif sumber_tugas in ("Link Google Drive / Flipbook", "Upload dari perangkat") and not ada_lampiran:
+                                st.error("Masukkan link atau pilih file lampiran terlebih dahulu.")
+                            elif any(len(f.getvalue()) > 10 * 1024 * 1024 for f in daftar_file):
+                                st.error("Ukuran tiap lampiran maksimal 10 MB. Kompres file lalu unggah kembali.")
                             else:
-                                # Simpan isi file sementara di draft; file diunggah ke Drive
-                                # saat Tutor menekan tombol Simpan & Kirim Semua Tugas.
-                                file_meta = ""
-                                file_bytes = None
-                                file_mime = ""
-                                if file_tugas is not None:
-                                    file_meta = file_tugas.name
-                                    file_bytes = file_tugas.getvalue()
-                                    file_mime = file_tugas.type or "application/octet-stream"
-                                    if len(file_bytes) > 10 * 1024 * 1024:
-                                        st.error("Ukuran lampiran maksimal 10 MB. Kompres file lalu unggah kembali.")
-                                        st.stop()
-
+                                files = [
+                                    {"name": f.name, "bytes": f.getvalue(), "mime": f.type or "application/octet-stream"}
+                                    for f in daftar_file
+                                ]
                                 sumber_final = sumber_tugas
                                 if sumber_tugas == "Bank Soal Bersama (Spreadsheet)" and not soal_dipilih:
-                                    if file_tugas is not None and link_tugas.strip():
+                                    if files and link_list:
                                         sumber_final = "Upload perangkat + Link"
-                                    elif file_tugas is not None:
+                                    elif files:
                                         sumber_final = "Upload dari perangkat"
-                                    elif link_tugas.strip():
+                                    elif link_list:
                                         sumber_final = "Link Google Drive / Flipbook"
-
                                 st.session_state[draft_key].append({
-                                    "Mapel": mapel_tugas,
-                                    "Judul": judul_tugas.strip(),
-                                    "Jenis": jenis_tugas,
-                                    "Sumber": sumber_final,
-                                    "Instruksi": instruksi_tugas.strip(),
-                                    "Timer": timer_tugas,
+                                    "Mapel": mapel_tugas, "Judul": judul_tugas.strip(),
+                                    "Jenis": jenis_tugas, "Sumber": sumber_final,
+                                    "Instruksi": instruksi_tugas.strip(), "Timer": timer_tugas,
                                     "Tenggat": tenggat_tugas.strftime("%Y-%m-%d"),
-                                    "Link": link_tugas.strip(),
-                                    "Nama_File": file_meta,
-                                    "File_Bytes": file_bytes,
-                                    "File_Mime": file_mime,
-                                    "Soal": soal_dipilih
+                                    "Links": link_list, "Files": files, "Soal": soal_dipilih
                                 })
                                 st.success("Tugas masuk ke daftar draft. Tekan Simpan & Kirim setelah semua tugas selesai ditambahkan.")
                                 st.rerun()
@@ -1153,10 +1225,10 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.write(f"Sumber: {item['Sumber']}")
                                 st.write(f"Timer: {'Tanpa timer' if item['Timer'] == 0 else str(item['Timer']) + ' menit'} | Tenggat: {item['Tenggat']}")
                                 st.write(f"Jumlah soal: {len(item['Soal'])}")
-                                if item["Link"]:
-                                    st.write(f"Link: {item['Link']}")
-                                if item["Nama_File"]:
-                                    st.info(f"Lampiran siap diunggah ke Google Drive saat tugas dikirim: {item['Nama_File']}")
+                                for link in item.get("Links", []):
+                                    st.write(f"Link: {link}")
+                                for file_item in item.get("Files", []):
+                                    st.info(f"Lampiran siap diunggah ke Google Drive saat tugas dikirim: {file_item['name']}")
                         col_kirim, col_hapus = st.columns(2)
                         with col_kirim:
                             if st.button("📤 Simpan & Kirim Semua Tugas", type="primary", key=f"kirim_semua_{selected_siswa}"):
@@ -1174,14 +1246,14 @@ elif peran == "🔒 Pengajar / Tutor":
                                         # ditulis setelah semua unggahan berhasil.
                                         hasil_kirim = []
                                         for item in daftar_draft:
-                                            file_info = item["Link"]
-                                            if item.get("File_Bytes") is not None:
-                                                file_info = upload_lampiran_ke_drive(
-                                                    item["File_Bytes"],
-                                                    item["Nama_File"],
-                                                    item.get("File_Mime", "application/octet-stream")
-                                                )
-                                            hasil_kirim.append((item, file_info))
+                                            entri_lampiran = []
+                                            for file_item in item.get("Files", []):
+                                                url = upload_lampiran_ke_drive(file_item["bytes"], file_item["name"], file_item["mime"])
+                                                jenis = jenis_dari_mime(file_item["mime"], file_item["name"])
+                                                entri_lampiran.append(f"{jenis}::{url}")
+                                            for link in item.get("Links", []):
+                                                entri_lampiran.append(f"link::{link}")
+                                            hasil_kirim.append((item, "|".join(entri_lampiran)))
 
                                         for item, file_info in hasil_kirim:
                                             id_tugas = "TGS-" + uuid.uuid4().hex[:10].upper()
