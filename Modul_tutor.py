@@ -50,14 +50,42 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .stApp { background-color: #f8f9fa; }
+    .stApp { background: #f4f7fc; color: #172554; }
     .main-header {
-        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-        padding: 24px;
-        border-radius: 12px;
-        color: white;
-        margin-bottom: 25px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        background: linear-gradient(135deg, #123568 0%, #28559a 100%);
+        padding: 24px; border-radius: 16px; color: white;
+        margin-bottom: 22px; box-shadow: 0 5px 18px rgba(18,53,104,.16);
+    }
+    .portal-hero {
+        background: linear-gradient(115deg, #ffffff 0%, #eef6ff 72%, #e2f0ff 100%);
+        border: 1px solid #d8e5f5; border-radius: 18px;
+        padding: 22px 24px; margin: 4px 0 18px 0;
+        box-shadow: 0 3px 12px rgba(31,65,114,.06);
+    }
+    .portal-hero h2 { color: #102a56; margin: 0 0 6px 0; font-size: 1.65rem; }
+    .portal-hero p { color: #526783; margin: 0; font-size: .98rem; }
+    .portal-card {
+        background: #ffffff; border: 1px solid #dce6f3;
+        border-radius: 16px; padding: 17px 18px; min-height: 118px;
+        box-shadow: 0 3px 12px rgba(31,65,114,.055);
+        margin-bottom: 12px;
+    }
+    .portal-card .card-icon { font-size: 1.65rem; margin-bottom: 7px; }
+    .portal-card h4 { color: #183765; font-size: 1rem; margin: 0 0 5px 0; }
+    .portal-card p { color: #64748b; font-size: .86rem; margin: 0; line-height: 1.4; }
+    div[data-testid="stTabs"] button { font-weight: 600; }
+    div[data-testid="stButton"] button {
+        border-radius: 10px; border: 1px solid #cbd9eb;
+        min-height: 2.55rem;
+    }
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] {
+        border-radius: 9px;
+    }
+    @media (max-width: 700px) {
+        .portal-hero { padding: 17px; }
+        .portal-hero h2 { font-size: 1.3rem; }
+        .portal-card { min-height: 105px; padding: 14px; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -850,12 +878,55 @@ elif peran == "🔒 Pengajar / Tutor":
         if not st.session_state.get("tutor_id"):
             st.warning("ID tutor belum dapat dicocokkan dengan Data_Tutor. Fitur kehadiran dinonaktifkan sampai ID_User pada Akun_Pengguna cocok dengan Data_Tutor, atau nama akun sama persis dengan Nama_Tutor.")
 
-        tutor_tab1, tutor_tab2, tutor_tab3, tutor_tab4 = st.tabs([
+        tutor_tab0, tutor_tab1, tutor_tab2, tutor_tab3, tutor_tab4 = st.tabs([
+            "🏠 Beranda",
             "📝 Persiapan Sesi & Bank Soal",
             "📊 Portofolio Siswa",
             "➕ Materi Tambahan",
             "🕒 Kehadiran Siswa"
         ])
+
+        # -------------------------------------------------
+        # BERANDA TUTOR - dashboard ringkas tanpa statistik rahasia
+        # -------------------------------------------------
+        with tutor_tab0:
+            st.markdown(
+                f"""
+                <div class="portal-hero">
+                    <h2>Selamat Datang, {st.session_state.tutor_nama} 👋</h2>
+                    <p>Portal Pengajar Bimbel Rumah Nazma</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            st.markdown("#### Akses cepat")
+            quick_cols = st.columns(4)
+            quick_cards = [
+                ("📝", "Persiapan Sesi", "Siapkan materi dan tugas untuk siswa."),
+                ("📚", "Bank Soal", "Pilih soal untuk tugas yang akan dikirim."),
+                ("📂", "Materi / Flipbook", "Kelola dan bagikan bahan pembelajaran."),
+                ("🕒", "Kehadiran", "Catat kedatangan dan selesainya sesi belajar."),
+            ]
+            for col, (icon, title, desc) in zip(quick_cols, quick_cards):
+                with col:
+                    st.markdown(
+                        f'<div class="portal-card"><div class="card-icon">{icon}</div>'
+                        f'<h4>{title}</h4><p>{desc}</p></div>',
+                        unsafe_allow_html=True
+                    )
+
+            st.markdown("#### Ruang kerja pengajar")
+            st.caption(
+                "Pilih menu di atas untuk melanjutkan pekerjaan. "
+                "Beranda ini sengaja tidak menampilkan jumlah siswa, daftar siswa binaan, "
+                "atau ringkasan data internal bimbel."
+            )
+            action_cols = st.columns(2)
+            with action_cols[0]:
+                st.info("**Tugas & evaluasi**\n\nBuat tugas berdasarkan kebutuhan belajar siswa melalui menu Persiapan Sesi & Bank Soal.")
+            with action_cols[1]:
+                st.info("**Administrasi sesi**\n\nCatat kehadiran dan waktu selesai belajar melalui menu Kehadiran Siswa.")
 
         # -------------------------------------------------
         # TAB 1: KONFIGURASI TUGAS DAN EVALUASI SESI (VERSI 2)
