@@ -181,16 +181,15 @@ def upload_lampiran_ke_drive(file_bytes, file_name, mime_type):
 
 
 def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
-    """Ambil worksheet; buat jika belum ada. Header hanya dibuat untuk sheet baru/kosong."""
+    """Ambil worksheet tanpa membaca seluruh isi setiap rerun.
+    Header ditulis saat worksheet baru dibuat; worksheet lama dipertahankan apa adanya.
+    """
     try:
-        ws = sheet.worksheet(title)
+        return sheet.worksheet(title)
     except gspread.WorksheetNotFound:
         ws = sheet.add_worksheet(title=title, rows=rows, cols=cols)
-
-    values = ws.get_all_values()
-    if not values:
         ws.append_row(headers)
-    return ws
+        return ws
 
 
 @st.cache_data(ttl=15, show_spinner=False)
@@ -2414,7 +2413,8 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
     ws_owner_security = get_or_create_worksheet(
         "Pengaturan_Aplikasi", ["Kunci", "Nilai"], rows="20", cols="2"
     )
-    owner_settings = baca_records_aman(ws_owner_security, refresh=True)
+    # Gunakan cache singkat agar rerun Streamlit tidak selalu meminta Read baru.
+    owner_settings = baca_records_aman(ws_owner_security)
     owner_pin_record = next(
         (r for r in owner_settings if str(r.get("Kunci", "")).strip() == "PIN_OWNER"), None
     )
