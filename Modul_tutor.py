@@ -285,16 +285,22 @@ def verifikasi_pin(pin_input, stored_pin):
         except (ValueError, TypeError):
             return False, False
     # PIN lama masih plaintext: izinkan login satu kali, lalu minta caller upgrade.
-    return hmac.compare_digest(entered, stored), True
+    return hmac.compare_digest(entered.encode("utf-8"), stored.encode("utf-8")), True
 
 
 def upgrade_pin_lama(ws, record, field_name, pin_input):
     """Upgrade plaintext ke HASH setelah login benar; tidak menambah/mengubah header."""
     if not record or not record.get("_baris"):
         return
-    headers = ws.row_values(1)
+    headers = [str(x).strip() for x in ws.row_values(1)]
     if field_name not in headers:
         raise ValueError(f"Kolom {field_name} tidak ditemukan pada {ws.title}.")
+    # Baca nilai TERKINI dari sheet. Jangan upgrade memakai data cache: bila Owner
+    # baru mereset PIN, data cache masih PIN lama dan akan menimpa PIN hasil reset.
+    pin_live = ambil_pin_terkini(ws, record, field_name)
+    cocok_live, masih_plaintext = verifikasi_pin(pin_input, pin_live)
+    if not (cocok_live and masih_plaintext):
+        return
     ws.update_cell(int(record["_baris"]), headers.index(field_name) + 1, hash_pin(pin_input))
     _baca_values_cache.clear()
 
@@ -327,12 +333,12 @@ def simpan_pin_baru(ws, record, field_name, pin_baru):
     _baca_values_cache.clear()
 
 
-def pastikan_pemetaan_id_siswa(ws_akun, ws_siswa):
+def pastikan_pemetaan_id_siswa(ws_akun, ws_siswa, refresh=False):
     """
     Membuat pemetaan ID_SISWA ke akun siswa di memori menggunakan cache.
     Tidak melakukan get_all_values langsung dan tidak menulis ke Sheets saat login.
     """
-    akun_rows = baca_records_aman(ws_akun)
+    akun_rows = baca_records_aman(ws_akun, refresh=refresh)
     siswa_rows = baca_records_aman(ws_siswa)
 
     nama_ke_siswa = {}
@@ -372,6 +378,13 @@ def ambil_pin_terkini(ws, record, field_name):
     if nomor_baris < 2:
         raise ValueError("Nomor baris akun tidak valid. Silakan logout lalu login kembali.")
     values = ws.row_values(nomor_baris)
+    # Cegah salah baca baris bila ada baris disisipkan/dihapus setelah cache dibuat.
+    for kunci_id in ("ID_User", "Username"):
+        if kunci_id in headers and str(record.get(kunci_id, "")).strip():
+            j = headers.index(kunci_id)
+            nilai_live = str(values[j]).strip() if j < len(values) else ""
+            if nilai_live.casefold() != str(record.get(kunci_id, "")).strip().casefold():
+                raise ValueError("Data akun berubah di sheet. Silakan logout lalu login kembali.")
     idx = headers.index(field_name)
     return values[idx] if idx < len(values) else ""
 
@@ -392,11 +405,22 @@ def form_ganti_pin(ws, record, field_name, key_prefix):
                 cocok, _ = verifikasi_pin(pin_lama, pin_tersimpan)
                 if not cocok:
                     st.error("PIN saat ini tidak sesuai. Jika PIN baru saja di-reset Owner, logout lalu login kembali dengan PIN hasil reset.")
+                    # DIAGNOSTIK SEMENTARA (hapus setelah masalah ketemu); tidak menampilkan isi PIN.
+                    _tersimpan = str(pin_tersimpan or "").strip()
+                    _jenis = ("kosong" if not _tersimpan
+                              else "hash" if _tersimpan.startswith(_PIN_PREFIX + "$")
+                              else "plaintext")
+                    st.caption(
+                        f"Diagnostik: baris sheet={record.get('_baris')}, "
+                        f"PIN tersimpan={_jenis} (panjang {len(_tersimpan)}), "
+                        f"PIN diketik={len(str(pin_lama or '').strip())} karakter, "
+                        f"kolom={field_name}, worksheet={ws.title}"
+                    )
                 elif not pin_baru.isdigit() or len(pin_baru) < 6:
                     st.error("PIN baru harus berupa angka dan minimal 6 digit.")
                 elif pin_baru != konfirmasi:
                     st.error("Konfirmasi PIN baru tidak sama.")
-                elif hmac.compare_digest(pin_lama.strip(), pin_baru.strip()):
+                elif pin_lama.strip() == pin_baru.strip():
                     st.error("PIN baru harus berbeda dari PIN saat ini.")
                 else:
                     simpan_pin_baru(ws, record, field_name, pin_baru)
@@ -1440,7 +1464,7 @@ if peran == "🎓 Siswa":
                 try:
                     ws_akun_login = sheet.worksheet("Akun_Pengguna")
                     akun_rows_login = pastikan_pemetaan_id_siswa(
-                        ws_akun_login, sheet.worksheet("Data_Siswa")
+                        ws_akun_login, sheet.worksheet("Data_Siswa"), refresh=True
                     )
                     akun_siswa = next((
                         r for r in akun_rows_login
@@ -1672,7 +1696,7 @@ elif peran == "🔒 Pengajar / Tutor":
         pin = st.text_input("PIN / Password:", type="password")
 
         if st.button("Masuk Pengajar"):
-            data = baca_records_aman(sheet.worksheet("Akun_Pengguna"))
+            data = baca_records_aman(sheet.worksheet("Akun_Pengguna"), refresh=True)
             user_found = False
             is_active = True
             salah_menu = False
@@ -2972,7 +2996,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
 
         if st.button("Masuk Portal Wali Murid", key="btn_login_ortu"):
             try:
-                akun_rows = baca_records_aman(sheet.worksheet("Akun_Pengguna"))
+                akun_rows = baca_records_aman(sheet.worksheet("Akun_Pengguna"), refresh=True)
                 akun = next((
                     r for r in akun_rows
                     if str(r.get("ID_User", "")).strip().upper() == id_wali_login
