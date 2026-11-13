@@ -322,7 +322,15 @@ def simpan_pin_baru(ws, record_aktif, field_name, pin_baru):
         for row_number in sorted(pin_rows[1:], reverse=True):
             ws.delete_rows(row_number)
     else:
-        ws.update_cell(int(record["_baris"]), headers.index(field_name) + 1, pin_hash_baru)
+        # Gunakan record_aktif (parameter fungsi), bukan variabel "record"
+        # yang tidak pernah didefinisikan di dalam fungsi ini.
+        if not record_aktif or not record_aktif.get("_baris"):
+            raise ValueError("Baris akun tidak valid. Muat ulang halaman lalu coba lagi.")
+        ws.update_cell(
+            int(record_aktif["_baris"]),
+            headers.index(field_name) + 1,
+            pin_hash_baru
+        )
 
     _baca_values_cache.clear()
 
@@ -424,7 +432,7 @@ def form_ganti_pin(ws, record, field_name, key_prefix, identity_field=None, iden
                 elif hmac.compare_digest(pin_lama.strip(), pin_baru.strip()):
                     st.error("PIN baru harus berbeda dari PIN saat ini.")
                 else:
-                    simpan_pin_baru(ws, record, field_name, pin_baru)
+                    simpan_pin_baru(ws, record_aktif, field_name, pin_baru)
                     st.success("PIN berhasil diperbarui dan disimpan dalam bentuk HASH.")
                     st.rerun()
             except Exception as exc:
