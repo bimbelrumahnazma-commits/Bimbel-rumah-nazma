@@ -1,6 +1,7 @@
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import Request as GoogleAuthRequest
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import time
@@ -696,6 +697,189 @@ def tampilkan_materi(teks_lampiran):
             st.markdown("#### 📄 Dokumen PDF" if jenis == "pdf" else "#### 📎 Dokumen" if jenis == "doc" else "#### 🔗 Materi / Flipbook Eksternal")
             tampilkan_lampiran(url)
 
+
+
+# =========================================================
+# RUANG KERJA BERANDA TUTOR (MODUL BARU, TERPISAH DARI FITUR LAMA)
+# =========================================================
+CATATAN_TUTOR_HEADERS = [
+    "ID_Catatan", "ID_User", "ID_Tutor", "Jenis_Catatan", "Tanggal",
+    "Mapel", "Kelas", "Topik", "Isi_Catatan", "Pengingat",
+    "Status", "Dibuat_Pada", "Diperbarui_Pada"
+]
+
+
+def get_catatan_tutor_worksheet():
+    """Worksheet khusus ruang kerja tutor; tidak mengubah worksheet lama."""
+    ws = get_or_create_worksheet(
+        "Catatan_Tutor_Pribadi", CATATAN_TUTOR_HEADERS, rows="3000", cols=str(len(CATATAN_TUTOR_HEADERS))
+    )
+    actual = ws.row_values(1)
+    if not header_cocok(actual, CATATAN_TUTOR_HEADERS):
+        raise ValueError(
+            "Header Catatan_Tutor_Pribadi tidak sesuai. Data tidak ditulis; "
+            f"header terbaca: {actual!r}"
+        )
+    return ws
+
+
+def ambil_catatan_tutor(id_user):
+    if not id_user:
+        return []
+    ws = get_catatan_tutor_worksheet()
+    return [r for r in baca_records_aman(ws, refresh=True)
+            if str(r.get("ID_User", "")).strip() == str(id_user).strip()
+            and str(r.get("Status", "Aktif")).strip().lower() != "dihapus"]
+
+
+def simpan_catatan_tutor(id_user, id_tutor, jenis, tanggal, mapel, kelas, topik, isi, pengingat=""):
+    if not id_user:
+        raise ValueError("ID akun tutor tidak ditemukan. Silakan logout lalu login kembali.")
+    if not str(isi or "").strip() and not str(topik or "").strip():
+        raise ValueError("Isi catatan atau topik wajib diisi.")
+    ws = get_catatan_tutor_worksheet()
+    now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    ws.append_row([
+        "CTT-" + uuid.uuid4().hex[:10].upper(), str(id_user), str(id_tutor or ""),
+        str(jenis), str(tanggal), str(mapel), str(kelas), str(topik),
+        str(isi or "").strip(), str(pengingat or "").strip(), "Aktif", now, now
+    ], value_input_option="RAW")
+    _baca_values_cache.clear()
+
+
+def ubah_status_catatan_tutor(id_catatan, id_user, status_baru):
+    ws = get_catatan_tutor_worksheet()
+    headers = [str(x).strip() for x in ws.row_values(1)]
+    rows = ws.get_all_values()
+    idx_id, idx_user, idx_status, idx_update = [headers.index(x) for x in
+        ("ID_Catatan", "ID_User", "Status", "Diperbarui_Pada")]
+    for nomor, row in enumerate(rows[1:], start=2):
+        if (len(row) > max(idx_id, idx_user)
+                and row[idx_id] == str(id_catatan)
+                and row[idx_user] == str(id_user)):
+            ws.update_cell(nomor, idx_status + 1, status_baru)
+            ws.update_cell(nomor, idx_update + 1, waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"))
+            _baca_values_cache.clear()
+            return True
+    return False
+
+
+@st.cache_data(ttl=90, show_spinner=False)
+def cari_file_google_drive(kata_kunci):
+    """Cari lintas file Drive yang dapat diakses service account; hasil dibatasi 5 halaman."""
+    qtext = str(kata_kunci or "").strip()
+    if not qtext:
+        return []
+    info = st.secrets["gcp_service_account"]
+    creds = Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+    )
+    creds.refresh(GoogleAuthRequest())
+    # Escape apostrof untuk Drive query language.
+    safe = qtext.replace("\\", "\\\\").replace("'", "\\'")
+    query = f"trashed = false and (name contains '{safe}' or fullText contains '{safe}')"
+    hasil, page_token = [], None
+    for _ in range(5):
+        params = {
+            "q": query, "pageSize": 100,
+            "orderBy": "modifiedTime desc",
+            "fields": "nextPageToken,files(id,name,mimeType,webViewLink,modifiedTime,size)",
+            "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        response = requests.get(
+            "https://www.googleapis.com/drive/v3/files",
+            headers={"Authorization": f"Bearer {creds.token}"}, params=params, timeout=30
+        )
+        response.raise_for_status()
+        payload = response.json()
+        hasil.extend(payload.get("files", []))
+        page_token = payload.get("nextPageToken")
+        if not page_token:
+            break
+    return hasil
+
+
+def url_preview_drive(file_id):
+    return f"https://drive.google.com/file/d/{file_id}/preview"
+
+
+def tampilkan_file_ruang_tutor(file_item):
+    mime = str(file_item.get("mimeType", ""))
+    nama = str(file_item.get("name", "Materi"))
+    fid = str(file_item.get("id", ""))
+    if not fid:
+        st.warning("ID file Drive tidak tersedia.")
+        return
+    st.markdown(f"**{nama}**")
+    st.caption(f"Tipe: {mime or 'tidak diketahui'} · Terakhir diubah: {file_item.get('modifiedTime', '-')}")
+    if mime == "application/pdf":
+        st.markdown("##### 📖 Pembaca PDF")
+        components.iframe(url_preview_drive(fid), height=650, scrolling=True)
+    elif mime.startswith("image/"):
+        st.image(f"https://drive.google.com/uc?export=view&id={fid}", use_container_width=True)
+    elif mime.startswith("audio/"):
+        st.markdown("##### 🎧 Audio Player · tampilan klasik")
+        components.iframe(url_preview_drive(fid), height=170, scrolling=False)
+    elif mime.startswith("video/"):
+        st.markdown("##### 🎬 Video Player")
+        components.iframe(url_preview_drive(fid), height=430, scrolling=False)
+    else:
+        st.info("Pratinjau langsung tidak tersedia untuk format ini. Buka file melalui Google Drive.")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.link_button("↗ Buka di Google Drive", file_item.get("webViewLink") or url_preview_drive(fid), use_container_width=True)
+    with c2:
+        st.link_button("⬇ Unduh file", f"https://drive.google.com/uc?export=download&id={fid}", use_container_width=True)
+
+
+def tampilkan_papan_tutor(id_user, id_tutor):
+    st.markdown("#### 📌 Papan Tutor Saya")
+    st.caption("Pengingat dan ide pribadi. Catatan hanya ditampilkan kepada akun tutor yang membuatnya.")
+    with st.expander("➕ Tambah pengingat / target / ide", expanded=False):
+        with st.form("form_papan_tutor_pribadi", clear_on_submit=True):
+            judul = st.text_input("Judul / hal yang perlu diingat")
+            isi = st.text_area("Catatan", height=90)
+            jenis = st.selectbox("Jenis", ["Pengingat", "Target", "Checklist", "Ide Mengajar"])
+            pengingat = st.text_input("Tanggal / waktu pengingat (opsional)", placeholder="Contoh: Jumat, sebelum kelas sore")
+            simpan = st.form_submit_button("Simpan ke Papan Saya", use_container_width=True)
+        if simpan:
+            try:
+                simpan_catatan_tutor(id_user, id_tutor, jenis, waktu_lokal().strftime("%Y-%m-%d"), "", "", judul, isi, pengingat)
+                st.success("Catatan pribadi berhasil disimpan.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Catatan belum tersimpan: {exc}")
+    try:
+        daftar = ambil_catatan_tutor(id_user)
+        daftar = sorted(daftar, key=lambda x: (str(x.get("Status", "")) != "Disematkan", str(x.get("Diperbarui_Pada", ""))), reverse=True)
+        if not daftar:
+            st.info("Papan masih kosong. Tambahkan pengingat atau ide mengajar.")
+        for item in daftar[-12:][::-1]:
+            with st.container(border=True):
+                st.markdown(f"**{item.get('Topik', 'Catatan')}** · {item.get('Jenis_Catatan', 'Catatan')}")
+                if item.get("Isi_Catatan"):
+                    st.write(item.get("Isi_Catatan"))
+                if item.get("Pengingat"):
+                    st.caption("⏰ " + item.get("Pengingat"))
+                col_pin, col_done, col_del = st.columns(3)
+                cid = item.get("ID_Catatan", "")
+                with col_pin:
+                    label = "Lepas pin" if item.get("Status") == "Disematkan" else "Sematkan"
+                    if st.button(label, key=f"pin_catatan_{cid}", use_container_width=True):
+                        ubah_status_catatan_tutor(cid, id_user, "Aktif" if label == "Lepas pin" else "Disematkan")
+                        st.rerun()
+                with col_done:
+                    if st.button("Selesai", key=f"done_catatan_{cid}", use_container_width=True):
+                        ubah_status_catatan_tutor(cid, id_user, "Selesai")
+                        st.rerun()
+                with col_del:
+                    if st.button("Hapus", key=f"hapus_catatan_{cid}", use_container_width=True):
+                        ubah_status_catatan_tutor(cid, id_user, "Dihapus")
+                        st.rerun()
+    except Exception as exc:
+        st.warning(f"Papan Tutor Saya belum dapat dimuat: {exc}")
 
 
 # =========================================================
@@ -1883,61 +2067,133 @@ elif peran == "🔒 Pengajar / Tutor":
             st.rerun()
 
         # -------------------------------------------------
-        # BERANDA TUTOR - dashboard ringkas tanpa statistik rahasia
+        # BERANDA TUTOR - ruang kerja pribadi (sidebar tetap)
         # -------------------------------------------------
         if menu_tutor == "🏠 Beranda":
-                st.markdown(
-                    f"""
-                    <div class="portal-hero">
-                        <h2>Selamat Datang, {st.session_state.tutor_nama} 👋</h2>
-                        <p>Portal Pengajar Bimbel Rumah Nazma</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+            st.markdown(
+                f"""
+                <div class="portal-hero">
+                    <h2>Selamat Datang, {st.session_state.tutor_nama} 👋</h2>
+                    <p>Ruang kerja pengajar · Bimbel Rumah Nazma</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
-                st.markdown("#### Akses cepat")
-                quick_targets = [
-                    ("📝 Persiapan Sesi", "📝 Persiapan Sesi & Bank Soal"),
-                    ("📚 Bank Soal", "📝 Persiapan Sesi & Bank Soal"),
-                    ("📂 Materi / Flipbook", "📚 Materi Tambahan"),
-                    ("🕒 Kehadiran", "🕒 Kehadiran Siswa"),
-                ]
-                quick_cols = st.columns(2)
-                for i, (label, target) in enumerate(quick_targets):
-                    with quick_cols[i % 2]:
-                        st.button(
-                            label,
-                            key=f"akses_cepat_tutor_{i}",
-                            use_container_width=True,
-                            on_click=_pilih_menu_tutor,
-                            args=(target,)
+            id_user_aktif = str(st.session_state.get("tutor_user_id", "")).strip()
+            id_tutor_aktif = str(st.session_state.get("tutor_id", "")).strip()
+            tab_catatan, tab_media = st.tabs(["🗒️ Catatan Mengajar", "🔎 Cari & Buka Materi"])
+
+            with tab_catatan:
+                st.markdown("#### Catatan Tutor")
+                st.caption("Catatan sesi tersimpan di Google Sheets dan terhubung dengan akun tutor.")
+                with st.form("form_catatan_mengajar_beranda", clear_on_submit=True):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        tanggal_sesi = st.date_input("Tanggal mengajar", value=waktu_lokal().date(), key="beranda_tanggal_sesi")
+                        mapel_sesi = st.selectbox("Mata pelajaran", MAPEL_OPTIONS, key="beranda_mapel_sesi")
+                    with c2:
+                        kelas_sesi = st.text_input("Kelas / jenjang", placeholder="Contoh: Kelas 5 SD")
+                        pengingat_sesi = st.text_input("Pengingat pertemuan berikutnya (opsional)")
+                    topik_sesi = st.text_input("Topik / bab yang diajarkan")
+                    isi_sesi = st.text_area("Catatan pembelajaran", height=120,
+                        placeholder="Materi yang sudah dibahas, perkembangan siswa, bagian yang perlu diulang, dan rencana pertemuan berikutnya...")
+                    simpan_sesi = st.form_submit_button("💾 Simpan Catatan Mengajar", use_container_width=True)
+                if simpan_sesi:
+                    try:
+                        simpan_catatan_tutor(
+                            id_user_aktif, id_tutor_aktif, "Catatan Mengajar",
+                            tanggal_sesi.strftime("%Y-%m-%d"), mapel_sesi, kelas_sesi,
+                            topik_sesi, isi_sesi, pengingat_sesi
                         )
+                        st.success("Catatan mengajar berhasil disimpan.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Catatan belum tersimpan: {exc}")
+                st.markdown("##### Riwayat catatan mengajar")
+                try:
+                    catatan_sesi = [x for x in ambil_catatan_tutor(id_user_aktif)
+                                    if x.get("Jenis_Catatan") == "Catatan Mengajar"]
+                    if catatan_sesi:
+                        for item in catatan_sesi[-8:][::-1]:
+                            with st.container(border=True):
+                                st.markdown(f"**{item.get('Mapel', '-')} · {item.get('Kelas', '-')}**")
+                                st.caption(f"{item.get('Tanggal', '-')} · {item.get('Topik', '-')}")
+                                if item.get("Isi_Catatan"):
+                                    st.write(item.get("Isi_Catatan"))
+                                if item.get("Pengingat"):
+                                    st.info("Pertemuan berikutnya: " + item.get("Pengingat"))
+                    else:
+                        st.info("Belum ada catatan mengajar tersimpan.")
+                except Exception as exc:
+                    st.warning(f"Riwayat catatan belum dapat dimuat: {exc}")
 
-                st.markdown("#### 🗒️ Catatan Tutor")
-                st.caption("Catatan sementara untuk pengingat selama sesi mengajar. Catatan ini belum disimpan ke Google Sheets.")
-                st.text_area(
-                    "Tulis catatan penting, perkembangan siswa, atau hal yang perlu ditindaklanjuti:",
-                    key="catatan_tutor_beranda",
-                    height=130,
-                    placeholder="Contoh: Perlu pengulangan materi pecahan; siapkan latihan tambahan untuk pertemuan berikutnya..."
+            with tab_media:
+                st.markdown("#### Pencarian Materi Google Drive")
+                st.caption("Mencari file di seluruh Google Drive yang dapat diakses akun layanan aplikasi. Hasil dimuat setelah pencarian.")
+                with st.form("form_cari_drive_tutor"):
+                    kata_kunci_drive = st.text_input("Cari nama atau isi file", placeholder="Contoh: pecahan kelas 5, sistem pencernaan, listening...")
+                    cari_drive = st.form_submit_button("🔎 Cari di Google Drive", use_container_width=True)
+                if cari_drive:
+                    if not kata_kunci_drive.strip():
+                        st.warning("Masukkan kata kunci pencarian.")
+                    else:
+                        try:
+                            with st.spinner("Mencari file yang dapat diakses akun aplikasi..."):
+                                hasil_drive = cari_file_google_drive(kata_kunci_drive.strip())
+                            st.session_state["hasil_drive_tutor"] = hasil_drive
+                            st.session_state["kata_kunci_drive_tutor"] = kata_kunci_drive.strip()
+                        except Exception as exc:
+                            st.error(f"Pencarian Google Drive gagal: {exc}")
+                hasil_drive = st.session_state.get("hasil_drive_tutor", [])
+                if hasil_drive:
+                    st.caption(f"Ditemukan {len(hasil_drive)} file yang ditampilkan untuk: {st.session_state.get('kata_kunci_drive_tutor', '')}")
+                    pilihan_file = st.selectbox(
+                        "Pilih materi untuk dibuka",
+                        options=range(len(hasil_drive)),
+                        format_func=lambda i: f"{hasil_drive[i].get('name', 'Tanpa nama')} · {hasil_drive[i].get('mimeType', 'file')}",
+                        key="pilih_file_drive_tutor"
+                    )
+                    tampilkan_file_ruang_tutor(hasil_drive[pilihan_file])
+                elif st.session_state.get("kata_kunci_drive_tutor"):
+                    st.info("Tidak ditemukan file yang cocok atau file tidak dapat diakses akun layanan.")
+
+                st.divider()
+                st.markdown("#### Buka file dari perangkat")
+                st.caption("Pilih PDF, gambar, audio, atau video dari HP/laptop. File akan diunggah ke Drive melalui konfigurasi upload aplikasi.")
+                file_lokal = st.file_uploader(
+                    "Pilih file materi", type=["pdf", "png", "jpg", "jpeg", "webp", "mp3", "wav", "m4a", "ogg", "aac", "mp4", "mov", "webm", "m4v"],
+                    key="upload_media_beranda_tutor"
                 )
+                if file_lokal is not None:
+                    if st.button("⬆️ Unggah dan buka materi", key="unggah_media_beranda_tutor", use_container_width=True):
+                        try:
+                            if len(file_lokal.getvalue()) > 20 * 1024 * 1024:
+                                raise ValueError("Ukuran file maksimal 20 MB.")
+                            with st.spinner("Mengunggah materi ke Google Drive..."):
+                                url_file = upload_lampiran_ke_drive(file_lokal.getvalue(), file_lokal.name, file_lokal.type)
+                            st.session_state["media_beranda_upload_terakhir"] = {
+                                "url": url_file, "name": file_lokal.name, "mime": file_lokal.type
+                            }
+                            st.success("File berhasil diunggah.")
+                        except Exception as exc:
+                            st.error(f"File belum berhasil diunggah: {exc}")
+                upload_terakhir = st.session_state.get("media_beranda_upload_terakhir")
+                if upload_terakhir:
+                    fid_upload = drive_id(upload_terakhir.get("url", ""))
+                    if fid_upload:
+                        tampilkan_file_ruang_tutor({
+                            "id": fid_upload, "name": upload_terakhir.get("name", "Materi"),
+                            "mimeType": upload_terakhir.get("mime", ""),
+                            "webViewLink": upload_terakhir.get("url", "")
+                        })
+                    else:
+                        tampilkan_media_url(upload_terakhir["url"], upload_terakhir.get("mime", ""), upload_terakhir.get("name", "Materi"))
+                        st.link_button("↗ Buka materi di Google Drive", upload_terakhir["url"], use_container_width=True)
 
-                st.markdown("#### Ruang kerja pengajar")
-                st.caption(
-                    "Pilih menu di atas untuk melanjutkan pekerjaan. "
-                    "Beranda ini sengaja tidak menampilkan jumlah siswa, daftar siswa binaan, "
-                    "atau ringkasan data internal bimbel."
-                )
-                action_cols = st.columns(2)
-                with action_cols[0]:
-                    st.info("**Tugas & evaluasi**\n\nBuat tugas berdasarkan kebutuhan belajar siswa melalui menu Persiapan Sesi & Bank Soal.")
-                with action_cols[1]:
-                    st.info("**Administrasi sesi**\n\nCatat kehadiran dan waktu selesai belajar melalui menu Kehadiran Siswa.")
+            st.divider()
+            tampilkan_papan_tutor(id_user_aktif, id_tutor_aktif)
 
-            # -------------------------------------------------
-            # TAB 1: KONFIGURASI TUGAS DAN EVALUASI SESI (VERSI 2)
-            # -------------------------------------------------
         elif menu_tutor == "⚙️ Pengaturan Akun":
                 st.header("⚙️ Pengaturan Akun")
                 st.caption("Ubah PIN hanya saat diperlukan. Username dan identitas akun tidak berubah.")
