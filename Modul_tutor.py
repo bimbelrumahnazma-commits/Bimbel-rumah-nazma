@@ -1,4 +1,268 @@
-ntered = str(pin_input or "").strip()
+import streamlit as st
+import gspread
+from google.oauth2.service_account import Credentials
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import time
+import pandas as pd
+import random
+import json
+import uuid
+import requests
+import base64
+import re
+import hashlib
+import hmac
+import secrets
+import streamlit.components.v1 as components
+
+
+# Daftar mata pelajaran dan program Bimbel Rumah Nazma
+MAPEL_OPTIONS = [
+    # PAUD / TK
+    "Calistung", "Tematik TK", "Pendidikan Agama",
+
+    # SD
+    "Matematika SD", "Bahasa Indonesia SD", "IPAS SD",
+    "Bahasa Inggris SD", "Pendidikan Pancasila SD", "PAI SD",
+    "PJOK SD", "Seni Rupa SD", "Seni Musik SD", "Bahasa Arab SD",
+
+    # SMP
+    "Matematika SMP", "Bahasa Indonesia SMP", "Bahasa Inggris SMP",
+    "IPA SMP", "IPS SMP", "Pendidikan Pancasila SMP", "PAI SMP",
+    "Informatika SMP", "PJOK SMP", "Seni Budaya SMP", "Prakarya SMP",
+
+    # SMA
+    "Matematika SMA", "Bahasa Indonesia SMA", "Bahasa Inggris SMA",
+    "Fisika SMA", "Kimia SMA", "Biologi SMA", "Ekonomi SMA",
+    "Geografi SMA", "Sosiologi SMA", "Sejarah SMA", "PAI SMA",
+    "Informatika SMA",
+
+    # Program khusus / persiapan tes
+    "OSN SD", "OSN SMP", "OSN SMA",
+    "TOEFL", "SKD", "UTBK", "TKA",
+]
+
+# =========================================================
+# KONFIGURASI HALAMAN
+# =========================================================
+st.set_page_config(
+    page_title="Portal Bimbel Rumah Nazma",
+    layout="wide",
+    page_icon="🎓",
+    initial_sidebar_state="expanded"
+)
+
+st.markdown("""
+<style>
+    .stApp { background: #f4f7fc; color: #172554; }
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg,#123568 0%,#17457f 58%,#0d2e5c 100%);
+        border-right: 1px solid #234d80;
+    }
+    [data-testid="stSidebar"] * { color: #f8fbff; }
+    [data-testid="stSidebar"] div[role="radiogroup"] label {
+        background: rgba(255,255,255,.075);
+        border: 1px solid rgba(255,255,255,.10);
+        border-radius: 10px; padding: 9px 10px; margin: 5px 0;
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] label:hover { background: rgba(255,255,255,.17); }
+    [data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
+        background: #d9edff; border-color: #d9edff;
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) * {
+        color: #123568 !important; font-weight: 700;
+    }
+    [data-testid="stSidebar"] button {
+        background: rgba(255,255,255,.12) !important;
+        color: white !important; border: 1px solid rgba(255,255,255,.28) !important;
+    }
+    [data-testid="stSidebar"] button:hover { background: rgba(255,255,255,.22) !important; }
+    .main-header {
+        background: linear-gradient(135deg, #123568 0%, #28559a 100%);
+        padding: 24px; border-radius: 16px; color: white;
+        margin-bottom: 22px; box-shadow: 0 5px 18px rgba(18,53,104,.16);
+    }
+    .portal-hero {
+        background: linear-gradient(115deg, #ffffff 0%, #eef6ff 72%, #e2f0ff 100%);
+        border: 1px solid #d8e5f5; border-radius: 18px;
+        padding: 22px 24px; margin: 4px 0 18px 0;
+        box-shadow: 0 3px 12px rgba(31,65,114,.06);
+    }
+    .portal-hero h2 { color: #102a56; margin: 0 0 6px 0; font-size: 1.65rem; }
+    .portal-hero p { color: #526783; margin: 0; font-size: .98rem; }
+    .portal-card {
+        background: #ffffff; border: 1px solid #dce6f3;
+        border-radius: 16px; padding: 17px 18px; min-height: 118px;
+        box-shadow: 0 3px 12px rgba(31,65,114,.055);
+        margin-bottom: 12px;
+    }
+    .portal-card .card-icon { font-size: 1.65rem; margin-bottom: 7px; }
+    .portal-card h4 { color: #183765; font-size: 1rem; margin: 0 0 5px 0; }
+    .portal-card p { color: #64748b; font-size: .86rem; margin: 0; line-height: 1.4; }
+    [data-testid="stSidebar"] .stRadio > label { color: #ffffff !important; font-weight: 700; }
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: #f8fbff; }
+    .dashboard-section { background: #fff; border: 1px solid #dce6f3; border-radius: 16px; padding: 18px; margin-bottom: 14px; }
+    div[data-testid="stTabs"] button { font-weight: 600; }
+    div[data-testid="stButton"] button {
+        border-radius: 10px; border: 1px solid #cbd9eb;
+        min-height: 2.55rem;
+    }
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] {
+        border-radius: 9px;
+    }
+    @media (max-width: 700px) {
+        .portal-hero { padding: 17px; }
+        .portal-hero h2 { font-size: 1.3rem; }
+        .portal-card { min-height: 105px; padding: 14px; }
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# =========================================================
+# KONEKSI GOOGLE SHEETS
+# =========================================================
+@st.cache_resource
+def init_connection():
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scope
+    )
+    return gspread.authorize(creds)
+
+
+try:
+    client = init_connection()
+    sheet = client.open_by_url(
+        "https://docs.google.com/spreadsheets/d/17JI1x966HfVG4YpfzCz_bssBwOmUTIJFbRutl0qyIZE/edit"
+    )
+except Exception as e:
+    st.error(f"Gagal terhubung ke Google Sheets: {e}")
+    st.stop()
+
+
+def upload_lampiran_ke_drive(file_bytes, file_name, mime_type):
+    """Unggah lampiran ke Google Drive melalui Apps Script milik akun Bimbel."""
+    try:
+        cfg = st.secrets["drive_upload"]
+        endpoint = str(cfg["web_app_url"]).strip()
+        token = str(cfg["token"]).strip()
+        if not endpoint or not token:
+            raise ValueError("URL Apps Script atau token upload belum diatur di Streamlit Secrets.")
+
+        payload = {
+            "token": token,
+            "fileName": file_name,
+            "mimeType": mime_type or "application/octet-stream",
+            "fileData": base64.b64encode(file_bytes).decode("ascii"),
+        }
+        folder_id = str(cfg.get("folder_id", "")).strip()
+        if folder_id:
+            payload["folderId"] = folder_id
+
+        response = requests.post(endpoint, json=payload, timeout=120)
+        response.raise_for_status()
+        try:
+            result = response.json()
+        except ValueError:
+            raise RuntimeError("Respons Apps Script bukan JSON. Periksa URL deployment Web App.")
+
+        if not result.get("success") or not result.get("url"):
+            raise RuntimeError(result.get("error", "Google Drive tidak mengembalikan link file."))
+        return str(result["url"])
+    except Exception as e:
+        raise RuntimeError(f"Gagal mengunggah lampiran '{file_name}': {e}")
+
+
+def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
+    """Ambil worksheet; buat jika belum ada. Header hanya dibuat untuk sheet baru/kosong."""
+    try:
+        ws = sheet.worksheet(title)
+    except gspread.WorksheetNotFound:
+        ws = sheet.add_worksheet(title=title, rows=rows, cols=cols)
+
+    values = ws.get_all_values()
+    if not values:
+        ws.append_row(headers)
+    return ws
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _baca_values_cache(spreadsheet_id, worksheet_title):
+    """Cache pembacaan nilai sheet selama 15 detik untuk menekan Read requests."""
+    ws_cached = client.open_by_key(spreadsheet_id).worksheet(worksheet_title)
+    return ws_cached.get_all_values()
+
+
+def baca_records_aman(ws, refresh=False):
+    """Membaca sheet dengan cache singkat; refresh=True memaksa pembacaan terbaru."""
+    try:
+        values = ws.get_all_values() if refresh else _baca_values_cache(sheet.id, ws.title)
+    except Exception as exc:
+        # Jika cache/API gagal, jangan menyamarkan error dengan data kosong.
+        raise RuntimeError(f"Gagal membaca worksheet {ws.title}: {exc}")
+    if not values:
+        return []
+    raw_headers = [str(x).strip() for x in values[0]]
+    headers = []
+    used = set()
+    for i, name in enumerate(raw_headers):
+        if not name:
+            name = f"_kolom_{i+1}"
+        base = name
+        suffix = 2
+        while name in used:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        used.add(name)
+        headers.append(name)
+    records = []
+    for nomor_baris, row in enumerate(values[1:], start=2):
+        if not any(str(v).strip() for v in row):
+            continue
+        rec = {h: (row[i] if i < len(row) else "") for i, h in enumerate(headers)}
+        # Alias header agar kompatibel dengan variasi nama kolom di Google Sheets.
+        # Data_Siswa milik pengguna memakai Nama_Siswa, sedangkan modul lama
+        # membaca Nama_Lengkap. Sediakan keduanya tanpa mengubah struktur sheet.
+        if "Nama_Siswa" in rec and "Nama_Lengkap" not in rec:
+            rec["Nama_Lengkap"] = rec["Nama_Siswa"]
+        elif "Nama_Lengkap" in rec and "Nama_Siswa" not in rec:
+            rec["Nama_Siswa"] = rec["Nama_Lengkap"]
+
+        # Header ID siswa bisa tertulis ID_Siswa atau ID_SISWA: sediakan keduanya.
+        if "ID_SISWA" in rec and "ID_Siswa" not in rec:
+            rec["ID_Siswa"] = rec["ID_SISWA"]
+        elif "ID_Siswa" in rec and "ID_SISWA" not in rec:
+            rec["ID_SISWA"] = rec["ID_Siswa"]
+        rec["_baris"] = nomor_baris  # nomor baris ASLI di sheet (aman walau ada baris kosong)
+        records.append(rec)
+    return records
+
+
+
+# =========================================================
+# KEAMANAN PIN: PBKDF2-HMAC-SHA256 + salt unik
+# =========================================================
+_PIN_ITERATIONS = 310_000
+_PIN_PREFIX = "pbkdf2_sha256"
+
+
+def hash_pin(pin):
+    pin = str(pin or "")
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt, _PIN_ITERATIONS)
+    return f"{_PIN_PREFIX}${_PIN_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def verifikasi_pin(pin_input, stored_pin):
+    stored = str(stored_pin or "").strip()
+    entered = str(pin_input or "").strip()
     if not stored or not entered:
         return False, False
     if stored.startswith(_PIN_PREFIX + "$"):
@@ -2179,9 +2443,118 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.session_state.owner_logged_in = False
             st.rerun()
         st.success("Akses diizinkan.")
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "🎁 Undian Hadiah", "👥 Kelola Status Akun", "📚 Arsip Bank Soal", "🔑 Reset PIN", "🔐 Keamanan Owner"
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "🎁 Undian Hadiah", "👥 Kelola Status Akun", "📚 Arsip Bank Soal",
+            "🔑 Reset PIN", "🔐 Keamanan Owner", "➕ Tambah Siswa"
         ])
+
+        with tab6:
+            st.header("➕ Pendaftaran Siswa Baru")
+            st.caption("Isi satu formulir saja. ID dibuat otomatis dan data disimpan ke Data_Siswa.")
+            try:
+                ws_daftar = sheet.worksheet("Data_Siswa")
+                headers_daftar = [str(h).strip() for h in ws_daftar.row_values(1)]
+                kolom_id = "ID_SISWA" if "ID_SISWA" in headers_daftar else (
+                    "ID_Siswa" if "ID_Siswa" in headers_daftar else None
+                )
+                kolom_nama = "Nama_Lengkap" if "Nama_Lengkap" in headers_daftar else (
+                    "Nama_Siswa" if "Nama_Siswa" in headers_daftar else None
+                )
+                kolom_pin = "PIN_Siswa" if "PIN_Siswa" in headers_daftar else None
+                kolom_jenjang = "Jenjang" if "Jenjang" in headers_daftar else None
+                kolom_kelas = "Kelas" if "Kelas" in headers_daftar else None
+                kolom_status = "Status" if "Status" in headers_daftar else None
+                kolom_poin = "Poin" if "Poin" in headers_daftar else None
+                kolom_tanggal = next((c for c in ("Tanggal_Daftar", "Tanggal_Masuk", "Tanggal") if c in headers_daftar), None)
+
+                wajib_tidak_ada = [
+                    nama for nama, kolom in (
+                        ("ID_SISWA atau ID_Siswa", kolom_id),
+                        ("Nama_Lengkap atau Nama_Siswa", kolom_nama),
+                        ("PIN_Siswa", kolom_pin),
+                        ("Jenjang", kolom_jenjang),
+                    ) if kolom is None
+                ]
+                if wajib_tidak_ada:
+                    st.error("Header Data_Siswa belum cocok. Kolom yang tidak ditemukan: " + ", ".join(wajib_tidak_ada))
+                    st.caption("Header yang terbaca: " + " | ".join(headers_daftar))
+                else:
+                    records_daftar = baca_records_aman(ws_daftar, refresh=True)
+                    nomor_terpakai = []
+                    for rec in records_daftar:
+                        id_lama = str(rec.get(kolom_id, "")).strip()
+                        cocok_id = re.fullmatch(r"S(\d+)", id_lama, flags=re.IGNORECASE)
+                        if cocok_id:
+                            nomor_terpakai.append(int(cocok_id.group(1)))
+                    id_baru = f"S{(max(nomor_terpakai, default=0) + 1):03d}"
+
+                    with st.form("form_tambah_siswa_owner", clear_on_submit=True):
+                        st.info(f"ID siswa berikutnya: **{id_baru}**")
+                        nama_baru = st.text_input("Nama lengkap siswa *")
+                        jenjang_baru = st.selectbox("Jenjang *", ["TK", "SD", "SMP", "SMA"])
+                        kelas_opsi = {
+                            "TK": ["Kelompok A", "Kelompok B"],
+                            "SD": [f"Kelas {i}" for i in range(1, 7)],
+                            "SMP": [f"Kelas {i}" for i in range(7, 10)],
+                            "SMA": [f"Kelas {i}" for i in range(10, 13)],
+                        }
+                        kelas_baru = st.selectbox("Kelas", kelas_opsi[jenjang_baru])
+                        pin_baru = st.text_input("PIN awal (minimal 6 angka) *", type="password")
+                        pin_ulang = st.text_input("Ulangi PIN awal *", type="password")
+                        simpan_siswa = st.form_submit_button("Simpan Siswa Baru")
+                    if simpan_siswa:
+                        if not nama_baru.strip():
+                            st.error("Nama siswa wajib diisi.")
+                        elif not pin_baru.isdigit() or len(pin_baru) < 6:
+                            st.error("PIN awal harus berupa angka minimal 6 digit.")
+                        elif pin_baru != pin_ulang:
+                            st.error("Konfirmasi PIN tidak sama.")
+                        elif any(str(r.get(kolom_nama, "")).strip().casefold() == nama_baru.strip().casefold() for r in records_daftar):
+                            st.error("Nama siswa sudah terdaftar. Periksa agar tidak membuat akun ganda.")
+                        else:
+                            row_baru = []
+                            for header in headers_daftar:
+                                if header == kolom_id:
+                                    row_baru.append(id_baru)
+                                elif header == kolom_nama:
+                                    row_baru.append(nama_baru.strip())
+                                elif header == kolom_pin:
+                                    row_baru.append(hash_pin(pin_baru))
+                                elif header == kolom_jenjang:
+                                    row_baru.append(jenjang_baru)
+                                elif header == kolom_kelas:
+                                    row_baru.append(kelas_baru)
+                                elif header == kolom_status:
+                                    row_baru.append("Aktif")
+                                elif header == kolom_poin:
+                                    row_baru.append("0")
+                                elif header == kolom_tanggal:
+                                    row_baru.append(waktu_lokal().strftime("%Y-%m-%d"))
+                                else:
+                                    row_baru.append("")
+                            try:
+                                ws_daftar.append_row(row_baru, value_input_option="USER_ENTERED")
+                                _baca_values_cache.clear()
+                                st.success(f"Siswa {nama_baru.strip()} berhasil didaftarkan dengan ID {id_baru}. PIN disimpan dalam bentuk HASH.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Gagal menyimpan siswa: {exc}")
+                    st.divider()
+                    st.markdown("**Siswa terdaftar terbaru**")
+                    if records_daftar:
+                        ringkas = [
+                            {
+                                "ID": str(r.get(kolom_id, "")),
+                                "Nama": str(r.get(kolom_nama, "")),
+                                "Jenjang": str(r.get(kolom_jenjang, "")),
+                                "Kelas": str(r.get(kolom_kelas, "")) if kolom_kelas else "",
+                                "Status": str(r.get(kolom_status, "Aktif")) if kolom_status else "Aktif",
+                            }
+                            for r in records_daftar[-10:]
+                        ]
+                        st.dataframe(pd.DataFrame(ringkas[::-1]), use_container_width=True, hide_index=True)
+            except Exception as exc:
+                st.error(f"Form pendaftaran siswa belum dapat dibuka: {exc}")
 
         with tab1:
             data_siswa_all = baca_records_aman(sheet.worksheet("Data_Siswa"))
