@@ -137,13 +137,22 @@ def init_connection():
     return gspread.authorize(creds)
 
 
+@st.cache_resource
+def init_spreadsheet():
+    """Buka spreadsheet satu kali per proses Streamlit, bukan setiap rerun/session."""
+    gc = init_connection()
+    return gc.open_by_key("17JI1x966HfVG4YpfzCz_bssBwOmUTIJFbRutl0qyIZE")
+
+
 try:
     client = init_connection()
-    sheet = client.open_by_url(
-        "https://docs.google.com/spreadsheets/d/17JI1x966HfVG4YpfzCz_bssBwOmUTIJFbRutl0qyIZE/edit"
-    )
+    sheet = init_spreadsheet()
 except Exception as e:
-    st.error(f"Gagal terhubung ke Google Sheets: {e}")
+    st.error(
+        "Gagal terhubung ke Google Sheets. Jika muncul error 429, kuota baca "
+        "Google Sheets untuk akun layanan sedang penuh. Tunggu hingga kuota pulih "
+        "sebelum mencoba lagi. Detail: " + str(e)
+    )
     st.stop()
 
 
@@ -192,15 +201,15 @@ def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
         return ws
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def _baca_values_cache(spreadsheet_id, worksheet_title):
-    """Cache pembacaan nilai sheet selama 60 detik untuk menekan Read requests."""
-    ws_cached = client.open_by_key(spreadsheet_id).worksheet(worksheet_title)
+    """Cache nilai sheet 3 menit; memakai objek spreadsheet yang sudah di-cache."""
+    ws_cached = init_spreadsheet().worksheet(worksheet_title)
     return ws_cached.get_all_values()
 
 
 def baca_records_aman(ws, refresh=False):
-    """Membaca sheet dengan cache singkat; refresh=True memaksa pembacaan terbaru."""
+    """Membaca sheet dengan cache 180 detik; refresh=True memaksa pembacaan terbaru."""
     try:
         values = ws.get_all_values() if refresh else _baca_values_cache(sheet.id, ws.title)
     except Exception as exc:
