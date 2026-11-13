@@ -957,9 +957,46 @@ PESAN_ORTU_HEADERS = [
 
 
 def get_pesan_ortu_worksheet():
-    ws = get_or_create_worksheet("Pesan_Orangtua_Tutor", PESAN_ORTU_HEADERS, rows="3000", cols="13")
-    if not header_cocok(ws.row_values(1), PESAN_ORTU_HEADERS):
-        raise ValueError("Header Pesan_Orangtua_Tutor tidak sesuai. Data tidak ditulis.")
+    """Ambil/buat sheet pesan orang tua dan inisialisasi header hanya jika baris pertama kosong.
+
+    Tidak menimpa header yang sudah ada atau mengubah riwayat pesan. Jika ditemukan
+    header lain, hentikan penulisan dan tampilkan diagnosis agar data lama aman.
+    """
+    nama_sheet = "Pesan_Orangtua_Tutor"
+    try:
+        ws = sheet.worksheet(nama_sheet)
+    except gspread.WorksheetNotFound:
+        try:
+            ws = sheet.add_worksheet(title=nama_sheet, rows="3000", cols="13")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Sheet {nama_sheet} belum ada dan gagal dibuat. Periksa izin edit "
+                f"akun layanan Google Sheets. Detail: {exc}"
+            ) from exc
+
+    # Sheet mungkin pernah dibuat tetapi proses sebelumnya terhenti sebelum header ditulis.
+    actual = [str(x).strip() for x in ws.row_values(1)]
+    while actual and actual[-1] == "":
+        actual.pop()
+
+    if not actual:
+        try:
+            ws.update([PESAN_ORTU_HEADERS], "A1:M1", value_input_option="RAW")
+            actual = [str(x).strip() for x in ws.row_values(1)]
+            while actual and actual[-1] == "":
+                actual.pop()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Sheet {nama_sheet} berhasil ditemukan/dibuat, tetapi header gagal ditulis. "
+                f"Periksa izin edit Google Sheets. Detail: {exc}"
+            ) from exc
+
+    if not header_cocok(actual, PESAN_ORTU_HEADERS):
+        raise ValueError(
+            f"Struktur header sheet {nama_sheet} berbeda dari format yang diperlukan. "
+            f"Header terbaca: {actual!r}. Tidak ada data yang ditulis atau dihapus. "
+            "Periksa sheet sebelum melakukan perubahan manual."
+        )
     return ws
 
 
