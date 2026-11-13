@@ -299,30 +299,47 @@ def simpan_pin_baru(ws, record, field_name, pin_baru):
     _baca_values_cache.clear()
 
 
+def ambil_pin_terkini(ws, record, field_name):
+    """Baca PIN langsung dari baris Google Sheets; hindari record cache/session yang usang."""
+    headers = [str(x).strip() for x in ws.row_values(1)]
+    if field_name not in headers:
+        raise ValueError(f"Kolom {field_name} tidak ditemukan pada {ws.title}.")
+    nomor_baris = int(record.get("_baris", 0) or 0)
+    if nomor_baris < 2:
+        raise ValueError("Nomor baris akun tidak valid. Silakan logout lalu login kembali.")
+    values = ws.row_values(nomor_baris)
+    idx = headers.index(field_name)
+    return values[idx] if idx < len(values) else ""
+
+
 def form_ganti_pin(ws, record, field_name, key_prefix):
-    """Form opsional agar pengguna mengganti PIN sendiri setelah berhasil login."""
+    """Form ganti PIN; verifikasi memakai nilai terbaru langsung dari sheet, bukan cache."""
     with st.container(border=True):
         st.markdown("#### 🔐 Keamanan Akun — Ganti PIN")
+        st.caption("Username dan identitas akun tidak berubah. Hanya PIN yang diperbarui.")
         with st.form(f"{key_prefix}_form_ganti_pin"):
             pin_lama = st.text_input("PIN saat ini", type="password", key=f"{key_prefix}_pin_lama")
             pin_baru = st.text_input("PIN baru (minimal 6 angka)", type="password", key=f"{key_prefix}_pin_baru")
             konfirmasi = st.text_input("Ulangi PIN baru", type="password", key=f"{key_prefix}_pin_konfirmasi")
             submit = st.form_submit_button("Simpan PIN Baru")
         if submit:
-            cocok, _ = verifikasi_pin(pin_lama, record.get(field_name, ""))
-            if not cocok:
-                st.error("PIN saat ini tidak sesuai.")
-            elif not pin_baru.isdigit() or len(pin_baru) < 6:
-                st.error("PIN baru harus berupa angka dan minimal 6 digit.")
-            elif pin_baru != konfirmasi:
-                st.error("Konfirmasi PIN baru tidak sama.")
-            else:
-                try:
+            try:
+                pin_tersimpan = ambil_pin_terkini(ws, record, field_name)
+                cocok, _ = verifikasi_pin(pin_lama, pin_tersimpan)
+                if not cocok:
+                    st.error("PIN saat ini tidak sesuai. Jika PIN baru saja di-reset Owner, logout lalu login kembali dengan PIN hasil reset.")
+                elif not pin_baru.isdigit() or len(pin_baru) < 6:
+                    st.error("PIN baru harus berupa angka dan minimal 6 digit.")
+                elif pin_baru != konfirmasi:
+                    st.error("Konfirmasi PIN baru tidak sama.")
+                elif hmac.compare_digest(pin_lama.strip(), pin_baru.strip()):
+                    st.error("PIN baru harus berbeda dari PIN saat ini.")
+                else:
                     simpan_pin_baru(ws, record, field_name, pin_baru)
                     st.success("PIN berhasil diperbarui dan disimpan dalam bentuk HASH.")
                     st.rerun()
-                except Exception as exc:
-                    st.error(f"PIN belum berhasil diperbarui: {exc}")
+            except Exception as exc:
+                st.error(f"PIN belum berhasil diperbarui: {exc}")
 
 def header_cocok(actual, expected):
     """Bandingkan header sheet dengan struktur yang diharapkan (abaikan kolom kosong di ujung kanan)."""
@@ -929,6 +946,87 @@ def jawaban_kosong(v):
     if isinstance(v, dict):
         return not any(str(x).strip() for x in v.values())
     return not str(v).strip()
+
+
+def _nilai_normalisasi(v):
+    """Normalisasi jawaban untuk pencocokan kunci tanpa membedakan kapital/spasi."""
+    if isinstance(v, str):
+        return re.sub(r"\\s+", " ", v.strip()).casefold()
+    return v
+
+
+def _nilai_parse_jawaban(v):
+    """Pulihkan list/dict yang disimpan sebagai JSON string di Google Sheets."""
+    if isinstance(v, str):
+        teks = v.strip()
+        if teks.startswith(("[", "{")):
+            try:
+                return json.loads(teks)
+            except (ValueError, TypeError):
+                return v
+    return v
+
+
+def hitung_nilai_objektif(daftar_soal, jawaban):
+    """Hitung nilai soal objektif. Soal uraian sengaja tidak dinilai otomatis."""
+    total_objektif = 0
+    benar = 0
+    rincian = []
+    manual = []
+    for nomor, soal in enumerate(daftar_soal, 1):
+        bentuk = str(soal.get("Bentuk_Soal", "")).casefold()
+        kunci = _nilai_parse_jawaban(soal.get("Kunci", soal.get("Kunci_Jawaban", "")))
+        siswa = _nilai_parse_jawaban(jawaban.get(str(nomor), ""))
+        if any(k in bentuk for k in ("uraian", "essay", "esai", "isian", "jawaban singkat")):
+            manual.append(nomor)
+            continue
+        if not str(kunci).strip() and not isinstance(kunci, (list, dict)):
+            manual.append(nomor)
+            continue
+
+        total_objektif += 1
+        if "pilihan ganda kompleks" in bentuk:
+            k = kunci if isinstance(kunci, list) else [x.strip() for x in str(kunci).split("|") if x.strip()]
+            s = siswa if isinstance(siswa, list) else ([siswa] if siswa not in ("", None) else [])
+            k_norm = {_nilai_normalisasi(x) for x in k}
+            s_norm = {_nilai_normalisasi(x) for x in s}
+            # Nilai parsial: proporsi pilihan kunci yang tepat, tanpa bonus untuk pilihan salah.
+            poin = len(k_norm & s_norm) / len(k_norm) if k_norm else 0
+            if s_norm - k_norm:
+                poin = max(0, poin - len(s_norm - k_norm) / max(len(k_norm), 1))
+            poin = max(0, min(1, poin))
+        elif "menjodohkan" in bentuk:
+            if not isinstance(kunci, dict):
+                try:
+                    kunci = json.loads(str(kunci))
+                except (ValueError, TypeError):
+                    kunci = {}
+            if not isinstance(siswa, dict):
+                siswa = {}
+            kunci_pasangan = kunci.get("pasangan", kunci) if isinstance(kunci, dict) else {}
+            if isinstance(kunci_pasangan, dict) and kunci_pasangan:
+                cocok = sum(
+                    1 for k, v in kunci_pasangan.items()
+                    if _nilai_normalisasi(siswa.get(k, "")) == _nilai_normalisasi(v)
+                )
+                poin = cocok / len(kunci_pasangan)
+            else:
+                poin = 0
+        else:
+            poin = 1.0 if _nilai_normalisasi(siswa) == _nilai_normalisasi(kunci) else 0.0
+
+        if poin >= 0.999:
+            benar += 1
+        rincian.append({"nomor": nomor, "poin": poin})
+
+    skor = (sum(x["poin"] for x in rincian) / total_objektif * 100) if total_objektif else None
+    return {
+        "skor_objektif": round(skor, 2) if skor is not None else None,
+        "jumlah_objektif": total_objektif,
+        "jumlah_benar_penuh": benar,
+        "soal_manual": manual,
+        "rincian": rincian,
+    }
 
 
 def normalisasi_opsi(teks):
@@ -1986,8 +2084,38 @@ elif peran == "🔒 Pengajar / Tutor":
                             jawaban_dict = {}
                         st.write("**Jawaban siswa:**")
                         st.json(jawaban_dict)
+                        tugas_terpilih = info_tgs.get(str(item.get("ID_Tugas", "")).strip(), {})
+                        try:
+                            soal_untuk_nilai = json.loads(tugas_terpilih.get("Soal_JSON", "") or "[]")
+                            if not isinstance(soal_untuk_nilai, list):
+                                soal_untuk_nilai = []
+                        except (ValueError, TypeError):
+                            soal_untuk_nilai = []
+                        hasil_otomatis = hitung_nilai_objektif(soal_untuk_nilai, jawaban_dict) if soal_untuk_nilai else {
+                            "skor_objektif": None, "jumlah_objektif": 0,
+                            "jumlah_benar_penuh": 0, "soal_manual": [], "rincian": []
+                        }
+                        semua_objektif = bool(soal_untuk_nilai) and hasil_otomatis["jumlah_objektif"] == len(soal_untuk_nilai)
+                        if hasil_otomatis["skor_objektif"] is not None:
+                            st.markdown("**Hasil pemeriksaan otomatis (khusus soal objektif):**")
+                            st.metric("Skor objektif", f'{hasil_otomatis["skor_objektif"]:.2f}/100')
+                            st.caption(
+                                f'{hasil_otomatis["jumlah_benar_penuh"]} soal benar penuh dari '
+                                f'{hasil_otomatis["jumlah_objektif"]} soal objektif.'
+                            )
+                        if hasil_otomatis["soal_manual"]:
+                            st.info(
+                                "Soal nomor " + ", ".join(map(str, hasil_otomatis["soal_manual"])) +
+                                " perlu diperiksa manual. Nilai akhir tetap ditentukan tutor."
+                            )
+                        elif not soal_untuk_nilai:
+                            st.warning("Data soal/kunci tidak tersedia pada tugas ini. Penilaian dilakukan manual.")
+
+                        nilai_awal = int(round(hasil_otomatis["skor_objektif"] or 0)) if semua_objektif else 0
                         with st.form("form_penilaian_jawaban"):
-                            nilai = st.number_input("Nilai (0–100):", min_value=0, max_value=100, value=0)
+                            if semua_objektif:
+                                st.caption("Semua soal dapat dinilai otomatis. Tutor tetap dapat mengubah nilai akhir.")
+                            nilai = st.number_input("Nilai akhir (0–100):", min_value=0, max_value=100, value=nilai_awal)
                             catatan = st.text_area("Catatan tutor:")
                             simpan_nilai = st.form_submit_button("Simpan Penilaian")
                             if simpan_nilai:
@@ -2021,6 +2149,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                     ws_jawaban.batch_update(pembaruan, value_input_option="RAW")
                                 st.success("Penilaian tersimpan.")
                                 st.rerun()
+
                     else:
                         st.info("Tidak ada jawaban yang menunggu pemeriksaan.")
                 else:
