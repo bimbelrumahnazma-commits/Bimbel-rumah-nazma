@@ -2183,6 +2183,8 @@ elif peran == "🔒 Pengajar / Tutor":
                     st.warning(f"Riwayat catatan belum dapat dimuat: {exc}")
 
             st.markdown("## Penampil Media")
+            # Satu area pratinjau dipakai bersama untuk hasil Drive maupun file unggahan.
+            # Placeholder hanya muncul jika belum ada media yang dipilih.
             with st.container(border=True):
                 c_search, c_button = st.columns([4, 1])
                 with c_search:
@@ -2192,6 +2194,7 @@ elif peran == "🔒 Pengajar / Tutor":
                     )
                 with c_button:
                     cari_drive = st.button("🔎 Cari", use_container_width=True, key="tombol_cari_drive_tutor")
+
                 if cari_drive:
                     if not kata_kunci_drive.strip():
                         st.warning("Masukkan nama atau kata kunci materi.")
@@ -2202,6 +2205,8 @@ elif peran == "🔒 Pengajar / Tutor":
                             st.session_state["hasil_drive_tutor"] = hasil_drive
                             st.session_state["kata_kunci_drive_tutor"] = kata_kunci_drive.strip()
                             st.session_state.pop("pilih_file_drive_tutor", None)
+                            st.session_state.pop("media_preview_tutor", None)
+                            st.session_state.pop("media_preview_upload_gallery_tutor", None)
                         except Exception as exc:
                             st.error(f"Pencarian Google Drive gagal: {exc}")
 
@@ -2216,19 +2221,10 @@ elif peran == "🔒 Pengajar / Tutor":
                         format_func=lambda i: hasil_drive[i].get("name", "Tanpa nama"),
                         key="pilih_file_drive_tutor"
                     )
-                    tampilkan_file_ruang_tutor(hasil_drive[pilihan_file])
+                    st.session_state["media_preview_tutor"] = hasil_drive[pilihan_file]
+                    st.session_state.pop("media_preview_upload_gallery_tutor", None)
                 elif st.session_state.get("kata_kunci_drive_tutor"):
                     st.info("Tidak ditemukan media yang cocok atau file tidak dapat diakses akun layanan.")
-                else:
-                    st.markdown(
-                        "<div style='background:#f1f3f5;border-radius:12px;padding:42px 16px;"
-                        "text-align:center;margin-top:12px;'>"
-                        "<div style='font-size:34px;'>▣</div>"
-                        "<div style='font-size:20px;color:#606770;'>PDF · JPG · Video · Audio</div>"
-                        "<div style='font-size:16px;color:#777;margin-top:6px;'>Media tampil di sini</div>"
-                        "</div>",
-                        unsafe_allow_html=True
-                    )
 
                 with st.expander("＋ Buka file dari perangkat / unggah materi", expanded=False):
                     st.caption(
@@ -2261,32 +2257,80 @@ elif peran == "🔒 Pengajar / Tutor":
                                     gagal_upload.append(f"{satu_file.name}: {exc}")
                         if daftar_upload:
                             st.session_state["media_beranda_upload_daftar"] = daftar_upload
+                            st.session_state["media_preview_upload_gallery_tutor"] = daftar_upload
+                            st.session_state.pop("media_preview_tutor", None)
                             st.success(f"{len(daftar_upload)} file berhasil diunggah.")
+                            st.rerun()
                         for pesan_gagal in gagal_upload:
                             st.error("Gagal mengunggah " + pesan_gagal)
 
-                    daftar_upload_terakhir = st.session_state.get("media_beranda_upload_daftar", [])
-                    if daftar_upload_terakhir:
-                        st.markdown("**Materi yang baru diunggah**")
-                        for idx_upload, upload_terakhir in enumerate(daftar_upload_terakhir):
-                            fid_upload = drive_id(upload_terakhir.get("url", ""))
-                            with st.container(border=True):
-                                st.markdown(f"**{upload_terakhir.get('name', 'Materi')}**")
-                                if fid_upload:
+                # Render hanya satu pratinjau utama. Jika beberapa gambar diunggah,
+                # tampilkan sebagai galeri dalam area yang sama.
+                daftar_preview_upload = st.session_state.get("media_preview_upload_gallery_tutor", [])
+                media_preview = st.session_state.get("media_preview_tutor")
+
+                if daftar_preview_upload:
+                    mime_semua_gambar = all(
+                        str(item.get("mime", "")).startswith("image/") for item in daftar_preview_upload
+                    )
+                    if mime_semua_gambar and len(daftar_preview_upload) > 1:
+                        st.markdown("**Galeri gambar**")
+                        kolom_galeri = st.columns(2)
+                        for idx_gambar, item_gambar in enumerate(daftar_preview_upload):
+                            fid_gambar = drive_id(item_gambar.get("url", ""))
+                            with kolom_galeri[idx_gambar % 2]:
+                                if fid_gambar:
                                     tampilkan_file_ruang_tutor({
-                                        "id": fid_upload, "name": upload_terakhir.get("name", "Materi"),
-                                        "mimeType": upload_terakhir.get("mime", ""),
-                                        "webViewLink": upload_terakhir.get("url", "")
+                                        "id": fid_gambar, "name": item_gambar.get("name", "Gambar"),
+                                        "mimeType": item_gambar.get("mime", ""),
+                                        "webViewLink": item_gambar.get("url", "")
                                     })
                                 else:
                                     tampilkan_media_url(
-                                        upload_terakhir["url"], upload_terakhir.get("mime", ""),
-                                        upload_terakhir.get("name", "Materi")
+                                        item_gambar.get("url", ""), item_gambar.get("mime", ""),
+                                        item_gambar.get("name", "Gambar")
                                     )
-                                    st.link_button(
-                                        "↗ Buka materi di Google Drive", upload_terakhir["url"],
-                                        use_container_width=True, key=f"buka_upload_media_{idx_upload}"
-                                    )
+                    else:
+                        st.markdown("**Materi yang baru diunggah**")
+                        if len(daftar_preview_upload) > 1:
+                            idx_pilih_upload = st.selectbox(
+                                "Pilih file yang baru diunggah",
+                                options=range(len(daftar_preview_upload)),
+                                format_func=lambda i: daftar_preview_upload[i].get("name", "Materi"),
+                                key="pilih_upload_preview_tutor"
+                            )
+                        else:
+                            idx_pilih_upload = 0
+                            st.caption(daftar_preview_upload[0].get("name", "Materi"))
+                        item_preview = daftar_preview_upload[idx_pilih_upload]
+                        fid_preview = drive_id(item_preview.get("url", ""))
+                        if fid_preview:
+                            tampilkan_file_ruang_tutor({
+                                "id": fid_preview, "name": item_preview.get("name", "Materi"),
+                                "mimeType": item_preview.get("mime", ""),
+                                "webViewLink": item_preview.get("url", "")
+                            })
+                        else:
+                            tampilkan_media_url(
+                                item_preview.get("url", ""), item_preview.get("mime", ""),
+                                item_preview.get("name", "Materi")
+                            )
+                            st.link_button(
+                                "↗ Buka materi di Google Drive", item_preview.get("url", ""),
+                                use_container_width=True, key="buka_upload_media_preview_tutor"
+                            )
+                elif media_preview:
+                    tampilkan_file_ruang_tutor(media_preview)
+                else:
+                    st.markdown(
+                        "<div style='background:#f1f3f5;border-radius:12px;padding:42px 16px;"
+                        "text-align:center;margin-top:12px;'>"
+                        "<div style='font-size:34px;'>▣</div>"
+                        "<div style='font-size:20px;color:#606770;'>PDF · JPG · Video · Audio</div>"
+                        "<div style='font-size:16px;color:#777;margin-top:6px;'>Media tampil di sini</div>"
+                        "</div>",
+                        unsafe_allow_html=True
+                    )
 
             st.divider()
             tampilkan_papan_tutor(id_user_aktif, id_tutor_aktif)
