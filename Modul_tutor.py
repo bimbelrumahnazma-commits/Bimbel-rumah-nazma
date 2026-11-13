@@ -2572,42 +2572,118 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                         "Simpan Siswa Baru", key="btn_simpan_siswa_baru"
                     )
                     if simpan_siswa:
-                        if not nama_baru.strip():
+                        nama_input = nama_baru.strip()
+                        if not nama_input:
                             st.error("Nama siswa wajib diisi.")
                         elif not pin_baru.isdigit() or len(pin_baru) < 6:
                             st.error("PIN awal harus berupa angka minimal 6 digit.")
                         elif pin_baru != pin_ulang:
                             st.error("Konfirmasi PIN tidak sama.")
-                        elif any(str(r.get(kolom_nama, "")).strip().casefold() == nama_baru.strip().casefold() for r in records_daftar):
-                            st.error("Nama siswa sudah terdaftar. Periksa agar tidak membuat akun ganda.")
                         else:
-                            row_baru = []
-                            for header in headers_daftar:
-                                if header == kolom_id:
-                                    row_baru.append(id_baru)
-                                elif header == kolom_nama:
-                                    row_baru.append(nama_baru.strip())
-                                elif header == kolom_pin:
-                                    row_baru.append(hash_pin(pin_baru))
-                                elif header == kolom_jenjang:
-                                    row_baru.append(jenjang_baru)
-                                elif header == kolom_kelas:
-                                    row_baru.append(kelas_baru)
-                                elif header == kolom_status:
-                                    row_baru.append("Aktif")
-                                elif header == kolom_poin:
-                                    row_baru.append("0")
-                                elif header == kolom_tanggal:
-                                    row_baru.append(waktu_lokal().strftime("%Y-%m-%d"))
-                                else:
-                                    row_baru.append("")
                             try:
-                                ws_daftar.append_row(row_baru, value_input_option="USER_ENTERED")
-                                _baca_values_cache.clear()
-                                st.success(f"Siswa {nama_baru.strip()} berhasil didaftarkan dengan ID {id_baru}. PIN disimpan dalam bentuk HASH.")
-                                st.rerun()
+                                # Baca langsung dari worksheet pada saat tombol ditekan.
+                                # Jangan gunakan cache untuk keputusan duplikasi atau ID.
+                                data_terkini = ws_daftar.get_all_values()
+                                if not data_terkini:
+                                    raise RuntimeError("Worksheet Data_Siswa belum memiliki header.")
+                                header_terkini = [str(h).strip() for h in data_terkini[0]]
+                                if kolom_id not in header_terkini or kolom_nama not in header_terkini:
+                                    raise RuntimeError("Header ID atau nama siswa berubah. Periksa Data_Siswa.")
+
+                                idx_id = header_terkini.index(kolom_id)
+                                idx_nama = header_terkini.index(kolom_nama)
+                                nama_key = nama_input.casefold()
+
+                                # Deteksi nama yang benar-benar sudah ada pada spreadsheet.
+                                duplikat = None
+                                nomor_terpakai_submit = []
+                                for row in data_terkini[1:]:
+                                    nama_sheet = str(row[idx_nama] if idx_nama < len(row) else "").strip()
+                                    id_sheet = str(row[idx_id] if idx_id < len(row) else "").strip()
+                                    if nama_sheet and nama_sheet.casefold() == nama_key:
+                                        duplikat = (id_sheet, nama_sheet)
+                                    match_id = re.fullmatch(r"S(\\d+)", id_sheet, flags=re.IGNORECASE)
+                                    if match_id:
+                                        nomor_terpakai_submit.append(int(match_id.group(1)))
+
+                                if duplikat:
+                                    st.warning(
+                                        f"Nama {duplikat[1]} memang sudah ada di Data_Siswa"
+                                        + (f" dengan ID {duplikat[0]}." if duplikat[0] else ".")
+                                        + " Tidak ada baris baru yang ditambahkan."
+                                    )
+                                else:
+                                    id_submit = f"S{(max(nomor_terpakai_submit, default=0) + 1):03d}"
+                                    # Gunakan header aktual, bukan asumsi urutan kolom.
+                                    row_baru = []
+                                    for header in header_terkini:
+                                        if header == kolom_id:
+                                            row_baru.append(id_submit)
+                                        elif header == kolom_nama:
+                                            row_baru.append(nama_input)
+                                        elif header == kolom_pin:
+                                            row_baru.append(hash_pin(pin_baru))
+                                        elif header == kolom_jenjang:
+                                            row_baru.append(jenjang_baru)
+                                        elif header == kolom_kelas:
+                                            row_baru.append(kelas_baru)
+                                        elif header == "Mapel_Diambil":
+                                            row_baru.append("")
+                                        elif header == "PIN_Ortu":
+                                            row_baru.append("")
+                                        elif header == kolom_status:
+                                            row_baru.append("Aktif")
+                                        elif header == kolom_poin:
+                                            row_baru.append("0")
+                                        elif header == kolom_tanggal:
+                                            row_baru.append(waktu_lokal().strftime("%Y-%m-%d"))
+                                        else:
+                                            row_baru.append("")
+
+                                    hasil_append = ws_daftar.append_row(
+                                        row_baru, value_input_option="USER_ENTERED"
+                                    )
+
+                                    # Konfirmasi dengan membaca ulang spreadsheet, bukan mengandalkan
+                                    # respons tombol atau tabel cache.
+                                    _baca_values_cache.clear()
+                                    data_verifikasi = ws_daftar.get_all_values()
+                                    header_verifikasi = [
+                                        str(h).strip() for h in data_verifikasi[0]
+                                    ] if data_verifikasi else []
+                                    if kolom_id not in header_verifikasi or kolom_nama not in header_verifikasi:
+                                        raise RuntimeError(
+                                            "Baris dikirim, tetapi header tidak dapat diverifikasi. "
+                                            "Periksa Data_Siswa sebelum mencoba lagi."
+                                        )
+                                    vi_id = header_verifikasi.index(kolom_id)
+                                    vi_nama = header_verifikasi.index(kolom_nama)
+                                    tersimpan = any(
+                                        len(row) > max(vi_id, vi_nama)
+                                        and str(row[vi_id]).strip() == id_submit
+                                        and str(row[vi_nama]).strip().casefold() == nama_key
+                                        for row in data_verifikasi[1:]
+                                    )
+                                    if tersimpan:
+                                        st.session_state["pendaftaran_sukses_terakhir"] = (
+                                            id_submit, nama_input
+                                        )
+                                        st.success(
+                                            f"Terverifikasi tersimpan di Google Sheets: "
+                                            f"{nama_input} — {id_submit}."
+                                        )
+                                        st.rerun()
+                                    else:
+                                        st.error(
+                                            "Permintaan simpan sudah dikirim, tetapi baris belum "
+                                            "terbaca kembali dari Google Sheets. Jangan tekan Simpan "
+                                            "lagi dulu; periksa Data_Siswa agar tidak terjadi duplikasi."
+                                        )
                             except Exception as exc:
-                                st.error(f"Gagal menyimpan siswa: {exc}")
+                                st.error(
+                                    f"Pendaftaran belum dapat dikonfirmasi: {exc}. "
+                                    "Periksa Data_Siswa sebelum mencoba menyimpan ulang."
+                                )
                     st.divider()
                     st.markdown("**Siswa terdaftar terbaru**")
                     if records_daftar:
