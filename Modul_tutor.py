@@ -1377,37 +1377,33 @@ if peran == "🎓 Siswa":
         st.session_state.siswa_id = ""
 
     if not st.session_state.siswa_logged_in:
-        nama_siswa = st.text_input("Nama Lengkap / Panggilan Siswa:")
-        pin_siswa = st.text_input("PIN Siswa (4 Angka):", type="password")
+        id_siswa_login = st.text_input("ID Siswa (contoh: SIS-084):", key="login_siswa_id").strip().upper()
+        pin_siswa = st.text_input("PIN Siswa (minimal 6 angka):", type="password", key="login_siswa_pin")
 
         if st.button("🚀 Masuk ke Akun Siswa"):
             data = baca_records_aman(sheet.worksheet("Data_Siswa"))
-            siswa_found = False
-            is_active = True
-            for row in data:
-                if (
-                    str(row.get("Nama_Lengkap", "")).strip().lower() == nama_siswa.strip().lower()
-                    and verifikasi_pin(pin_siswa, row.get("PIN_Siswa", ""))[0]
-                ):
-                    siswa_found = True
-                    cocok_pin, pin_lama_plain = verifikasi_pin(pin_siswa, row.get("PIN_Siswa", ""))
-                    if cocok_pin and pin_lama_plain:
-                        upgrade_pin_lama(sheet.worksheet("Data_Siswa"), row, "PIN_Siswa", pin_siswa)
-                    status_siswa = str(row.get("Status", "Aktif")).strip().lower()
-                    if status_siswa == "nonaktif":
-                        is_active = False
-                    else:
-                        st.session_state.siswa_logged_in = True
-                        st.session_state.siswa_nama = row.get("Nama_Lengkap")
-                        st.session_state.siswa_id = str(row.get("ID_SISWA", row.get("ID_Siswa", ""))).strip()
-                        st.session_state.siswa_jenjang = str(row.get("Jenjang", "SD")).strip().upper()
-                        st.session_state.siswa_baris = int(row.get("_baris", 0))
-                        st.rerun()
-                    break
-            if not siswa_found:
-                st.error("Nama Siswa atau PIN Siswa salah!")
-            elif not is_active:
+            siswa_match = next((
+                row for row in data
+                if str(row.get("ID_SISWA", row.get("ID_Siswa", ""))).strip().upper() == id_siswa_login
+                and verifikasi_pin(pin_siswa, row.get("PIN_Siswa", ""))[0]
+            ), None)
+
+            if not id_siswa_login or not pin_siswa:
+                st.error("ID dan PIN wajib diisi.")
+            elif not siswa_match:
+                st.error("ID atau PIN tidak sesuai.")
+            elif not _status_aktif(siswa_match.get("Status", "Aktif")):
                 st.error("🚫 Akun Siswa Anda sudah Nonaktif. Silakan hubungi pengelola.")
+            else:
+                cocok_pin, pin_lama_plain = verifikasi_pin(pin_siswa, siswa_match.get("PIN_Siswa", ""))
+                if cocok_pin and pin_lama_plain:
+                    upgrade_pin_lama(sheet.worksheet("Data_Siswa"), siswa_match, "PIN_Siswa", pin_siswa)
+                st.session_state.siswa_logged_in = True
+                st.session_state.siswa_nama = siswa_match.get("Nama_Lengkap", siswa_match.get("Nama_Siswa", "Siswa"))
+                st.session_state.siswa_id = str(siswa_match.get("ID_SISWA", siswa_match.get("ID_Siswa", ""))).strip()
+                st.session_state.siswa_jenjang = str(siswa_match.get("Jenjang", "SD")).strip().upper()
+                st.session_state.siswa_baris = int(siswa_match.get("_baris", 0))
+                st.rerun()
 
     else:
         nama_aktif = st.session_state.siswa_nama
@@ -2827,7 +2823,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
 # =========================================================
 elif peran == "👨‍👩‍👧 Orang Tua":
     st.subheader("👨‍👩‍👧 Portal Orang Tua (Wali Siswa)")
-    st.caption("Masuk menggunakan akun wali murid yang terdaftar di Akun_Pengguna.")
+    st.caption("Masuk menggunakan ID_User dan PIN Wali yang terdaftar di Akun_Pengguna.")
 
     if "ortu_logged_in" not in st.session_state:
         st.session_state.ortu_logged_in = False
@@ -2889,15 +2885,15 @@ elif peran == "👨‍👩‍👧 Orang Tua":
         return hasil
 
     if not st.session_state.ortu_logged_in:
-        username_ortu = st.text_input("Username Wali Murid", key="login_ortu_username")
-        pin_ortu = st.text_input("PIN / Password", type="password", key="login_ortu_pin")
+        id_wali_login = st.text_input("ID Wali (ID_User):", key="login_ortu_id").strip().upper()
+        pin_ortu = st.text_input("PIN Wali (minimal 6 angka):", type="password", key="login_ortu_pin")
 
         if st.button("Masuk Portal Wali Murid", key="btn_login_ortu"):
             try:
                 akun_rows = baca_records_aman(sheet.worksheet("Akun_Pengguna"))
                 akun = next((
                     r for r in akun_rows
-                    if _norm_text(r.get("Username")) == _norm_text(username_ortu)
+                    if str(r.get("ID_User", "")).strip().upper() == id_wali_login
                     and verifikasi_pin(pin_ortu, r.get("PIN_Password", ""))[0]
                 ), None)
 
@@ -2906,10 +2902,10 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                     if cocok_pin and pin_lama_plain:
                         upgrade_pin_lama(sheet.worksheet("Akun_Pengguna"), akun, "PIN_Password", pin_ortu)
 
-                if not username_ortu.strip() or not pin_ortu.strip():
-                    st.error("Username dan PIN wajib diisi.")
+                if not id_wali_login or not pin_ortu.strip():
+                    st.error("ID Wali dan PIN wajib diisi.")
                 elif not akun:
-                    st.error("Username atau PIN tidak sesuai.")
+                    st.error("ID atau PIN tidak sesuai.")
                 elif not _status_aktif(akun.get("Status", "Aktif")):
                     st.error("🚫 Akun ini sudah Nonaktif. Silakan hubungi pengelola.")
                 else:
