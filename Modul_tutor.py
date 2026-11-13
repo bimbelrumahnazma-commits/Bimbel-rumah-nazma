@@ -2429,11 +2429,8 @@ elif peran == "🔒 Pengajar / Tutor":
                 mapel_default = _parse_json_list(jurnal_terpilih.get("Daftar_Mapel", "[]")) if jurnal_terpilih else []
                 mapel_default_pilihan = [x for x in mapel_default if x in MAPEL_OPTIONS]
                 mapel_default_manual = ", ".join(x for x in mapel_default if x not in MAPEL_OPTIONS)
-                try:
-                    siswa_terdaftar = get_siswa_aktif()
-                except Exception:
-                    siswa_terdaftar = []
-
+                # Jurnal harian sengaja tidak memuat daftar seluruh siswa.
+                # Tutor menulis nama/kelompok yang benar-benar diajar hari itu.
                 with st.form("form_jurnal_harian_tutor", clear_on_submit=False, enter_to_submit=False):
                     daftar_siswa_text = st.text_area(
                         "Siapa saja yang belajar hari ini?",
@@ -2442,16 +2439,6 @@ elif peran == "🔒 Pengajar / Tutor":
                         placeholder="Contoh:\nAnak A — Kelas 8\nAnak B — Kelas 6\nKelompok 3 anak — Kelas 7",
                         key=f"jurnal_siswa_{tanggal_jurnal_text}"
                     )
-                    if siswa_terdaftar:
-                        st.caption("Daftar nama siswa terdaftar tersedia untuk referensi; kolom di atas tetap bisa diisi bebas.")
-                        nama_ref = st.multiselect(
-                            "Pilih nama dari data siswa (opsional)",
-                            options=siswa_terdaftar,
-                            key=f"jurnal_siswa_ref_{tanggal_jurnal_text}"
-                        )
-                    else:
-                        nama_ref = []
-
                     daftar_mapel = st.multiselect(
                         "Mata pelajaran yang diajarkan (boleh pilih banyak)",
                         options=MAPEL_OPTIONS,
@@ -2505,9 +2492,6 @@ elif peran == "🔒 Pengajar / Tutor":
                         siswa_baris = [
                             x.strip() for x in daftar_siswa_text.splitlines() if x.strip()
                         ]
-                        for nama in nama_ref:
-                            if nama not in siswa_baris:
-                                siswa_baris.append(nama)
                         # Nama ditulis bebas; format "Nama — Kelas" dipisah untuk memudahkan pencarian.
                         siswa_terstruktur = []
                         for baris_siswa in siswa_baris:
@@ -2560,7 +2544,8 @@ elif peran == "🔒 Pengajar / Tutor":
                 "Pilih nama siswa untuk membuka riwayat perkembangan, kesulitan, perhatian, "
                 "dan rencana belajar. Catatan ini hanya untuk tutor."
             )
-            nama_siswa_opsi = sorted(set(siswa_terdaftar), key=str.casefold) if 'siswa_terdaftar' in locals() else []
+            # Pilihan catatan khusus dibatasi pada nama yang pernah dicatat tutor sendiri.
+            nama_siswa_opsi = []
             nama_siswa_jurnal = [
                 x.get("nama", "") for x in _parse_json_list(
                     jurnal_terpilih.get("Daftar_Siswa", "[]") if jurnal_terpilih else "[]"
