@@ -1802,18 +1802,6 @@ elif peran == "🔒 Pengajar / Tutor":
             st.session_state.pop("tutor_baris", None)
             st.rerun()
 
-        if st.session_state.get("tutor_baris"):
-            akun_tutor_aktif = next((r for r in baca_records_aman(sheet.worksheet("Akun_Pengguna")) if int(r.get("_baris", 0)) == int(st.session_state.tutor_baris)), None)
-            if akun_tutor_aktif:
-                form_ganti_pin(
-                    sheet.worksheet("Akun_Pengguna"),
-                    akun_tutor_aktif,
-                    "PIN_Password",
-                    "tutor",
-                    identity_field="ID_User",
-                    identity_value=st.session_state.get("tutor_user_id", "")
-                )
-
         if not st.session_state.get("tutor_id"):
             st.warning("ID tutor belum dapat dicocokkan dengan Data_Tutor. Fitur kehadiran dinonaktifkan sampai ID_User pada Akun_Pengguna cocok dengan Data_Tutor, atau nama akun sama persis dengan Nama_Tutor.")
 
@@ -1830,6 +1818,9 @@ elif peran == "🔒 Pengajar / Tutor":
             unsafe_allow_html=True
         )
         st.sidebar.markdown("#### MENU PENGAJAR")
+        def _pilih_menu_tutor(target):
+            st.session_state["menu_navigasi_tutor"] = target
+
         menu_tutor = st.sidebar.radio(
             "Navigasi",
             [
@@ -1839,7 +1830,8 @@ elif peran == "🔒 Pengajar / Tutor":
                 "📊 Portofolio Siswa",
                 "📚 Materi Tambahan",
                 "🕒 Kehadiran Siswa",
-                "📨 Pesan Orang Tua"
+                "📨 Pesan Orang Tua",
+                "⚙️ Pengaturan Akun"
             ],
             label_visibility="collapsed",
             key="menu_navigasi_tutor"
@@ -1868,20 +1860,31 @@ elif peran == "🔒 Pengajar / Tutor":
                 )
 
                 st.markdown("#### Akses cepat")
-                quick_cols = st.columns(4)
-                quick_cards = [
-                    ("📝", "Persiapan Sesi", "Siapkan materi dan tugas untuk siswa."),
-                    ("📚", "Bank Soal", "Pilih soal untuk tugas yang akan dikirim."),
-                    ("📂", "Materi / Flipbook", "Kelola dan bagikan bahan pembelajaran."),
-                    ("🕒", "Kehadiran", "Catat kedatangan dan selesainya sesi belajar."),
+                quick_targets = [
+                    ("📝 Persiapan Sesi", "📝 Persiapan Sesi & Bank Soal"),
+                    ("📚 Bank Soal", "📝 Persiapan Sesi & Bank Soal"),
+                    ("📂 Materi / Flipbook", "📚 Materi Tambahan"),
+                    ("🕒 Kehadiran", "🕒 Kehadiran Siswa"),
                 ]
-                for col, (icon, title, desc) in zip(quick_cols, quick_cards):
-                    with col:
-                        st.markdown(
-                            f'<div class="portal-card"><div class="card-icon">{icon}</div>'
-                            f'<h4>{title}</h4><p>{desc}</p></div>',
-                            unsafe_allow_html=True
+                quick_cols = st.columns(2)
+                for i, (label, target) in enumerate(quick_targets):
+                    with quick_cols[i % 2]:
+                        st.button(
+                            label,
+                            key=f"akses_cepat_tutor_{i}",
+                            use_container_width=True,
+                            on_click=_pilih_menu_tutor,
+                            args=(target,)
                         )
+
+                st.markdown("#### 🗒️ Catatan Tutor")
+                st.caption("Catatan sementara untuk pengingat selama sesi mengajar. Catatan ini belum disimpan ke Google Sheets.")
+                st.text_area(
+                    "Tulis catatan penting, perkembangan siswa, atau hal yang perlu ditindaklanjuti:",
+                    key="catatan_tutor_beranda",
+                    height=130,
+                    placeholder="Contoh: Perlu pengulangan materi pecahan; siapkan latihan tambahan untuk pertemuan berikutnya..."
+                )
 
                 st.markdown("#### Ruang kerja pengajar")
                 st.caption(
@@ -1898,6 +1901,27 @@ elif peran == "🔒 Pengajar / Tutor":
             # -------------------------------------------------
             # TAB 1: KONFIGURASI TUGAS DAN EVALUASI SESI (VERSI 2)
             # -------------------------------------------------
+        elif menu_tutor == "⚙️ Pengaturan Akun":
+                st.header("⚙️ Pengaturan Akun")
+                st.caption("Ubah PIN hanya saat diperlukan. Username dan identitas akun tidak berubah.")
+                akun_tutor_aktif = None
+                if st.session_state.get("tutor_baris"):
+                    akun_tutor_aktif = next((
+                        r for r in baca_records_aman(sheet.worksheet("Akun_Pengguna"))
+                        if int(r.get("_baris", 0)) == int(st.session_state.tutor_baris)
+                    ), None)
+                if akun_tutor_aktif:
+                    form_ganti_pin(
+                        sheet.worksheet("Akun_Pengguna"),
+                        akun_tutor_aktif,
+                        "PIN_Password",
+                        "tutor",
+                        identity_field="ID_User",
+                        identity_value=st.session_state.get("tutor_user_id", "")
+                    )
+                else:
+                    st.warning("Data akun tutor belum ditemukan. Silakan logout lalu login kembali.")
+
         elif menu_tutor == "📝 Persiapan Sesi & Bank Soal":
                 st.header("📖 Persiapan Sesi Pembelajaran")
                 siswa_aktif = get_siswa_aktif()
