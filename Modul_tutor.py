@@ -291,10 +291,30 @@ def upgrade_pin_lama(ws, record, field_name, pin_input):
 
 
 def simpan_pin_baru(ws, record, field_name, pin_baru):
-    headers = ws.row_values(1)
+    headers = [str(x).strip() for x in ws.row_values(1)]
     if field_name not in headers:
         raise ValueError(f"Kolom {field_name} tidak ditemukan pada {ws.title}.")
-    ws.update_cell(int(record["_baris"]), headers.index(field_name) + 1, hash_pin(pin_baru))
+    pin_hash_baru = hash_pin(pin_baru)
+
+    # Khusus PIN Owner: jadikan satu baris PIN_OWNER sebagai sumber utama
+    # dan bersihkan baris duplikat setelah nilai baru berhasil ditulis.
+    if ws.title == "Pengaturan_Aplikasi" and "Kunci" in headers:
+        rows = ws.get_all_values()
+        key_idx = headers.index("Kunci")
+        value_idx = headers.index(field_name)
+        pin_rows = [
+            i + 1 for i, row in enumerate(rows[1:], start=1)
+            if len(row) > key_idx and str(row[key_idx]).strip() == "PIN_OWNER"
+        ]
+        if not pin_rows:
+            raise ValueError("Baris PIN_OWNER tidak ditemukan.")
+        canonical_row = pin_rows[0]
+        ws.update_cell(canonical_row, value_idx + 1, pin_hash_baru)
+        for row_number in sorted(pin_rows[1:], reverse=True):
+            ws.delete_rows(row_number)
+    else:
+        ws.update_cell(int(record["_baris"]), headers.index(field_name) + 1, pin_hash_baru)
+
     _baca_values_cache.clear()
 
 
@@ -2436,9 +2456,11 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.error(f"Gagal memeriksa header penyimpanan PIN Owner: {exc}")
     # Gunakan cache singkat agar rerun Streamlit tidak selalu meminta Read baru.
     owner_settings = baca_records_aman(ws_owner_security)
-    owner_pin_record = next(
-        (r for r in owner_settings if str(r.get("Kunci", "")).strip() == "PIN_OWNER"), None
-    )
+    owner_pin_records = [
+        r for r in owner_settings
+        if str(r.get("Kunci", "")).strip() == "PIN_OWNER"
+    ]
+    owner_pin_record = owner_pin_records[0] if owner_pin_records else None
 
     if not st.session_state.owner_logged_in:
         pin_owner = st.text_input("PIN Pengelola:", type="password", key="login_owner_pin")
@@ -2446,15 +2468,23 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
         if not owner_pin_record and not str(st.secrets.get("owner_pin", "")).strip():
             st.warning("PIN Pengelola masih memakai PIN bawaan 1605. Setelah login, segera ganti melalui Keamanan Owner.")
         if st.button("Masuk sebagai Pengelola", key="btn_login_owner"):
-            if owner_pin_record:
-                cocok, _ = verifikasi_pin(pin_owner, owner_pin_record.get("Nilai", ""))
+            record_pin_cocok = None
+            if owner_pin_records:
+                for kandidat_pin in owner_pin_records:
+                    cocok, _ = verifikasi_pin(pin_owner, kandidat_pin.get("Nilai", ""))
+                    if cocok:
+                        record_pin_cocok = kandidat_pin
+                        break
             else:
                 cocok = hmac.compare_digest(pin_owner.strip(), owner_pin_awal)
-            if cocok:
-                # Migrasi PIN awal/secrets ke HASH hanya setelah login berhasil.
-                if not owner_pin_record:
+                if cocok:
+                    # PIN bawaan belum memiliki baris hash; migrasi dibuat satu kali.
                     ws_owner_security.append_row(["PIN_OWNER", hash_pin(pin_owner.strip())])
                     _baca_values_cache.clear()
+            if record_pin_cocok is not None or (not owner_pin_records and cocok):
+                # Catat baris hash yang benar-benar cocok untuk sesi ini.
+                if record_pin_cocok is not None:
+                    st.session_state.owner_pin_row = int(record_pin_cocok.get("_baris", 0) or 0)
                 st.session_state.owner_logged_in = True
                 st.rerun()
             else:
@@ -2701,8 +2731,14 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
         with tab5:
             st.caption("Ganti PIN Owner langsung dari portal. PIN disimpan sebagai HASH pada worksheet Pengaturan_Aplikasi; data username dan akun pengguna tidak diubah.")
             owner_settings = baca_records_aman(ws_owner_security)
+            owner_pin_records = [
+                r for r in owner_settings
+                if str(r.get("Kunci", "")).strip() == "PIN_OWNER"
+            ]
             owner_pin_record = next(
-                (r for r in owner_settings if str(r.get("Kunci", "")).strip() == "PIN_OWNER"), None
+                (r for r in owner_pin_records
+                 if int(r.get("_baris", 0) or 0) == int(st.session_state.get("owner_pin_row", 0) or 0)),
+                owner_pin_records[0] if owner_pin_records else None
             )
             if owner_pin_record:
                 form_ganti_pin(ws_owner_security, owner_pin_record, "Nilai", "owner")
