@@ -1468,6 +1468,7 @@ if peran == "🎓 Siswa":
                         st.session_state.siswa_id = str(siswa_match.get("ID_SISWA", siswa_match.get("ID_Siswa", ""))).strip()
                         st.session_state.siswa_jenjang = str(siswa_match.get("Jenjang", "SD")).strip().upper()
                         st.session_state.siswa_baris = int(siswa_match.get("_baris", 0))
+                        st.session_state.siswa_akun_baris = int(akun_siswa.get("_baris", 0))
                         st.rerun()
                 except Exception as exc:
                     st.error(f"Login siswa belum dapat diproses: {exc}")
@@ -1485,12 +1486,22 @@ if peran == "🎓 Siswa":
                 st.session_state.siswa_id = ""
                 st.session_state.siswa_jenjang = ""
                 st.session_state.pop("siswa_baris", None)
+                st.session_state.pop("siswa_akun_baris", None)
                 st.rerun()
 
-        if st.session_state.get("siswa_baris"):
-            siswa_aktif = next((r for r in baca_records_aman(sheet.worksheet("Data_Siswa")) if int(r.get("_baris", 0)) == int(st.session_state.siswa_baris)), None)
-            if siswa_aktif:
-                form_ganti_pin(sheet.worksheet("Data_Siswa"), siswa_aktif, "PIN_Siswa", "siswa")
+        if st.session_state.get("siswa_akun_baris"):
+            akun_siswa_aktif = next((
+                r for r in baca_records_aman(sheet.worksheet("Akun_Pengguna"))
+                if int(r.get("_baris", 0)) == int(st.session_state.siswa_akun_baris)
+                and str(r.get("Level_Akses", "")).strip().casefold() == "siswa"
+            ), None)
+            if akun_siswa_aktif:
+                form_ganti_pin(
+                    sheet.worksheet("Akun_Pengguna"),
+                    akun_siswa_aktif,
+                    "PIN_Password",
+                    "siswa"
+                )
 
         try:
             tugas_anak = [
