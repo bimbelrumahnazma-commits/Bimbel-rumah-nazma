@@ -320,31 +320,17 @@ def simpan_pin_baru(ws, record, field_name, pin_baru):
 
 def pastikan_pemetaan_id_siswa(ws_akun, ws_siswa):
     """
-    Tambahkan/pastikan kolom ID_SISWA pada Akun_Pengguna.
-    Pemetaan awal hanya dilakukan untuk nama yang unik dan Level_Akses Siswa.
-    PIN tetap berada di PIN_Password.
+    Membuat pemetaan ID_SISWA ke akun siswa di memori menggunakan cache.
+    Tidak melakukan get_all_values langsung dan tidak menulis ke Sheets saat login.
     """
-    akun_values = ws_akun.get_all_values()
-    siswa_values = ws_siswa.get_all_values()
-    if not akun_values or not siswa_values:
-        raise ValueError("Data akun atau data siswa belum memiliki header.")
+    akun_rows = baca_records_aman(ws_akun)
+    siswa_rows = baca_records_aman(ws_siswa)
 
-    akun_headers = [str(x).strip() for x in akun_values[0]]
-    siswa_headers = [str(x).strip() for x in siswa_values[0]]
-    if "ID_User" not in akun_headers or "Nama_Pengguna" not in akun_headers or "Level_Akses" not in akun_headers or "PIN_Password" not in akun_headers:
-        raise ValueError("Header Akun_Pengguna tidak sesuai dengan struktur yang diharapkan.")
-
-    idx_id_siswa = next((i for i, h in enumerate(siswa_headers) if h in ("ID_SISWA", "ID_Siswa")), None)
-    idx_nama_siswa = next((i for i, h in enumerate(siswa_headers) if h in ("Nama_Siswa", "Nama_Lengkap")), None)
-    if idx_id_siswa is None or idx_nama_siswa is None:
-        raise ValueError("Kolom ID atau nama siswa tidak ditemukan di Data_Siswa.")
-
-    # Buat indeks nama hanya jika nama tersebut unik di Data_Siswa.
     nama_ke_siswa = {}
     nama_ganda = set()
-    for row in siswa_values[1:]:
-        sid = str(row[idx_id_siswa] if idx_id_siswa < len(row) else "").strip().upper()
-        nama = str(row[idx_nama_siswa] if idx_nama_siswa < len(row) else "").strip().casefold()
+    for siswa in siswa_rows:
+        sid = str(siswa.get("ID_SISWA", siswa.get("ID_Siswa", ""))).strip().upper()
+        nama = str(siswa.get("Nama_Siswa", siswa.get("Nama_Lengkap", ""))).strip().casefold()
         if not sid or not nama:
             continue
         if nama in nama_ke_siswa:
@@ -354,47 +340,18 @@ def pastikan_pemetaan_id_siswa(ws_akun, ws_siswa):
     for nama in nama_ganda:
         nama_ke_siswa.pop(nama, None)
 
-    # Tambahkan header di ujung kanan jika belum ada.
-    if "ID_SISWA" not in akun_headers:
-        col_num = len(akun_headers) + 1
-        ws_akun.update_cell(1, col_num, "ID_SISWA")
-        akun_headers.append("ID_SISWA")
-        for row in akun_values[1:]:
-            row.append("")
-    idx_map = akun_headers.index("ID_SISWA")
-    idx_nama_akun = akun_headers.index("Nama_Pengguna")
-    idx_level = akun_headers.index("Level_Akses")
-
-    # Pertahankan pemetaan yang sudah ada. Isi yang kosong hanya untuk akun siswa
-    # dengan nama unik yang cocok tepat dengan Data_Siswa.
-    mapped_column = []
-    for row in akun_values[1:]:
-        while len(row) <= idx_map:
-            row.append("")
-        existing = str(row[idx_map]).strip().upper()
-        nama_akun = str(row[idx_nama_akun] if idx_nama_akun < len(row) else "").strip().casefold()
-        level = str(row[idx_level] if idx_level < len(row) else "").strip().casefold()
-        if existing:
-            mapped_column.append([existing])
-        elif level == "siswa" and nama_akun in nama_ke_siswa:
-            mapped_column.append([nama_ke_siswa[nama_akun]])
-        else:
-            mapped_column.append([""])
-
-    # Satu batch write untuk seluruh kolom, bukan satu permintaan per akun.
-    col_letter = ""
-    n = idx_map + 1
-    while n:
-        n, rem = divmod(n - 1, 26)
-        col_letter = chr(65 + rem) + col_letter
-    if mapped_column:
-        ws_akun.update(
-            range_name=f"{col_letter}2:{col_letter}{len(mapped_column) + 1}",
-            values=mapped_column,
-            value_input_option="RAW"
-        )
-    _baca_values_cache.clear()
-    return ws_akun
+    hasil = []
+    for akun in akun_rows:
+        akun_baru = dict(akun)
+        level = str(akun.get("Level_Akses", "")).strip().casefold()
+        if level == "siswa":
+            id_tersimpan = str(akun.get("ID_SISWA", "")).strip().upper()
+            if not id_tersimpan:
+                nama_akun = str(akun.get("Nama_Pengguna", "")).strip().casefold()
+                id_tersimpan = nama_ke_siswa.get(nama_akun, "")
+            akun_baru["ID_SISWA"] = id_tersimpan
+        hasil.append(akun_baru)
+    return hasil
 
 
 def ambil_pin_terkini(ws, record, field_name):
@@ -1472,11 +1429,10 @@ if peran == "🎓 Siswa":
                 st.error("ID dan PIN wajib diisi.")
             else:
                 try:
-                    ws_akun_login = pastikan_pemetaan_id_siswa(
-                        sheet.worksheet("Akun_Pengguna"),
-                        sheet.worksheet("Data_Siswa")
+                    ws_akun_login = sheet.worksheet("Akun_Pengguna")
+                    akun_rows_login = pastikan_pemetaan_id_siswa(
+                        ws_akun_login, sheet.worksheet("Data_Siswa")
                     )
-                    akun_rows_login = baca_records_aman(ws_akun_login)
                     akun_siswa = next((
                         r for r in akun_rows_login
                         if str(r.get("ID_SISWA", "")).strip().upper() == id_siswa_login
@@ -2865,8 +2821,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             if jenis_akun == "Siswa":
                 ws_reset = sheet.worksheet("Akun_Pengguna")
                 ws_siswa_reset = sheet.worksheet("Data_Siswa")
-                ws_reset = pastikan_pemetaan_id_siswa(ws_reset, ws_siswa_reset)
-                daftar_reset = baca_records_aman(ws_reset)
+                daftar_reset = pastikan_pemetaan_id_siswa(ws_reset, ws_siswa_reset)
                 field_pin_reset = "PIN_Password"
                 pilihan_reset = {
                     f"{r.get('Nama_Pengguna', 'Tanpa nama')} · {r.get('ID_SISWA', '')}": r
