@@ -144,16 +144,27 @@ def init_spreadsheet():
     return gc.open_by_key("17JI1x966HfVG4YpfzCz_bssBwOmUTIJFbRutl0qyIZE")
 
 
-try:
-    client = init_connection()
-    sheet = init_spreadsheet()
-except Exception as e:
-    st.error(
-        "Gagal terhubung ke Google Sheets. Jika muncul error 429, kuota baca "
-        "Google Sheets untuk akun layanan sedang penuh. Tunggu hingga kuota pulih "
-        "sebelum mencoba lagi. Detail: " + str(e)
-    )
-    st.stop()
+# Koneksi Google Sheets dibuat secara lazy (saat benar-benar dibutuhkan).
+# Dengan begitu, halaman login dapat dirender lebih dahulu tanpa menunggu Google.
+client = None
+sheet = None
+
+
+def pastikan_koneksi():
+    """Inisialisasi Google Sheets hanya saat login atau fitur terautentikasi dipakai."""
+    global client, sheet
+    if sheet is None:
+        try:
+            client = init_connection()
+            sheet = init_spreadsheet()
+        except Exception as exc:
+            st.error(
+                "Gagal terhubung ke Google Sheets. Periksa koneksi internet dan "
+                "Streamlit Secrets. Jika muncul error 429, kuota Google Sheets "
+                "mungkin sedang penuh. Detail: " + str(exc)
+            )
+            st.stop()
+    return sheet
 
 
 def upload_lampiran_ke_drive(file_bytes, file_name, mime_type):
@@ -1498,6 +1509,7 @@ if peran == "🎓 Siswa":
         pin_siswa = st.text_input("PIN Siswa (minimal 6 angka):", type="password", key="login_siswa_pin")
 
         if st.button("🚀 Masuk ke Akun Siswa"):
+            pastikan_koneksi()
             if not id_siswa_login or not pin_siswa:
                 st.error("ID dan PIN wajib diisi.")
             else:
@@ -1539,6 +1551,7 @@ if peran == "🎓 Siswa":
                     st.error(f"Login siswa belum dapat diproses: {exc}")
 
     else:
+        pastikan_koneksi()
         nama_aktif = st.session_state.siswa_nama
         jenjang_aktif = st.session_state.siswa_jenjang
         col_welcome, col_logout = st.columns([4, 1])
@@ -1740,6 +1753,7 @@ elif peran == "🔒 Pengajar / Tutor":
         pin = st.text_input("PIN / Password:", type="password")
 
         if st.button("Masuk Pengajar"):
+            pastikan_koneksi()
             # Login harus membaca PIN terbaru dari Google Sheets, bukan cache 180 detik.
             data = baca_records_aman(sheet.worksheet("Akun_Pengguna"), refresh=True)
             user_found = False
@@ -1778,6 +1792,7 @@ elif peran == "🔒 Pengajar / Tutor":
                 st.error("Akun ini adalah akun Wali Murid. Silakan masuk lewat menu Orang Tua.")
 
     else:
+        pastikan_koneksi()
         st.success(f"👨‍🏫 Tutor Aktif: **{st.session_state.tutor_nama}**")
         if st.button("Logout Pengajar"):
             st.session_state.tutor_logged_in = False
@@ -2575,6 +2590,7 @@ elif peran == "🔒 Pengajar / Tutor":
     # 3. MODUL OWNER
     # =========================================================
 elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
+    pastikan_koneksi()
     st.subheader("👑 Portal Pengelola Bimbel")
     if "owner_logged_in" not in st.session_state:
         st.session_state.owner_logged_in = False
@@ -3060,6 +3076,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
         pin_ortu = st.text_input("PIN Wali (minimal 6 angka):", type="password", key="login_ortu_pin")
 
         if st.button("Masuk Portal Wali Murid", key="btn_login_ortu"):
+            pastikan_koneksi()
             try:
                 akun_rows = baca_records_aman(sheet.worksheet("Akun_Pengguna"))
                 akun = next((
@@ -3111,6 +3128,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 st.error(f"Gagal memeriksa akun wali murid: {e}")
 
     else:
+        pastikan_koneksi()
         col_welcome, col_logout = st.columns([4, 1])
         with col_welcome:
             st.success(f"Selamat datang, **{st.session_state.ortu_nama}** 👋")
