@@ -699,6 +699,237 @@ def tampilkan_materi(teks_lampiran):
 
 
 
+
+
+# =========================================================
+# JURNAL MENGAJAR HARIAN + CATATAN PERKEMBANGAN SISWA
+# Disimpan terpisah dari catatan lama agar data lama tetap aman.
+# =========================================================
+JURNAL_HARIAN_HEADERS = [
+    "ID_Jurnal", "ID_User", "ID_Tutor", "Tanggal", "Daftar_Siswa",
+    "Daftar_Mapel", "Materi_Dibahas", "Evaluasi_Harian",
+    "Catatan_Tutor", "Pengingat_Berikutnya", "Dibuat_Pada", "Diperbarui_Pada"
+]
+CATATAN_PERKEMBANGAN_HEADERS = [
+    "ID_Riwayat", "ID_User", "ID_Tutor", "Nama_Siswa", "Kelas",
+    "Tanggal_Catatan", "Perkembangan", "Kesulitan",
+    "Perhatian_Tutor", "Rencana_Berikutnya", "Dibuat_Pada"
+]
+
+
+def get_jurnal_harian_worksheet():
+    ws = get_or_create_worksheet(
+        "Jurnal_Mengajar_Harian", JURNAL_HARIAN_HEADERS,
+        rows="5000", cols=str(len(JURNAL_HARIAN_HEADERS))
+    )
+    if not header_cocok(ws.row_values(1), JURNAL_HARIAN_HEADERS):
+        raise ValueError(
+            "Header Jurnal_Mengajar_Harian tidak sesuai. Data tidak ditulis; "
+            f"header terbaca: {ws.row_values(1)!r}"
+        )
+    return ws
+
+
+def get_catatan_perkembangan_worksheet():
+    ws = get_or_create_worksheet(
+        "Catatan_Perkembangan_Tutor", CATATAN_PERKEMBANGAN_HEADERS,
+        rows="5000", cols=str(len(CATATAN_PERKEMBANGAN_HEADERS))
+    )
+    if not header_cocok(ws.row_values(1), CATATAN_PERKEMBANGAN_HEADERS):
+        raise ValueError(
+            "Header Catatan_Perkembangan_Tutor tidak sesuai. Data tidak ditulis; "
+            f"header terbaca: {ws.row_values(1)!r}"
+        )
+    return ws
+
+
+def ambil_jurnal_harian(id_user):
+    if not id_user:
+        return []
+    ws = get_jurnal_harian_worksheet()
+    return [
+        r for r in baca_records_aman(ws, refresh=True)
+        if str(r.get("ID_User", "")).strip() == str(id_user).strip()
+    ]
+
+
+def simpan_atau_perbarui_jurnal(
+    id_user, id_tutor, tanggal, daftar_siswa, daftar_mapel,
+    materi_dibahas, evaluasi, catatan_tutor, pengingat
+):
+    if not id_user:
+        raise ValueError("ID akun tutor tidak ditemukan. Silakan login ulang.")
+    ws = get_jurnal_harian_worksheet()
+    headers = [str(x).strip() for x in ws.row_values(1)]
+    rows = ws.get_all_values()
+    tanggal_text = str(tanggal)
+    idx_user, idx_tanggal = headers.index("ID_User"), headers.index("Tanggal")
+    target_row = None
+    existing_id = ""
+    for row_no, row in enumerate(rows[1:], start=2):
+        if (len(row) > max(idx_user, idx_tanggal)
+                and row[idx_user] == str(id_user)
+                and row[idx_tanggal] == tanggal_text):
+            target_row = row_no
+            existing_id = row[headers.index("ID_Jurnal")] if len(row) > headers.index("ID_Jurnal") else ""
+            break
+    now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    values = [
+        existing_id or ("JRN-" + uuid.uuid4().hex[:10].upper()),
+        str(id_user), str(id_tutor or ""), tanggal_text,
+        json.dumps(daftar_siswa, ensure_ascii=False),
+        json.dumps(daftar_mapel, ensure_ascii=False),
+        str(materi_dibahas or "").strip(),
+        str(evaluasi or "").strip(), str(catatan_tutor or "").strip(),
+        str(pengingat or "").strip(),
+        now if not target_row else (rows[target_row - 1][headers.index("Dibuat_Pada")]
+            if len(rows[target_row - 1]) > headers.index("Dibuat_Pada") else now),
+        now
+    ]
+    if target_row:
+        ws.update(f"A{target_row}:L{target_row}", [values], value_input_option="RAW")
+        hasil = "diperbarui"
+    else:
+        ws.append_row(values, value_input_option="RAW")
+        hasil = "disimpan"
+    _baca_values_cache.clear()
+    return hasil
+
+
+def ambil_catatan_perkembangan_siswa(id_user, nama_siswa):
+    if not id_user or not nama_siswa:
+        return []
+    ws = get_catatan_perkembangan_worksheet()
+    return [
+        r for r in baca_records_aman(ws, refresh=True)
+        if str(r.get("ID_User", "")).strip() == str(id_user).strip()
+        and str(r.get("Nama_Siswa", "")).strip().casefold() == str(nama_siswa).strip().casefold()
+    ]
+
+
+def simpan_catatan_perkembangan_siswa(
+    id_user, id_tutor, nama_siswa, kelas, tanggal,
+    perkembangan, kesulitan, perhatian, rencana
+):
+    if not id_user:
+        raise ValueError("ID akun tutor tidak ditemukan.")
+    if not str(nama_siswa or "").strip():
+        raise ValueError("Nama siswa wajib diisi.")
+    if not any(str(x or "").strip() for x in (perkembangan, kesulitan, perhatian, rencana)):
+        raise ValueError("Isi minimal satu bagian catatan perkembangan.")
+    ws = get_catatan_perkembangan_worksheet()
+    ws.append_row([
+        "PRG-" + uuid.uuid4().hex[:10].upper(), str(id_user), str(id_tutor or ""),
+        str(nama_siswa).strip(), str(kelas or "").strip(), str(tanggal),
+        str(perkembangan or "").strip(), str(kesulitan or "").strip(),
+        str(perhatian or "").strip(), str(rencana or "").strip(),
+        waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    ], value_input_option="RAW")
+    _baca_values_cache.clear()
+
+
+def _parse_json_list(value):
+    try:
+        parsed = json.loads(value or "[]")
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+# =========================================================
+# LIBRARY MATERI PRIBADI TUTOR
+# File disimpan di Google Drive; indeks dan kepemilikan disimpan di Sheets.
+# =========================================================
+LIBRARY_TUTOR_HEADERS = [
+    "ID_Media", "ID_User", "ID_Tutor", "Nama_File", "Mime_Type",
+    "File_ID_Drive", "URL_Drive", "Ukuran_Bytes", "Kata_Kunci",
+    "Tanggal_Upload", "Status"
+]
+
+
+def get_library_tutor_worksheet():
+    ws = get_or_create_worksheet(
+        "Library_Media_Tutor", LIBRARY_TUTOR_HEADERS,
+        rows="5000", cols=str(len(LIBRARY_TUTOR_HEADERS))
+    )
+    actual = ws.row_values(1)
+    if not header_cocok(actual, LIBRARY_TUTOR_HEADERS):
+        raise ValueError(
+            "Header Library_Media_Tutor tidak sesuai. Tidak ada data yang ditulis. "
+            f"Header terbaca: {actual!r}"
+        )
+    return ws
+
+
+def simpan_media_ke_library(id_user, id_tutor, nama_file, mime_type, url_drive, ukuran=0, kata_kunci=""):
+    if not id_user:
+        raise ValueError("ID akun tutor tidak ditemukan. Silakan login ulang.")
+    fid = drive_id(url_drive)
+    if not fid:
+        raise ValueError("ID file Google Drive tidak berhasil dibaca dari tautan upload.")
+    ws = get_library_tutor_worksheet()
+    # Hindari membuat indeks ganda jika upload yang sama terkirim ulang.
+    records = baca_records_aman(ws, refresh=True)
+    for rec in records:
+        if (str(rec.get("ID_User", "")) == str(id_user)
+                and str(rec.get("File_ID_Drive", "")) == fid
+                and str(rec.get("Status", "Aktif")) == "Aktif"):
+            return rec.get("ID_Media", "")
+    now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    media_id = "MED-" + uuid.uuid4().hex[:10].upper()
+    ws.append_row([
+        media_id, str(id_user), str(id_tutor or ""), str(nama_file),
+        str(mime_type or "application/octet-stream"), fid, str(url_drive),
+        str(int(ukuran or 0)), str(kata_kunci or ""), now, "Aktif"
+    ], value_input_option="RAW")
+    _baca_values_cache.clear()
+    return media_id
+
+
+def ambil_library_tutor(id_user, kata_kunci=""):
+    if not id_user:
+        return []
+    ws = get_library_tutor_worksheet()
+    q = str(kata_kunci or "").strip().casefold()
+    hasil = []
+    for rec in baca_records_aman(ws, refresh=True):
+        if str(rec.get("ID_User", "")).strip() != str(id_user).strip():
+            continue
+        if str(rec.get("Status", "Aktif")).strip().lower() != "aktif":
+            continue
+        gabung = " ".join([
+            str(rec.get("Nama_File", "")), str(rec.get("Kata_Kunci", "")),
+            str(rec.get("Mime_Type", ""))
+        ]).casefold()
+        if q and q not in gabung:
+            continue
+        hasil.append({
+            "id": str(rec.get("File_ID_Drive", "")),
+            "name": str(rec.get("Nama_File", "")),
+            "mimeType": str(rec.get("Mime_Type", "")),
+            "webViewLink": str(rec.get("URL_Drive", "")),
+            "size": str(rec.get("Ukuran_Bytes", "")),
+            "source": "Library Tutor",
+            "media_id": str(rec.get("ID_Media", ""))
+        })
+    return sorted(hasil, key=lambda x: x.get("name", "").casefold())
+
+
+def nonaktifkan_media_library(media_id, id_user):
+    ws = get_library_tutor_worksheet()
+    headers = [str(x).strip() for x in ws.row_values(1)]
+    rows = ws.get_all_values()
+    i_mid, i_uid, i_status = [headers.index(x) for x in ("ID_Media", "ID_User", "Status")]
+    for row_no, row in enumerate(rows[1:], start=2):
+        if (len(row) > max(i_mid, i_uid, i_status)
+                and row[i_mid] == str(media_id)
+                and row[i_uid] == str(id_user)):
+            ws.update_cell(row_no, i_status + 1, "Dihapus")
+            _baca_values_cache.clear()
+            return True
+    return False
+
+
 # =========================================================
 # RUANG KERJA BERANDA TUTOR (MODUL BARU, TERPISAH DARI FITUR LAMA)
 # =========================================================
@@ -2127,209 +2358,404 @@ elif peran == "🔒 Pengajar / Tutor":
             id_user_aktif = str(st.session_state.get("tutor_user_id", "")).strip()
             id_tutor_aktif = str(st.session_state.get("tutor_id", "")).strip()
 
-            # Judul dan Catatan/Pertemuan: sengaja tanpa banner dan tanpa tab agar sesuai sketsa.
-            st.markdown("## Catatan Tutor")
+            # JURNAL MENGAJAR HARIAN
+            st.markdown("## Jurnal Mengajar")
+            st.caption(
+                "Satu tanggal untuk seluruh kegiatan mengajar. Catatan dapat disimpan bertahap "
+                "dan diperbarui kapan saja, termasuk setelah mengajar."
+            )
+
+            try:
+                semua_jurnal_tutor = ambil_jurnal_harian(id_user_aktif)
+            except Exception as exc:
+                semua_jurnal_tutor = []
+                st.error(f"Jurnal belum dapat dimuat: {exc}")
+
+            tanggal_jurnal = st.date_input(
+                "Tanggal jurnal", value=waktu_lokal().date(), key="tanggal_jurnal_harian"
+            )
+            tanggal_jurnal_text = tanggal_jurnal.strftime("%Y-%m-%d")
+            jurnal_terpilih = next(
+                (r for r in semua_jurnal_tutor if str(r.get("Tanggal", "")) == tanggal_jurnal_text),
+                None
+            )
+
+            # Tampilkan jurnal hari yang sama pada minggu sebelumnya sebagai pengingat.
+            tanggal_minggu_lalu = tanggal_jurnal - timedelta(days=7)
+            jurnal_minggu_lalu = next(
+                (r for r in semua_jurnal_tutor
+                 if str(r.get("Tanggal", "")) == tanggal_minggu_lalu.strftime("%Y-%m-%d")),
+                None
+            )
+            if jurnal_minggu_lalu:
+                with st.expander(
+                    f"🔔 Catatan {tanggal_minggu_lalu.strftime('%A, %d %B %Y')} — pengingat minggu lalu",
+                    expanded=True
+                ):
+                    st.caption("Referensi untuk membantu mengingat kegiatan pada hari yang sama minggu sebelumnya.")
+                    nama_lalu = _parse_json_list(jurnal_minggu_lalu.get("Daftar_Siswa", "[]"))
+                    mapel_lalu = _parse_json_list(jurnal_minggu_lalu.get("Daftar_Mapel", "[]"))
+                    st.markdown("**Siswa yang belajar**")
+                    st.write(", ".join(
+                        [str(x.get("nama", "")) + (f" ({x.get('kelas', '')})" if x.get("kelas") else "")
+                         if isinstance(x, dict) else str(x) for x in nama_lalu]
+                    ) or "Belum dicatat")
+                    st.markdown("**Mata pelajaran**")
+                    st.write(", ".join(map(str, mapel_lalu)) or "Belum dicatat")
+                    if jurnal_minggu_lalu.get("Materi_Dibahas"):
+                        st.markdown("**Materi**")
+                        st.write(jurnal_minggu_lalu.get("Materi_Dibahas"))
+                    if jurnal_minggu_lalu.get("Evaluasi_Harian"):
+                        st.markdown("**Evaluasi sebelumnya**")
+                        st.write(jurnal_minggu_lalu.get("Evaluasi_Harian"))
+                    if jurnal_minggu_lalu.get("Pengingat_Berikutnya"):
+                        st.info("Pengingat sebelumnya: " + jurnal_minggu_lalu.get("Pengingat_Berikutnya"))
+
             with st.container(border=True):
                 st.markdown("#### 🗒️ CATATAN / PERTEMUAN")
-                st.caption("Mapel, kelas, topik, pengingat dan agenda mengajar.")
-                with st.form("form_catatan_mengajar_beranda", clear_on_submit=True):
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        tanggal_sesi = st.date_input(
-                            "Tanggal mengajar", value=waktu_lokal().date(), key="beranda_tanggal_sesi"
-                        )
-                        mapel_sesi = st.selectbox("Mata pelajaran", MAPEL_OPTIONS, key="beranda_mapel_sesi")
-                    with c2:
-                        kelas_sesi = st.text_input("Kelas", placeholder="Contoh: Kelas 5 SD")
-                        pengingat_sesi = st.text_input(
-                            "Pengingat pertemuan berikutnya", placeholder="Opsional"
-                        )
-                    topik_sesi = st.text_input("Topik / materi")
-                    isi_sesi = st.text_area(
-                        "Agenda dan catatan mengajar", height=110,
-                        placeholder="Materi yang dibahas, perkembangan siswa, dan rencana pertemuan berikutnya..."
+                st.caption(
+                    "Tuliskan siapa saja yang belajar hari ini. Nama boleh ditulis satu per baris; "
+                    "tidak harus membuat entri terpisah untuk setiap sesi."
+                )
+                siswa_default = _parse_json_list(jurnal_terpilih.get("Daftar_Siswa", "[]")) if jurnal_terpilih else []
+                if siswa_default and isinstance(siswa_default[0], dict):
+                    siswa_default_text = "\n".join(
+                        str(x.get("nama", "")) + (f" — {x.get('kelas', '')}" if x.get("kelas") else "")
+                        for x in siswa_default
                     )
-                    simpan_sesi = st.form_submit_button("💾 Simpan Catatan", use_container_width=True)
-                if simpan_sesi:
-                    try:
-                        simpan_catatan_tutor(
-                            id_user_aktif, id_tutor_aktif, "Catatan Mengajar",
-                            tanggal_sesi.strftime("%Y-%m-%d"), mapel_sesi, kelas_sesi,
-                            topik_sesi, isi_sesi, pengingat_sesi
+                else:
+                    siswa_default_text = "\n".join(map(str, siswa_default))
+
+                mapel_default = _parse_json_list(jurnal_terpilih.get("Daftar_Mapel", "[]")) if jurnal_terpilih else []
+                mapel_default_pilihan = [x for x in mapel_default if x in MAPEL_OPTIONS]
+                mapel_default_manual = ", ".join(x for x in mapel_default if x not in MAPEL_OPTIONS)
+                try:
+                    siswa_terdaftar = get_siswa_aktif()
+                except Exception:
+                    siswa_terdaftar = []
+
+                with st.form("form_jurnal_harian_tutor", clear_on_submit=False, enter_to_submit=False):
+                    daftar_siswa_text = st.text_area(
+                        "Siapa saja yang belajar hari ini?",
+                        value=siswa_default_text,
+                        height=105,
+                        placeholder="Contoh:\nAnak A — Kelas 8\nAnak B — Kelas 6\nKelompok 3 anak — Kelas 7",
+                        key=f"jurnal_siswa_{tanggal_jurnal_text}"
+                    )
+                    if siswa_terdaftar:
+                        st.caption("Daftar nama siswa terdaftar tersedia untuk referensi; kolom di atas tetap bisa diisi bebas.")
+                        nama_ref = st.multiselect(
+                            "Pilih nama dari data siswa (opsional)",
+                            options=siswa_terdaftar,
+                            key=f"jurnal_siswa_ref_{tanggal_jurnal_text}"
                         )
-                        st.success("Catatan mengajar berhasil disimpan.")
+                    else:
+                        nama_ref = []
+
+                    daftar_mapel = st.multiselect(
+                        "Mata pelajaran yang diajarkan (boleh pilih banyak)",
+                        options=MAPEL_OPTIONS,
+                        default=mapel_default_pilihan,
+                        key=f"jurnal_mapel_{tanggal_jurnal_text}"
+                    )
+                    mapel_manual = st.text_input(
+                        "Mapel lain (opsional, pisahkan dengan koma)",
+                        value=mapel_default_manual,
+                        placeholder="Contoh: Kaligrafi, Tahfiz",
+                        key=f"jurnal_mapel_manual_{tanggal_jurnal_text}"
+                    )
+                    materi_default = jurnal_terpilih.get("Materi_Dibahas", "") if jurnal_terpilih else ""
+                    materi_dibahas = st.text_area(
+                        "Materi yang dibahas",
+                        value=materi_default,
+                        height=110,
+                        placeholder="Contoh:\nIPA: Sistem pernapasan\nMatematika: Pecahan dan perbandingan\nBahasa Inggris: Simple Present",
+                        key=f"jurnal_materi_{tanggal_jurnal_text}"
+                    )
+                    evaluasi_default = jurnal_terpilih.get("Evaluasi_Harian", "") if jurnal_terpilih else ""
+                    evaluasi_harian = st.text_area(
+                        "Evaluasi harian (boleh diisi nanti)",
+                        value=evaluasi_default,
+                        height=100,
+                        placeholder="Apa yang sudah dipahami siswa? Apa yang masih perlu dilatih?",
+                        key=f"jurnal_evaluasi_{tanggal_jurnal_text}"
+                    )
+                    catatan_default = jurnal_terpilih.get("Catatan_Tutor", "") if jurnal_terpilih else ""
+                    catatan_pribadi_harian = st.text_area(
+                        "Catatan pribadi tutor",
+                        value=catatan_default,
+                        height=90,
+                        placeholder="Catatan untuk dirimu sendiri, bukan laporan orang tua...",
+                        key=f"jurnal_pribadi_{tanggal_jurnal_text}"
+                    )
+                    pengingat_default = jurnal_terpilih.get("Pengingat_Berikutnya", "") if jurnal_terpilih else ""
+                    pengingat_mingguan = st.text_area(
+                        "Pengingat untuk hari yang sama minggu depan",
+                        value=pengingat_default,
+                        height=80,
+                        placeholder="Contoh: Siapkan latihan tambahan pecahan dan lanjutkan materi IPA.",
+                        key=f"jurnal_pengingat_{tanggal_jurnal_text}"
+                    )
+                    simpan_jurnal = st.form_submit_button(
+                        "💾 Simpan / Perbarui Jurnal Harian", use_container_width=True
+                    )
+
+                if simpan_jurnal:
+                    try:
+                        siswa_baris = [
+                            x.strip() for x in daftar_siswa_text.splitlines() if x.strip()
+                        ]
+                        for nama in nama_ref:
+                            if nama not in siswa_baris:
+                                siswa_baris.append(nama)
+                        # Nama ditulis bebas; format "Nama — Kelas" dipisah untuk memudahkan pencarian.
+                        siswa_terstruktur = []
+                        for baris_siswa in siswa_baris:
+                            if "—" in baris_siswa:
+                                nama_siswa, kelas_siswa = baris_siswa.split("—", 1)
+                            elif " - " in baris_siswa:
+                                nama_siswa, kelas_siswa = baris_siswa.split(" - ", 1)
+                            else:
+                                nama_siswa, kelas_siswa = baris_siswa, ""
+                            siswa_terstruktur.append({
+                                "nama": nama_siswa.strip(), "kelas": kelas_siswa.strip()
+                            })
+                        semua_mapel = list(daftar_mapel)
+                        for item_mapel in mapel_manual.split(","):
+                            item_mapel = item_mapel.strip()
+                            if item_mapel and item_mapel not in semua_mapel:
+                                semua_mapel.append(item_mapel)
+                        simpan_atau_perbarui_jurnal(
+                            id_user_aktif, id_tutor_aktif, tanggal_jurnal_text,
+                            siswa_terstruktur, semua_mapel, materi_dibahas,
+                            evaluasi_harian, catatan_pribadi_harian, pengingat_mingguan
+                        )
+                        st.success("Jurnal harian berhasil disimpan. Kamu bisa membukanya dan memperbaruinya kapan saja.")
                         st.rerun()
                     except Exception as exc:
-                        st.error(f"Catatan belum tersimpan: {exc}")
+                        st.error(f"Jurnal belum tersimpan: {exc}")
 
-                try:
-                    catatan_sesi = [
-                        x for x in ambil_catatan_tutor(id_user_aktif)
-                        if x.get("Jenis_Catatan") == "Catatan Mengajar"
-                    ]
-                    if catatan_sesi:
-                        with st.expander("Riwayat catatan mengajar", expanded=False):
-                            for item in catatan_sesi[-8:][::-1]:
-                                st.markdown(f"**{item.get('Mapel', '-')} · {item.get('Kelas', '-')}**")
-                                st.caption(f"{item.get('Tanggal', '-')} · {item.get('Topik', '-')}")
-                                if item.get("Isi_Catatan"):
-                                    st.write(item.get("Isi_Catatan"))
-                                if item.get("Pengingat"):
-                                    st.info("Pertemuan berikutnya: " + item.get("Pengingat"))
-                                st.divider()
-                    else:
-                        st.caption("Belum ada riwayat catatan mengajar.")
-                except Exception as exc:
-                    st.warning(f"Riwayat catatan belum dapat dimuat: {exc}")
+            # Riwayat jurnal untuk membuka tanggal lama.
+            with st.expander("📚 Riwayat jurnal mengajar", expanded=False):
+                if semua_jurnal_tutor:
+                    for jurnal in sorted(
+                        semua_jurnal_tutor, key=lambda x: str(x.get("Tanggal", "")), reverse=True
+                    )[:20]:
+                        tgl = str(jurnal.get("Tanggal", ""))
+                        nama_list = _parse_json_list(jurnal.get("Daftar_Siswa", "[]"))
+                        nama_ringkas = ", ".join(
+                            str(x.get("nama", "")) if isinstance(x, dict) else str(x)
+                            for x in nama_list[:3]
+                        )
+                        st.markdown(f"**{tgl}**")
+                        st.caption(nama_ringkas or "Belum ada nama siswa")
+                        st.divider()
+                    st.caption("Untuk membuka jurnal lama, ubah Tanggal jurnal pada pemilih tanggal di atas.")
+                else:
+                    st.caption("Belum ada jurnal yang tersimpan.")
+
+            # CATATAN KHUSUS SISWA: riwayat tutor pribadi, tidak dikirim ke orang tua.
+            st.markdown("#### 👤 Catatan Khusus Siswa")
+            st.caption(
+                "Pilih nama siswa untuk membuka riwayat perkembangan, kesulitan, perhatian, "
+                "dan rencana belajar. Catatan ini hanya untuk tutor."
+            )
+            nama_siswa_opsi = sorted(set(siswa_terdaftar), key=str.casefold) if 'siswa_terdaftar' in locals() else []
+            nama_siswa_jurnal = [
+                x.get("nama", "") for x in _parse_json_list(
+                    jurnal_terpilih.get("Daftar_Siswa", "[]") if jurnal_terpilih else "[]"
+                ) if isinstance(x, dict) and x.get("nama")
+            ]
+            nama_siswa_opsi = sorted(set(nama_siswa_opsi + nama_siswa_jurnal), key=str.casefold)
+            with st.expander("Buka / tambah catatan khusus siswa", expanded=False):
+                pilihan_manual = st.text_input(
+                    "Nama siswa", placeholder="Ketik nama siswa jika tidak ada di daftar",
+                    key="nama_siswa_catatan_khusus"
+                )
+                if nama_siswa_opsi:
+                    nama_pilihan = st.selectbox(
+                        "Atau pilih siswa", options=[""] + nama_siswa_opsi,
+                        key="pilih_nama_catatan_khusus"
+                    )
+                else:
+                    nama_pilihan = ""
+                nama_target_catatan = pilihan_manual.strip() or nama_pilihan
+                if nama_target_catatan:
+                    try:
+                        riwayat_perkembangan = ambil_catatan_perkembangan_siswa(
+                            id_user_aktif, nama_target_catatan
+                        )
+                    except Exception as exc:
+                        riwayat_perkembangan = []
+                        st.warning(f"Riwayat siswa belum dapat dimuat: {exc}")
+                    if riwayat_perkembangan:
+                        st.markdown("**Riwayat catatan sebelumnya**")
+                        for catatan_siswa in riwayat_perkembangan[-5:][::-1]:
+                            st.markdown(f"**{catatan_siswa.get('Tanggal_Catatan', '-')} · {catatan_siswa.get('Kelas', '-') }**")
+                            if catatan_siswa.get("Perkembangan"):
+                                st.write("Perkembangan: " + catatan_siswa.get("Perkembangan"))
+                            if catatan_siswa.get("Kesulitan"):
+                                st.write("Kesulitan: " + catatan_siswa.get("Kesulitan"))
+                            if catatan_siswa.get("Perhatian_Tutor"):
+                                st.write("Perhatian tutor: " + catatan_siswa.get("Perhatian_Tutor"))
+                            if catatan_siswa.get("Rencana_Berikutnya"):
+                                st.info("Rencana: " + catatan_siswa.get("Rencana_Berikutnya"))
+                            st.divider()
+                    with st.form("form_catatan_khusus_siswa", clear_on_submit=True, enter_to_submit=False):
+                        kelas_catatan_siswa = st.text_input("Kelas", placeholder="Contoh: Kelas 8")
+                        perkembangan_siswa = st.text_area("Perkembangan", placeholder="Apa yang sudah dikuasai?")
+                        kesulitan_siswa = st.text_area("Kesulitan", placeholder="Apa yang masih sulit?")
+                        perhatian_siswa = st.text_area("Perhatian tutor", placeholder="Hal yang perlu diingat saat mengajar anak ini.")
+                        rencana_siswa = st.text_area("Rencana berikutnya", placeholder="Latihan atau materi lanjutan.")
+                        simpan_catatan_siswa = st.form_submit_button(
+                            "💾 Simpan catatan siswa", use_container_width=True
+                        )
+                    if simpan_catatan_siswa:
+                        try:
+                            simpan_catatan_perkembangan_siswa(
+                                id_user_aktif, id_tutor_aktif, nama_target_catatan,
+                                kelas_catatan_siswa, tanggal_jurnal_text,
+                                perkembangan_siswa, kesulitan_siswa,
+                                perhatian_siswa, rencana_siswa
+                            )
+                            st.success("Catatan perkembangan siswa tersimpan secara pribadi.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Catatan siswa belum tersimpan: {exc}")
 
             st.markdown("## Penampil Media")
-            # Satu area pratinjau dipakai bersama untuk hasil Drive maupun file unggahan.
-            # Placeholder hanya muncul jika belum ada media yang dipilih.
+            id_user_library = str(st.session_state.get("tutor_user_id", "")).strip()
+            id_tutor_library = str(st.session_state.get("tutor_id", "")).strip()
+
             with st.container(border=True):
-                c_search, c_button = st.columns([4, 1])
-                with c_search:
-                    kata_kunci_drive = st.text_input(
-                        "Search", placeholder="Cari materi...", label_visibility="collapsed",
-                        key="kata_kunci_drive_tutor_input"
-                    )
-                with c_button:
-                    cari_drive = st.button("🔎 Cari", use_container_width=True, key="tombol_cari_drive_tutor")
-
-                if cari_drive:
-                    if not kata_kunci_drive.strip():
-                        st.warning("Masukkan nama atau kata kunci materi.")
-                    else:
+                kata_kunci_library = st.text_input(
+                    "Cari materi", placeholder="Cari materi, misalnya: Trigonometri",
+                    key="kata_kunci_library_tutor"
+                )
+                sumber_library = st.radio(
+                    "Sumber materi", ["Semua sumber", "Library Saya", "Google Drive"],
+                    horizontal=True, key="sumber_library_tutor"
+                )
+                if st.button("🔎 Cari Materi", key="cari_library_tutor", use_container_width=True):
+                    hasil_library = []
+                    kesalahan_library = []
+                    if sumber_library in ("Semua sumber", "Library Saya"):
                         try:
-                            with st.spinner("Mencari PDF, gambar, audio, dan video..."):
-                                hasil_drive = cari_file_google_drive(kata_kunci_drive.strip())
-                            st.session_state["hasil_drive_tutor"] = hasil_drive
-                            st.session_state["kata_kunci_drive_tutor"] = kata_kunci_drive.strip()
-                            st.session_state.pop("pilih_file_drive_tutor", None)
-                            st.session_state.pop("media_preview_tutor", None)
-                            st.session_state.pop("media_preview_upload_gallery_tutor", None)
+                            hasil_library.extend(ambil_library_tutor(id_user_library, kata_kunci_library))
                         except Exception as exc:
-                            st.error(f"Pencarian Google Drive gagal: {exc}")
-
-                hasil_drive = st.session_state.get("hasil_drive_tutor", [])
-                if hasil_drive:
-                    st.caption(
-                        f"Ditemukan {len(hasil_drive)} media untuk: "
-                        f"{st.session_state.get('kata_kunci_drive_tutor', '')}"
-                    )
-                    pilihan_file = st.selectbox(
-                        "Pilih media", options=range(len(hasil_drive)),
-                        format_func=lambda i: hasil_drive[i].get("name", "Tanpa nama"),
-                        key="pilih_file_drive_tutor"
-                    )
-                    st.session_state["media_preview_tutor"] = hasil_drive[pilihan_file]
+                            kesalahan_library.append(f"Library Saya: {exc}")
+                    if sumber_library in ("Semua sumber", "Google Drive") and kata_kunci_library.strip():
+                        try:
+                            hasil_drive = cari_file_google_drive(kata_kunci_library.strip())
+                            for item in hasil_drive:
+                                item["source"] = "Google Drive"
+                            hasil_library.extend(hasil_drive)
+                        except Exception as exc:
+                            kesalahan_library.append(f"Google Drive: {exc}")
+                    # Gabungkan tanpa menggandakan file berdasarkan ID Drive.
+                    unik, seen = [], set()
+                    for item in hasil_library:
+                        fid = str(item.get("id", ""))
+                        if fid and fid not in seen:
+                            seen.add(fid)
+                            unik.append(item)
+                    st.session_state["hasil_library_tutor"] = unik
+                    st.session_state["kata_kunci_hasil_library_tutor"] = kata_kunci_library.strip()
+                    st.session_state.pop("pilih_hasil_library_tutor", None)
+                    st.session_state.pop("media_preview_tutor", None)
                     st.session_state.pop("media_preview_upload_gallery_tutor", None)
-                elif st.session_state.get("kata_kunci_drive_tutor"):
-                    st.info("Tidak ditemukan media yang cocok atau file tidak dapat diakses akun layanan.")
+                    st.session_state["error_library_tutor"] = kesalahan_library
 
-                with st.expander("＋ Buka file dari perangkat / unggah materi", expanded=False):
+                for err in st.session_state.get("error_library_tutor", []):
+                    st.warning(err)
+
+                hasil_library = st.session_state.get("hasil_library_tutor", [])
+                if hasil_library:
+                    st.caption(f"Ditemukan {len(hasil_library)} materi.")
+                    idx_media = st.selectbox(
+                        "Pilih materi untuk ditampilkan",
+                        options=range(len(hasil_library)),
+                        format_func=lambda i: (
+                            f"{hasil_library[i].get('name', 'Tanpa nama')} "
+                            f"· {hasil_library[i].get('source', 'Drive')}"
+                        ),
+                        key="pilih_hasil_library_tutor"
+                    )
+                    media_pilihan = hasil_library[idx_media]
+                    st.session_state["media_preview_tutor"] = media_pilihan
+                    st.session_state.pop("media_preview_upload_gallery_tutor", None)
+                elif st.session_state.get("kata_kunci_hasil_library_tutor"):
+                    st.info("Belum ada materi yang cocok pada sumber yang dipilih.")
+
+                with st.expander("＋ Tambahkan materi ke Library Saya", expanded=False):
                     st.caption(
-                        "Pilih PDF, gambar, audio, atau video dari HP/laptop. "
-                        "File diunggah ke Google Drive melalui konfigurasi aplikasi (maksimal 10 MB per file)."
+                        "Pilih file dari File Manager HP/laptop. File akan diunggah satu kali ke Drive "
+                        "dan dicatat sebagai koleksi pribadi akun tutor ini."
                     )
                     file_lokal = st.file_uploader(
-                        "Pilih file materi (bisa pilih beberapa gambar sekaligus)",
+                        "Pilih materi (boleh beberapa gambar sekaligus)",
                         type=["pdf", "png", "jpg", "jpeg", "webp", "mp3", "wav", "m4a", "ogg", "aac", "mp4", "mov", "webm", "m4v"],
-                        accept_multiple_files=True,
-                        key="upload_media_beranda_tutor"
+                        accept_multiple_files=True, key="upload_media_beranda_tutor"
+                    )
+                    kata_kunci_simpan = st.text_input(
+                        "Kata kunci / kategori (opsional)",
+                        placeholder="Contoh: Matematika, Trigonometri, Kelas 8",
+                        key="kata_kunci_simpan_library_tutor"
                     )
                     if file_lokal and st.button(
-                        "⬆️ Unggah dan tampilkan", key="unggah_media_beranda_tutor", use_container_width=True
+                        "⬆️ Simpan ke Library Saya", key="unggah_media_beranda_tutor",
+                        use_container_width=True
                     ):
-                        daftar_upload = []
-                        gagal_upload = []
-                        with st.spinner("Mengunggah materi ke Google Drive..."):
+                        berhasil, gagal = [], []
+                        with st.spinner("Mengunggah dan menyimpan indeks library..."):
                             for satu_file in file_lokal:
                                 try:
-                                    if len(satu_file.getvalue()) > 10 * 1024 * 1024:
-                                        raise ValueError("Ukuran file maksimal 10 MB sesuai batas Apps Script.")
+                                    data_file = satu_file.getvalue()
+                                    if len(data_file) > 10 * 1024 * 1024:
+                                        raise ValueError("Ukuran maksimal 10 MB per file.")
                                     url_file = upload_lampiran_ke_drive(
-                                        satu_file.getvalue(), satu_file.name, satu_file.type
+                                        data_file, satu_file.name, satu_file.type
                                     )
-                                    daftar_upload.append({
-                                        "url": url_file, "name": satu_file.name, "mime": satu_file.type
-                                    })
+                                    simpan_media_ke_library(
+                                        id_user_library, id_tutor_library,
+                                        satu_file.name, satu_file.type, url_file,
+                                        len(data_file), kata_kunci_simpan
+                                    )
+                                    berhasil.append(satu_file.name)
                                 except Exception as exc:
-                                    gagal_upload.append(f"{satu_file.name}: {exc}")
-                        if daftar_upload:
-                            st.session_state["media_beranda_upload_daftar"] = daftar_upload
-                            st.session_state["media_preview_upload_gallery_tutor"] = daftar_upload
-                            st.session_state.pop("media_preview_tutor", None)
-                            st.success(f"{len(daftar_upload)} file berhasil diunggah.")
+                                    gagal.append(f"{satu_file.name}: {exc}")
+                        if berhasil:
+                            st.success(f"{len(berhasil)} file tersimpan di Library Saya.")
+                            st.session_state["hasil_library_tutor"] = ambil_library_tutor(id_user_library, "")
+                            st.session_state["kata_kunci_hasil_library_tutor"] = ""
                             st.rerun()
-                        for pesan_gagal in gagal_upload:
-                            st.error("Gagal mengunggah " + pesan_gagal)
+                        for pesan in gagal:
+                            st.error(pesan)
 
-                # Render hanya satu pratinjau utama. Jika beberapa gambar diunggah,
-                # tampilkan sebagai galeri dalam area yang sama.
-                daftar_preview_upload = st.session_state.get("media_preview_upload_gallery_tutor", [])
+                # Satu area penampil untuk file hasil pencarian maupun unggahan baru.
                 media_preview = st.session_state.get("media_preview_tutor")
-
-                if daftar_preview_upload:
-                    mime_semua_gambar = all(
-                        str(item.get("mime", "")).startswith("image/") for item in daftar_preview_upload
-                    )
-                    if mime_semua_gambar and len(daftar_preview_upload) > 1:
-                        st.markdown("**Galeri gambar**")
-                        kolom_galeri = st.columns(2)
-                        for idx_gambar, item_gambar in enumerate(daftar_preview_upload):
-                            fid_gambar = drive_id(item_gambar.get("url", ""))
-                            with kolom_galeri[idx_gambar % 2]:
-                                if fid_gambar:
-                                    tampilkan_file_ruang_tutor({
-                                        "id": fid_gambar, "name": item_gambar.get("name", "Gambar"),
-                                        "mimeType": item_gambar.get("mime", ""),
-                                        "webViewLink": item_gambar.get("url", "")
-                                    })
-                                else:
-                                    tampilkan_media_url(
-                                        item_gambar.get("url", ""), item_gambar.get("mime", ""),
-                                        item_gambar.get("name", "Gambar")
-                                    )
-                    else:
-                        st.markdown("**Materi yang baru diunggah**")
-                        if len(daftar_preview_upload) > 1:
-                            idx_pilih_upload = st.selectbox(
-                                "Pilih file yang baru diunggah",
-                                options=range(len(daftar_preview_upload)),
-                                format_func=lambda i: daftar_preview_upload[i].get("name", "Materi"),
-                                key="pilih_upload_preview_tutor"
-                            )
-                        else:
-                            idx_pilih_upload = 0
-                            st.caption(daftar_preview_upload[0].get("name", "Materi"))
-                        item_preview = daftar_preview_upload[idx_pilih_upload]
-                        fid_preview = drive_id(item_preview.get("url", ""))
-                        if fid_preview:
-                            tampilkan_file_ruang_tutor({
-                                "id": fid_preview, "name": item_preview.get("name", "Materi"),
-                                "mimeType": item_preview.get("mime", ""),
-                                "webViewLink": item_preview.get("url", "")
-                            })
-                        else:
-                            tampilkan_media_url(
-                                item_preview.get("url", ""), item_preview.get("mime", ""),
-                                item_preview.get("name", "Materi")
-                            )
-                            st.link_button(
-                                "↗ Buka materi di Google Drive", item_preview.get("url", ""),
-                                use_container_width=True, key="buka_upload_media_preview_tutor"
-                            )
-                elif media_preview:
+                gallery_preview = st.session_state.get("media_preview_upload_gallery_tutor", [])
+                if media_preview:
+                    st.caption("Sumber: " + str(media_preview.get("source", "Google Drive")))
                     tampilkan_file_ruang_tutor(media_preview)
+                elif gallery_preview:
+                    st.markdown("**Materi yang baru diunggah**")
+                    for item in gallery_preview:
+                        fid = drive_id(item.get("url", ""))
+                        if fid:
+                            tampilkan_file_ruang_tutor({
+                                "id": fid, "name": item.get("name", "Materi"),
+                                "mimeType": item.get("mime", ""),
+                                "webViewLink": item.get("url", "")
+                            })
                 else:
                     st.markdown(
                         "<div style='background:#f1f3f5;border-radius:12px;padding:42px 16px;"
                         "text-align:center;margin-top:12px;'>"
                         "<div style='font-size:34px;'>▣</div>"
                         "<div style='font-size:20px;color:#606770;'>PDF · JPG · Video · Audio</div>"
-                        "<div style='font-size:16px;color:#777;margin-top:6px;'>Media tampil di sini</div>"
-                        "</div>",
-                        unsafe_allow_html=True
+                        "<div style='font-size:16px;color:#777;margin-top:6px;'>Pilih materi dari Drive atau Library Saya</div>"
+                        "</div>", unsafe_allow_html=True
                     )
 
             st.divider()
