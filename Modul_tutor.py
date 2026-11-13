@@ -814,6 +814,44 @@ def url_preview_drive(file_id):
     return f"https://drive.google.com/file/d/{file_id}/preview"
 
 
+def ambil_bytes_media_drive(file_id, batas_mb=30):
+    """Ambil isi file Drive publik sebagai bytes, bukan memberikan halaman HTML Drive ke player."""
+    if not file_id:
+        raise ValueError("ID file Google Drive tidak tersedia.")
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    with requests.get(
+        url,
+        stream=True,
+        allow_redirects=True,
+        timeout=(15, 90),
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "*/*"},
+    ) as response:
+        response.raise_for_status()
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        content_length = response.headers.get("Content-Length")
+        if content_length and content_length.isdigit() and int(content_length) > batas_mb * 1024 * 1024:
+            raise ValueError(f"File lebih besar dari batas pratinjau {batas_mb} MB.")
+        chunks, total = [], 0
+        for chunk in response.iter_content(chunk_size=1024 * 256):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > batas_mb * 1024 * 1024:
+                raise ValueError(f"File lebih besar dari batas pratinjau {batas_mb} MB.")
+            chunks.append(chunk)
+        data = b"".join(chunks)
+    # Drive kadang mengembalikan halaman HTML izin/konfirmasi, bukan konten media.
+    awal = data[:512].lstrip().lower()
+    if "text/html" in content_type or awal.startswith(b"<!doctype html") or awal.startswith(b"<html"):
+        raise RuntimeError(
+            "Google Drive mengirim halaman HTML, bukan file media. Periksa izin Anyone with the link "
+            "dan pastikan deployment Apps Script sudah diperbarui."
+        )
+    if not data:
+        raise RuntimeError("File media kosong atau tidak dapat diunduh dari Google Drive.")
+    return data
+
+
 def tampilkan_file_ruang_tutor(file_item):
     mime = str(file_item.get("mimeType", ""))
     nama = str(file_item.get("name", "Materi"))
@@ -826,24 +864,21 @@ def tampilkan_file_ruang_tutor(file_item):
     if mime == "application/pdf":
         st.markdown("##### 📖 Pembaca PDF")
         components.iframe(url_preview_drive(fid), height=650, scrolling=True)
-    elif mime.startswith("image/"):
-        # Gunakan URL unduhan langsung; preview iframe Drive sering gagal untuk gambar
-        # yang belum memiliki izin berbagi publik.
-        direct_url = f"https://drive.google.com/uc?export=download&id={fid}"
+    elif mime.startswith(("image/", "audio/", "video/")):
+        # Unduh bytes media terlebih dahulu. URL halaman/unduhan Drive tidak selalu
+        # dapat dipakai langsung oleh player HTML5 di browser.
         try:
-            st.image(direct_url, caption=nama, use_container_width=True)
-        except Exception:
-            st.warning("Gambar belum dapat ditampilkan. Periksa izin akses file di Google Drive.")
-    elif mime.startswith("audio/"):
-        st.markdown("##### 🎧 Audio Player")
-        direct_url = f"https://drive.google.com/uc?export=download&id={fid}"
-        st.audio(direct_url, format=mime)
-        st.caption("Jika audio tidak diputar, pastikan file dapat diakses melalui akun layanan aplikasi.")
-    elif mime.startswith("video/"):
-        st.markdown("##### 🎬 Video Player")
-        direct_url = f"https://drive.google.com/uc?export=download&id={fid}"
-        st.video(direct_url)
-        st.caption("Jika video tidak diputar, periksa izin akses file dan format video yang didukung browser.")
+            media_bytes = ambil_bytes_media_drive(fid, batas_mb=30)
+            if mime.startswith("image/"):
+                st.image(media_bytes, caption=nama, use_container_width=True)
+            elif mime.startswith("audio/"):
+                st.markdown("##### 🎧 Audio Player")
+                st.audio(media_bytes, format=mime)
+            else:
+                st.markdown("##### 🎬 Video Player")
+                st.video(media_bytes)
+        except Exception as exc:
+            st.warning(f"Media belum dapat dimuat: {exc}")
     else:
         st.info("Pratinjau langsung tidak tersedia untuk format ini. Buka file melalui Google Drive.")
     c1, c2 = st.columns(2)
@@ -2198,7 +2233,7 @@ elif peran == "🔒 Pengajar / Tutor":
                 with st.expander("＋ Buka file dari perangkat / unggah materi", expanded=False):
                     st.caption(
                         "Pilih PDF, gambar, audio, atau video dari HP/laptop. "
-                        "File diunggah ke Google Drive melalui konfigurasi aplikasi."
+                        "File diunggah ke Google Drive melalui konfigurasi aplikasi (maksimal 10 MB per file)."
                     )
                     file_lokal = st.file_uploader(
                         "Pilih file materi (bisa pilih beberapa gambar sekaligus)",
@@ -2214,8 +2249,8 @@ elif peran == "🔒 Pengajar / Tutor":
                         with st.spinner("Mengunggah materi ke Google Drive..."):
                             for satu_file in file_lokal:
                                 try:
-                                    if len(satu_file.getvalue()) > 20 * 1024 * 1024:
-                                        raise ValueError("Ukuran file maksimal 20 MB.")
+                                    if len(satu_file.getvalue()) > 10 * 1024 * 1024:
+                                        raise ValueError("Ukuran file maksimal 10 MB sesuai batas Apps Script.")
                                     url_file = upload_lampiran_ke_drive(
                                         satu_file.getvalue(), satu_file.name, satu_file.type
                                     )
