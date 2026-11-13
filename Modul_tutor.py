@@ -1446,6 +1446,14 @@ st.markdown("---")
 # =========================================================
 # 1. MODUL SISWA
 # =========================================================
+def _status_aktif(value, default=True):
+    """Pemeriksaan status akun yang dipakai lintas portal."""
+    status = str(value or "").strip().casefold()
+    if not status:
+        return default
+    return status not in {"nonaktif", "tidak aktif", "inactive", "0", "false", "berhenti"}
+
+
 if peran == "🎓 Siswa":
     st.subheader("🎓 Login Portal Siswa")
 
