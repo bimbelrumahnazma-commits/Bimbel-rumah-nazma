@@ -2488,20 +2488,37 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                             nomor_terpakai.append(int(cocok_id.group(1)))
                     id_baru = f"S{(max(nomor_terpakai, default=0) + 1):03d}"
 
-                    with st.form("form_tambah_siswa_owner", clear_on_submit=True):
-                        st.info(f"ID siswa berikutnya: **{id_baru}**")
-                        nama_baru = st.text_input("Nama lengkap siswa *")
-                        jenjang_baru = st.selectbox("Jenjang *", ["TK", "SD", "SMP", "SMA"])
-                        kelas_opsi = {
-                            "TK": ["Kelompok A", "Kelompok B"],
-                            "SD": [f"Kelas {i}" for i in range(1, 7)],
-                            "SMP": [f"Kelas {i}" for i in range(7, 10)],
-                            "SMA": [f"Kelas {i}" for i in range(10, 13)],
-                        }
-                        kelas_baru = st.selectbox("Kelas", kelas_opsi[jenjang_baru])
-                        pin_baru = st.text_input("PIN awal (minimal 6 angka) *", type="password")
-                        pin_ulang = st.text_input("Ulangi PIN awal *", type="password")
-                        simpan_siswa = st.form_submit_button("Simpan Siswa Baru")
+                    st.info(f"ID siswa berikutnya: **{id_baru}**")
+                    # Widget jenjang diletakkan di luar st.form agar perubahan jenjang
+                    # langsung memperbarui daftar kelas pada rerun Streamlit.
+                    nama_baru = st.text_input(
+                        "Nama lengkap siswa *", key="tambah_siswa_nama"
+                    )
+                    jenjang_baru = st.selectbox(
+                        "Jenjang *", ["TK", "SD", "SMP", "SMA"],
+                        key="tambah_siswa_jenjang"
+                    )
+                    kelas_opsi = {
+                        "TK": ["Kelompok A", "Kelompok B"],
+                        "SD": [f"Kelas {i}" for i in range(1, 7)],
+                        "SMP": [f"Kelas {i}" for i in range(7, 10)],
+                        "SMA": [f"Kelas {i}" for i in range(10, 13)],
+                    }
+                    kelas_baru = st.selectbox(
+                        "Kelas", kelas_opsi[jenjang_baru],
+                        key="tambah_siswa_kelas"
+                    )
+                    pin_baru = st.text_input(
+                        "PIN awal (minimal 6 angka) *", type="password",
+                        key="tambah_siswa_pin"
+                    )
+                    pin_ulang = st.text_input(
+                        "Ulangi PIN awal *", type="password",
+                        key="tambah_siswa_pin_ulang"
+                    )
+                    simpan_siswa = st.button(
+                        "Simpan Siswa Baru", key="btn_simpan_siswa_baru"
+                    )
                     if simpan_siswa:
                         if not nama_baru.strip():
                             st.error("Nama siswa wajib diisi.")
