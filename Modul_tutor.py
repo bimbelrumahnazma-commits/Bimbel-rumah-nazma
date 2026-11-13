@@ -827,13 +827,23 @@ def tampilkan_file_ruang_tutor(file_item):
         st.markdown("##### 📖 Pembaca PDF")
         components.iframe(url_preview_drive(fid), height=650, scrolling=True)
     elif mime.startswith("image/"):
-        st.image(f"https://drive.google.com/uc?export=view&id={fid}", use_container_width=True)
+        # Gunakan URL unduhan langsung; preview iframe Drive sering gagal untuk gambar
+        # yang belum memiliki izin berbagi publik.
+        direct_url = f"https://drive.google.com/uc?export=download&id={fid}"
+        try:
+            st.image(direct_url, caption=nama, use_container_width=True)
+        except Exception:
+            st.warning("Gambar belum dapat ditampilkan. Periksa izin akses file di Google Drive.")
     elif mime.startswith("audio/"):
-        st.markdown("##### 🎧 Audio Player · tampilan klasik")
-        components.iframe(url_preview_drive(fid), height=170, scrolling=False)
+        st.markdown("##### 🎧 Audio Player")
+        direct_url = f"https://drive.google.com/uc?export=download&id={fid}"
+        st.audio(direct_url, format=mime)
+        st.caption("Jika audio tidak diputar, pastikan file dapat diakses melalui akun layanan aplikasi.")
     elif mime.startswith("video/"):
         st.markdown("##### 🎬 Video Player")
-        components.iframe(url_preview_drive(fid), height=430, scrolling=False)
+        direct_url = f"https://drive.google.com/uc?export=download&id={fid}"
+        st.video(direct_url)
+        st.caption("Jika video tidak diputar, periksa izin akses file dan format video yang didukung browser.")
     else:
         st.info("Pratinjau langsung tidak tersedia untuk format ini. Buka file melalui Google Drive.")
     c1, c2 = st.columns(2)
@@ -2191,45 +2201,57 @@ elif peran == "🔒 Pengajar / Tutor":
                         "File diunggah ke Google Drive melalui konfigurasi aplikasi."
                     )
                     file_lokal = st.file_uploader(
-                        "Pilih file materi",
+                        "Pilih file materi (bisa pilih beberapa gambar sekaligus)",
                         type=["pdf", "png", "jpg", "jpeg", "webp", "mp3", "wav", "m4a", "ogg", "aac", "mp4", "mov", "webm", "m4v"],
+                        accept_multiple_files=True,
                         key="upload_media_beranda_tutor"
                     )
-                    if file_lokal is not None and st.button(
+                    if file_lokal and st.button(
                         "⬆️ Unggah dan tampilkan", key="unggah_media_beranda_tutor", use_container_width=True
                     ):
-                        try:
-                            if len(file_lokal.getvalue()) > 20 * 1024 * 1024:
-                                raise ValueError("Ukuran file maksimal 20 MB.")
-                            with st.spinner("Mengunggah materi ke Google Drive..."):
-                                url_file = upload_lampiran_ke_drive(
-                                    file_lokal.getvalue(), file_lokal.name, file_lokal.type
-                                )
-                            st.session_state["media_beranda_upload_terakhir"] = {
-                                "url": url_file, "name": file_lokal.name, "mime": file_lokal.type
-                            }
-                            st.success("File berhasil diunggah.")
-                        except Exception as exc:
-                            st.error(f"File belum berhasil diunggah: {exc}")
+                        daftar_upload = []
+                        gagal_upload = []
+                        with st.spinner("Mengunggah materi ke Google Drive..."):
+                            for satu_file in file_lokal:
+                                try:
+                                    if len(satu_file.getvalue()) > 20 * 1024 * 1024:
+                                        raise ValueError("Ukuran file maksimal 20 MB.")
+                                    url_file = upload_lampiran_ke_drive(
+                                        satu_file.getvalue(), satu_file.name, satu_file.type
+                                    )
+                                    daftar_upload.append({
+                                        "url": url_file, "name": satu_file.name, "mime": satu_file.type
+                                    })
+                                except Exception as exc:
+                                    gagal_upload.append(f"{satu_file.name}: {exc}")
+                        if daftar_upload:
+                            st.session_state["media_beranda_upload_daftar"] = daftar_upload
+                            st.success(f"{len(daftar_upload)} file berhasil diunggah.")
+                        for pesan_gagal in gagal_upload:
+                            st.error("Gagal mengunggah " + pesan_gagal)
 
-                    upload_terakhir = st.session_state.get("media_beranda_upload_terakhir")
-                    if upload_terakhir:
-                        fid_upload = drive_id(upload_terakhir.get("url", ""))
-                        if fid_upload:
-                            tampilkan_file_ruang_tutor({
-                                "id": fid_upload, "name": upload_terakhir.get("name", "Materi"),
-                                "mimeType": upload_terakhir.get("mime", ""),
-                                "webViewLink": upload_terakhir.get("url", "")
-                            })
-                        else:
-                            tampilkan_media_url(
-                                upload_terakhir["url"], upload_terakhir.get("mime", ""),
-                                upload_terakhir.get("name", "Materi")
-                            )
-                            st.link_button(
-                                "↗ Buka materi di Google Drive", upload_terakhir["url"],
-                                use_container_width=True
-                            )
+                    daftar_upload_terakhir = st.session_state.get("media_beranda_upload_daftar", [])
+                    if daftar_upload_terakhir:
+                        st.markdown("**Materi yang baru diunggah**")
+                        for idx_upload, upload_terakhir in enumerate(daftar_upload_terakhir):
+                            fid_upload = drive_id(upload_terakhir.get("url", ""))
+                            with st.container(border=True):
+                                st.markdown(f"**{upload_terakhir.get('name', 'Materi')}**")
+                                if fid_upload:
+                                    tampilkan_file_ruang_tutor({
+                                        "id": fid_upload, "name": upload_terakhir.get("name", "Materi"),
+                                        "mimeType": upload_terakhir.get("mime", ""),
+                                        "webViewLink": upload_terakhir.get("url", "")
+                                    })
+                                else:
+                                    tampilkan_media_url(
+                                        upload_terakhir["url"], upload_terakhir.get("mime", ""),
+                                        upload_terakhir.get("name", "Materi")
+                                    )
+                                    st.link_button(
+                                        "↗ Buka materi di Google Drive", upload_terakhir["url"],
+                                        use_container_width=True, key=f"buka_upload_media_{idx_upload}"
+                                    )
 
             st.divider()
             tampilkan_papan_tutor(id_user_aktif, id_tutor_aktif)
