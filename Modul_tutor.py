@@ -2413,6 +2413,27 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
     ws_owner_security = get_or_create_worksheet(
         "Pengaturan_Aplikasi", ["Kunci", "Nilai"], rows="20", cols="2"
     )
+    # Pastikan worksheet lama yang kosong memiliki header. Pemeriksaan dilakukan
+    # sekali per sesi agar tidak menambah Read request pada setiap rerun.
+    if not st.session_state.get("_owner_security_header_checked", False):
+        try:
+            header_owner = ws_owner_security.row_values(1)
+            if not header_owner:
+                ws_owner_security.update("A1:B1", [["Kunci", "Nilai"]])
+                _baca_values_cache.clear()
+            elif (
+                len(header_owner) >= 2
+                and str(header_owner[0]).strip() == "PIN_OWNER"
+                and str(header_owner[1]).strip()
+                and str(header_owner[0]).strip() != "Kunci"
+            ):
+                # Pemulihan jika PIN_OWNER telanjur tertulis sebagai baris pertama
+                # karena header worksheet sebelumnya kosong.
+                ws_owner_security.insert_row(["Kunci", "Nilai"], index=1)
+                _baca_values_cache.clear()
+            st.session_state["_owner_security_header_checked"] = True
+        except Exception as exc:
+            st.error(f"Gagal memeriksa header penyimpanan PIN Owner: {exc}")
     # Gunakan cache singkat agar rerun Streamlit tidak selalu meminta Read baru.
     owner_settings = baca_records_aman(ws_owner_security)
     owner_pin_record = next(
