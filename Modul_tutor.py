@@ -2535,10 +2535,10 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     nomor_terpakai = []
                     for rec in records_daftar:
                         id_lama = str(rec.get(kolom_id, "")).strip()
-                        cocok_id = re.fullmatch(r"S(\d+)", id_lama, flags=re.IGNORECASE)
+                        cocok_id = re.fullmatch(r"SIS-(\d+)", id_lama, flags=re.IGNORECASE)
                         if cocok_id:
                             nomor_terpakai.append(int(cocok_id.group(1)))
-                    id_baru = f"S{(max(nomor_terpakai, default=0) + 1):03d}"
+                    id_baru = f"SIS-{(max(nomor_terpakai, default=0) + 1):03d}"
 
                     st.info(f"ID siswa berikutnya: **{id_baru}**")
                     # Widget jenjang diletakkan di luar st.form agar perubahan jenjang
@@ -2602,7 +2602,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                                     id_sheet = str(row[idx_id] if idx_id < len(row) else "").strip()
                                     if nama_sheet and nama_sheet.casefold() == nama_key:
                                         duplikat = (id_sheet, nama_sheet)
-                                    match_id = re.fullmatch(r"S(\\d+)", id_sheet, flags=re.IGNORECASE)
+                                    match_id = re.fullmatch(r"SIS-(\d+)", id_sheet, flags=re.IGNORECASE)
                                     if match_id:
                                         nomor_terpakai_submit.append(int(match_id.group(1)))
 
@@ -2613,7 +2613,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                                         + " Tidak ada baris baru yang ditambahkan."
                                     )
                                 else:
-                                    id_submit = f"S{(max(nomor_terpakai_submit, default=0) + 1):03d}"
+                                    id_submit = f"SIS-{(max(nomor_terpakai_submit, default=0) + 1):03d}"
                                     # Gunakan header aktual, bukan asumsi urutan kolom.
                                     row_baru = []
                                     for header in header_terkini:
