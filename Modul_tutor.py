@@ -192,9 +192,9 @@ def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
         return ws
 
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def _baca_values_cache(spreadsheet_id, worksheet_title):
-    """Cache pembacaan nilai sheet selama 15 detik untuk menekan Read requests."""
+    """Cache pembacaan nilai sheet selama 60 detik untuk menekan Read requests."""
     ws_cached = client.open_by_key(spreadsheet_id).worksheet(worksheet_title)
     return ws_cached.get_all_values()
 
@@ -2453,7 +2453,8 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.caption("Isi satu formulir saja. ID dibuat otomatis dan data disimpan ke Data_Siswa.")
             try:
                 ws_daftar = sheet.worksheet("Data_Siswa")
-                headers_daftar = [str(h).strip() for h in ws_daftar.row_values(1)]
+                values_daftar = _baca_values_cache(sheet.id, ws_daftar.title)
+                headers_daftar = [str(h).strip() for h in values_daftar[0]] if values_daftar else []
                 kolom_id = "ID_SISWA" if "ID_SISWA" in headers_daftar else (
                     "ID_Siswa" if "ID_Siswa" in headers_daftar else None
                 )
@@ -2479,7 +2480,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     st.error("Header Data_Siswa belum cocok. Kolom yang tidak ditemukan: " + ", ".join(wajib_tidak_ada))
                     st.caption("Header yang terbaca: " + " | ".join(headers_daftar))
                 else:
-                    records_daftar = baca_records_aman(ws_daftar, refresh=True)
+                    records_daftar = baca_records_aman(ws_daftar)
                     nomor_terpakai = []
                     for rec in records_daftar:
                         id_lama = str(rec.get(kolom_id, "")).strip()
@@ -2678,7 +2679,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
 
         with tab5:
             st.caption("Ganti PIN Owner langsung dari portal. PIN disimpan sebagai HASH pada worksheet Pengaturan_Aplikasi; data username dan akun pengguna tidak diubah.")
-            owner_settings = baca_records_aman(ws_owner_security, refresh=True)
+            owner_settings = baca_records_aman(ws_owner_security)
             owner_pin_record = next(
                 (r for r in owner_settings if str(r.get("Kunci", "")).strip() == "PIN_OWNER"), None
             )
