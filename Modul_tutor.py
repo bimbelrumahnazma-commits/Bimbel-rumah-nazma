@@ -301,7 +301,8 @@ def simpan_pin_baru(ws, record, field_name, pin_baru):
 
 def form_ganti_pin(ws, record, field_name, key_prefix):
     """Form opsional agar pengguna mengganti PIN sendiri setelah berhasil login."""
-    with st.expander("🔐 Keamanan Akun — Ganti PIN"):
+    with st.container(border=True):
+        st.markdown("#### 🔐 Keamanan Akun — Ganti PIN")
         with st.form(f"{key_prefix}_form_ganti_pin"):
             pin_lama = st.text_input("PIN saat ini", type="password", key=f"{key_prefix}_pin_lama")
             pin_baru = st.text_input("PIN baru (minimal 6 angka)", type="password", key=f"{key_prefix}_pin_baru")
@@ -2279,13 +2280,31 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
     st.subheader("👑 Portal Pengelola Bimbel")
     if "owner_logged_in" not in st.session_state:
         st.session_state.owner_logged_in = False
+    # PIN Owner disimpan sebagai HASH pada worksheet khusus agar dapat diganti dari portal.
+    # Username/akun pada Akun_Pengguna tidak disentuh.
+    ws_owner_security = get_or_create_worksheet(
+        "Pengaturan_Aplikasi", ["Kunci", "Nilai"], rows="20", cols="2"
+    )
+    owner_settings = baca_records_aman(ws_owner_security, refresh=True)
+    owner_pin_record = next(
+        (r for r in owner_settings if str(r.get("Kunci", "")).strip() == "PIN_OWNER"), None
+    )
+
     if not st.session_state.owner_logged_in:
         pin_owner = st.text_input("PIN Pengelola:", type="password", key="login_owner_pin")
-        OWNER_PIN = str(st.secrets.get("owner_pin", "")).strip() or "1605"
-        if not str(st.secrets.get("owner_pin", "")).strip():
-            st.warning("PIN Pengelola masih memakai PIN bawaan 1605. Segera atur owner_pin di Streamlit Secrets.")
+        owner_pin_awal = str(st.secrets.get("owner_pin", "")).strip() or "1605"
+        if not owner_pin_record and not str(st.secrets.get("owner_pin", "")).strip():
+            st.warning("PIN Pengelola masih memakai PIN bawaan 1605. Setelah login, segera ganti melalui Keamanan Owner.")
         if st.button("Masuk sebagai Pengelola", key="btn_login_owner"):
-            if hmac.compare_digest(pin_owner.strip(), OWNER_PIN):
+            if owner_pin_record:
+                cocok, _ = verifikasi_pin(pin_owner, owner_pin_record.get("Nilai", ""))
+            else:
+                cocok = hmac.compare_digest(pin_owner.strip(), owner_pin_awal)
+            if cocok:
+                # Migrasi PIN awal/secrets ke HASH hanya setelah login berhasil.
+                if not owner_pin_record:
+                    ws_owner_security.append_row(["PIN_OWNER", hash_pin(pin_owner.strip())])
+                    _baca_values_cache.clear()
                 st.session_state.owner_logged_in = True
                 st.rerun()
             else:
@@ -2295,8 +2314,8 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.session_state.owner_logged_in = False
             st.rerun()
         st.success("Akses diizinkan.")
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "🎁 Undian Hadiah", "👥 Kelola Status Akun", "📚 Arsip Bank Soal", "🔑 Reset PIN"
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "🎁 Undian Hadiah", "👥 Kelola Status Akun", "📚 Arsip Bank Soal", "🔑 Reset PIN", "🔐 Keamanan Owner"
         ])
 
         with tab1:
@@ -2401,6 +2420,17 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                             st.error(f"Reset PIN gagal: {exc}")
             else:
                 st.info("Tidak ada akun yang dapat dipilih pada kategori ini.")
+
+        with tab5:
+            st.caption("Ganti PIN Owner langsung dari portal. PIN disimpan sebagai HASH pada worksheet Pengaturan_Aplikasi; data username dan akun pengguna tidak diubah.")
+            owner_settings = baca_records_aman(ws_owner_security, refresh=True)
+            owner_pin_record = next(
+                (r for r in owner_settings if str(r.get("Kunci", "")).strip() == "PIN_OWNER"), None
+            )
+            if owner_pin_record:
+                form_ganti_pin(ws_owner_security, owner_pin_record, "Nilai", "owner")
+            else:
+                st.error("Data PIN Owner belum ditemukan. Silakan logout lalu login kembali untuk membuat penyimpanan PIN aman.")
 
 
 # =========================================================
