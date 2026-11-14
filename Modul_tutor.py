@@ -1816,6 +1816,477 @@ def _nilai_parse_jawaban(v):
     return v
 
 
+
+
+# =========================================================
+# TAHAP 7.36 — MODUL 8 RANCANGAN PENGEMBANGAN
+# Kartu soal, validasi, rubrik essay, persetujuan nilai,
+# pratinjau, draft persisten, template, dan laporan.
+# =========================================================
+
+TEMPLATE_SOAL_HEADERS = [
+    "ID_Template", "Nama_Template", "Tutor", "Mapel",
+    "Konfigurasi_JSON", "Dibuat_Pada", "Diperbarui_Pada"
+]
+DRAFT_TUGAS_HEADERS = [
+    "ID_Draft", "ID_Siswa", "Nama_Siswa", "Tutor",
+    "Payload_JSON", "Status", "Dibuat_Pada", "Diperbarui_Pada"
+]
+PERSETUJUAN_NILAI_HEADERS = [
+    "ID_Persetujuan", "ID_Jawaban", "ID_Tugas", "ID_Siswa",
+    "Nilai_Sementara", "Nilai_Akhir", "Status_Persetujuan",
+    "Disetujui_Oleh", "Waktu_Persetujuan", "Catatan"
+]
+
+
+def _sheet_v2(nama, headers):
+    """Sheet baru khusus fitur 7.36; tidak mengubah struktur sheet lama."""
+    ws = get_or_create_worksheet(nama, headers, rows="3000", cols=str(max(20, len(headers))))
+    header = [str(x).strip() for x in ws.row_values(1)]
+    if header != headers:
+        raise RuntimeError(
+            f"Header worksheet {nama} tidak sesuai. Data tidak ditulis untuk mencegah kolom bergeser."
+        )
+    return ws
+
+
+def _parse_pasangan_manual(teks):
+    hasil = {}
+    for bagian in str(teks or "").split("|"):
+        if ":" in bagian:
+            kode, isi = bagian.split(":", 1)
+            if kode.strip() and isi.strip():
+                hasil[kode.strip()] = isi.strip()
+    return hasil
+
+
+def _parse_rubrik_kata_kunci(teks):
+    """
+    Format per baris: kata_kunci | sinonim1, sinonim2 | bobot
+    Contoh: fotosintesis | proses fotosintesis, membuat makanan | 40
+    """
+    hasil = []
+    for baris in str(teks or "").splitlines():
+        baris = baris.strip()
+        if not baris:
+            continue
+        bagian = [x.strip() for x in baris.split("|")]
+        if len(bagian) < 3:
+            raise ValueError(
+                "Format rubrik Essay: Kata kunci | sinonim dipisahkan koma | bobot. "
+                "Satu kriteria ditulis dalam satu baris."
+            )
+        kata = bagian[0]
+        sinonim = [x.strip() for x in bagian[1].split(",") if x.strip()]
+        try:
+            bobot = float(bagian[2])
+        except (ValueError, TypeError):
+            raise ValueError(f"Bobot rubrik '{kata}' harus berupa angka.")
+        if not kata or bobot <= 0:
+            raise ValueError("Kata kunci wajib diisi dan bobot harus lebih dari nol.")
+        hasil.append({"kata_kunci": kata, "alternatif": sinonim, "bobot": bobot})
+    if hasil and sum(float(x["bobot"]) for x in hasil) <= 0:
+        raise ValueError("Total bobot rubrik harus lebih dari nol.")
+    return hasil
+
+
+def hitung_nilai_essay_keyword(jawaban, rubrik):
+    """Menghasilkan nilai sementara berbasis frasa/kata kunci dan alternatif."""
+    teks = re.sub(r"\s+", " ", str(jawaban or "").strip().casefold())
+    if not rubrik:
+        return {"nilai": None, "ditemukan": [], "belum_ditemukan": [], "status": "Perlu pemeriksaan manual"}
+    total = sum(max(0.0, float(x.get("bobot", 0) or 0)) for x in rubrik)
+    if total <= 0:
+        return {"nilai": None, "ditemukan": [], "belum_ditemukan": [], "status": "Rubrik tidak valid"}
+    ditemukan, belum = [], []
+    bobot_ditemukan = 0.0
+    for item in rubrik:
+        kandidat = [str(item.get("kata_kunci", ""))] + list(item.get("alternatif", []) or [])
+        kandidat = [re.sub(r"\s+", " ", str(x).strip().casefold()) for x in kandidat if str(x).strip()]
+        cocok = any(re.search(r"(?<!\w)" + re.escape(k) + r"(?!\w)", teks) for k in kandidat)
+        if cocok:
+            ditemukan.append(item.get("kata_kunci", ""))
+            bobot_ditemukan += float(item.get("bobot", 0) or 0)
+        else:
+            belum.append(item.get("kata_kunci", ""))
+    nilai = round(min(100.0, max(0.0, bobot_ditemukan / total * 100)), 2)
+    return {
+        "nilai": nilai, "ditemukan": ditemukan,
+        "belum_ditemukan": belum, "status": "Nilai sementara"
+    }
+
+
+def hitung_nilai_sementara(daftar_soal, jawaban):
+    """Gabungkan penilaian objektif dan estimasi Essay; bukan nilai terbit."""
+    objektif = hitung_nilai_objektif(daftar_soal, jawaban)
+    rincian = list(objektif.get("rincian", []))
+    manual = list(objektif.get("soal_manual", []))
+    total_bobot = sum(float(x.get("bobot", 1) or 1) for x in rincian)
+    total_poin = sum(float(x.get("poin", 0) or 0) * float(x.get("bobot", 1) or 1) for x in rincian)
+    detail_essay = []
+    nomor_essay = {
+        nomor for nomor, soal in enumerate(daftar_soal or [], 1)
+        if any(k in str(soal.get("Bentuk_Soal", "")).casefold() for k in ("essay", "esai", "uraian", "isian"))
+    }
+    manual = [nomor for nomor in manual if nomor not in nomor_essay]
+    for nomor, soal in enumerate(daftar_soal or [], 1):
+        bentuk = str(soal.get("Bentuk_Soal", "")).casefold()
+        if not any(k in bentuk for k in ("essay", "esai", "uraian", "isian")):
+            continue
+        rubrik = soal.get("Rubrik_Kata_Kunci", []) or []
+        hasil = hitung_nilai_essay_keyword(jawaban.get(str(nomor), ""), rubrik)
+        bobot_soal = max(0.0, float(soal.get("Bobot", 1) or 1))
+        detail_essay.append({"nomor": nomor, "bobot_soal": bobot_soal, **hasil})
+        if hasil["nilai"] is None:
+            manual.append(nomor)
+        else:
+            total_bobot += bobot_soal
+            total_poin += (hasil["nilai"] / 100.0) * bobot_soal
+            rincian.append({"nomor": nomor, "poin": hasil["nilai"] / 100.0, "bobot": bobot_soal})
+    skor = round(total_poin / total_bobot * 100, 2) if total_bobot > 0 else None
+    return {
+        "nilai_sementara": skor,
+        "rincian": rincian,
+        "essay": detail_essay,
+        "soal_manual": sorted(set(manual)),
+        "siap_disetujui": bool(daftar_soal) and not manual and skor is not None
+    }
+
+
+def simpan_template_soal(nama, tutor, mapel, konfigurasi):
+    if not str(nama or "").strip():
+        raise ValueError("Nama template wajib diisi.")
+    ws = _sheet_v2("DB_Template_Lembar_Jawaban", TEMPLATE_SOAL_HEADERS)
+    now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    ws.append_row([
+        "TPL-" + uuid.uuid4().hex[:10].upper(), str(nama).strip(),
+        str(tutor), str(mapel), json.dumps(konfigurasi, ensure_ascii=False),
+        now, now
+    ], value_input_option="RAW")
+
+
+def ambil_template_soal(tutor):
+    try:
+        ws = _sheet_v2("DB_Template_Lembar_Jawaban", TEMPLATE_SOAL_HEADERS)
+        return [
+            x for x in baca_records_aman(ws, refresh=True)
+            if str(x.get("Tutor", "")).strip() in ("", str(tutor).strip())
+        ]
+    except gspread.WorksheetNotFound:
+        return []
+    except Exception:
+        return []
+
+
+def simpan_draft_tugas_persisten(id_siswa, nama_siswa, tutor, daftar_draft):
+    """
+    Menyimpan metadata draft ke sheet terpisah. Lampiran sudah diunggah ke Drive
+    ketika draft dibuat; sheet hanya menyimpan URL dan metadata file, bukan byte file.
+    """
+    ws = _sheet_v2("DB_Draft_Tugas_Tutor", DRAFT_TUGAS_HEADERS)
+    now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    payload = []
+    for item in (daftar_draft or []):
+        aman = dict(item)
+        aman["Files"] = [
+            {k: v for k, v in f.items() if k != "bytes"}
+            for f in (item.get("Files", []) or [])
+        ]
+        payload.append(aman)
+    records = baca_records_aman(ws, refresh=True)
+    aktif = next((
+        r for r in records
+        if str(r.get("ID_Siswa", "")) == str(id_siswa)
+        and str(r.get("Tutor", "")) == str(tutor)
+        and str(r.get("Status", "")) == "Draft"
+    ), None)
+    data = [
+        aktif.get("ID_Draft") if aktif else "DRF-" + uuid.uuid4().hex[:10].upper(),
+        str(id_siswa), str(nama_siswa), str(tutor),
+        json.dumps(payload, ensure_ascii=False), "Draft",
+        aktif.get("Dibuat_Pada", now) if aktif else now, now
+    ]
+    if aktif:
+        ws.update(f"A{aktif['_baris']}:H{aktif['_baris']}", [data], value_input_option="RAW")
+    else:
+        ws.append_row(data, value_input_option="RAW")
+
+
+def ambil_draft_tugas_persisten(id_siswa, tutor):
+    try:
+        ws = _sheet_v2("DB_Draft_Tugas_Tutor", DRAFT_TUGAS_HEADERS)
+        record = next((
+            r for r in reversed(baca_records_aman(ws, refresh=True))
+            if str(r.get("ID_Siswa", "")) == str(id_siswa)
+            and str(r.get("Tutor", "")) == str(tutor)
+            and str(r.get("Status", "")) == "Draft"
+        ), None)
+        if not record:
+            return []
+        payload = json.loads(record.get("Payload_JSON", "[]") or "[]")
+        return payload if isinstance(payload, list) else []
+    except Exception:
+        return []
+
+
+def hapus_draft_tugas_persisten(id_siswa, tutor):
+    try:
+        ws = _sheet_v2("DB_Draft_Tugas_Tutor", DRAFT_TUGAS_HEADERS)
+        for r in baca_records_aman(ws, refresh=True):
+            if str(r.get("ID_Siswa", "")) == str(id_siswa) and str(r.get("Tutor", "")) == str(tutor) and str(r.get("Status", "")) == "Draft":
+                ws.update_cell(r["_baris"], DRAFT_TUGAS_HEADERS.index("Status") + 1, "Dikirim")
+    except Exception:
+        pass
+
+
+def catat_persetujuan_nilai(id_jawaban, id_tugas, id_siswa, nilai_sementara,
+                            nilai_akhir, tutor, catatan):
+    ws = _sheet_v2("DB_Persetujuan_Nilai", PERSETUJUAN_NILAI_HEADERS)
+    ws.append_row([
+        "APR-" + uuid.uuid4().hex[:10].upper(), str(id_jawaban),
+        str(id_tugas), str(id_siswa),
+        "" if nilai_sementara is None else nilai_sementara,
+        nilai_akhir, "Disetujui dan diterbitkan", str(tutor),
+        waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"), str(catatan or "")
+    ], value_input_option="RAW")
+
+
+def validasi_konfigurasi_soal(soal):
+    """Validasi struktur soal sebelum masuk draft tugas."""
+    masalah = []
+    bentuk = str(soal.get("Bentuk_Soal", "")).casefold()
+    opsi = soal.get("Opsi_List", []) or []
+    kunci = soal.get("Kunci", "")
+    if any(x in bentuk for x in ("pilihan ganda", "pgk kategori", "pgk mcma")) and len(opsi) < 2:
+        masalah.append("minimal dua opsi diperlukan")
+    if "pilihan ganda" in bentuk and "kompleks" not in bentuk and "mcma" not in bentuk:
+        if not str(kunci).strip():
+            masalah.append("kunci jawaban belum diisi")
+        elif str(kunci).strip() not in opsi:
+            masalah.append("kunci harus sama dengan salah satu opsi")
+    elif "pgk mcma" in bentuk or "pilihan ganda kompleks" in bentuk:
+        daftar_kunci = kunci if isinstance(kunci, list) else [x.strip() for x in str(kunci).split("|") if x.strip()]
+        if not daftar_kunci or any(x not in opsi for x in daftar_kunci):
+            masalah.append("kunci PG kompleks harus dipilih dari opsi yang tersedia")
+    elif "pgk kategori" in bentuk:
+        if not str(kunci).strip() or str(kunci).strip() not in opsi:
+            masalah.append("kunci kategori harus dipilih dari opsi")
+    elif "benar" in bentuk:
+        if str(kunci).strip().casefold() not in ("benar", "salah"):
+            masalah.append("kunci Benar-Salah harus Benar atau Salah")
+    elif "menjodohkan" in bentuk:
+        pasangan = soal.get("Pasangan", {}) or {}
+        kiri = pasangan.get("kolom_A", {}) or {}
+        kanan = pasangan.get("kolom_B", {}) or {}
+        kunci_p = kunci.get("pasangan", {}) if isinstance(kunci, dict) else {}
+        if not kiri or not kanan or not kunci_p:
+            masalah.append("Kolom A, Kolom B, dan kunci pasangan wajib lengkap")
+        elif set(kunci_p.keys()) - set(kiri.keys()) or set(kunci_p.values()) - set(kanan.keys()):
+            masalah.append("kode kunci pasangan harus cocok dengan Kolom A dan Kolom B")
+    elif any(x in bentuk for x in ("essay", "esai", "uraian", "isian")):
+        if not soal.get("Rubrik_Kata_Kunci"):
+            masalah.append("rubrik kata kunci Essay belum diisi")
+    try:
+        if float(soal.get("Bobot", 1) or 0) <= 0:
+            masalah.append("bobot soal harus lebih dari nol")
+    except (ValueError, TypeError):
+        masalah.append("bobot soal harus berupa angka")
+    return masalah
+
+
+def buat_konfigurasi_kartu_soal(jumlah, key_prefix, konfigurasi_awal=None):
+    """UI kartu per nomor; lebih nyaman untuk layar HP daripada tabel lebar."""
+    konfigurasi_awal = konfigurasi_awal or []
+    hasil = []
+    tipe_opsi = [
+        "Pilihan ganda", "Pilihan ganda kompleks", "Benar-Salah",
+        "PGK Kategori", "PGK MCMA", "Essay", "Menjodohkan"
+    ]
+    for nomor in range(1, int(jumlah) + 1):
+        awal = konfigurasi_awal[nomor - 1] if nomor <= len(konfigurasi_awal) else {}
+        tipe_awal = str(awal.get("Bentuk_Soal", "Pilihan ganda"))
+        if tipe_awal not in tipe_opsi:
+            tipe_awal = "Pilihan ganda"
+        with st.expander(f"Nomor {nomor} · {tipe_awal}", expanded=(nomor == 1)):
+            if nomor > 1 and st.button(
+                f"Salin konfigurasi nomor {nomor-1}",
+                key=f"{key_prefix}_salin_{nomor}"
+            ):
+                for suffix in ("tipe", "bobot", "opsi", "kunci", "rubrik", "a", "b", "kp"):
+                    key_lama = f"{key_prefix}_{suffix}_{nomor-1}"
+                    key_baru = f"{key_prefix}_{suffix}_{nomor}"
+                    if key_lama in st.session_state:
+                        st.session_state[key_baru] = st.session_state[key_lama]
+                st.rerun()
+            tipe = st.selectbox(
+                "Tipe jawaban",
+                tipe_opsi,
+                index=tipe_opsi.index(tipe_awal),
+                key=f"{key_prefix}_tipe_{nomor}"
+            )
+            bobot = st.number_input(
+                "Bobot nilai", min_value=0.1, max_value=100.0, step=0.5,
+                value=float(awal.get("Bobot", 1) or 1),
+                key=f"{key_prefix}_bobot_{nomor}"
+            )
+            opsi = []
+            pasangan = {}
+            rubrik = []
+            kunci = ""
+            if tipe in ("Pilihan ganda", "Pilihan ganda kompleks", "PGK Kategori", "PGK MCMA"):
+                opsi_default = " | ".join(awal.get("Opsi_List", []) or ["A", "B", "C", "D"])
+                opsi_teks = st.text_input(
+                    "Opsi jawaban (pisahkan dengan |)",
+                    value=opsi_default,
+                    key=f"{key_prefix}_opsi_{nomor}"
+                )
+                opsi = [x.strip() for x in opsi_teks.split("|") if x.strip()]
+                if tipe in ("Pilihan ganda kompleks", "PGK MCMA"):
+                    kunci_teks = st.text_input(
+                        "Kunci jawaban (pisahkan dengan |)",
+                        value=" | ".join(awal.get("Kunci", []) if isinstance(awal.get("Kunci"), list) else ([awal.get("Kunci", "")] if awal.get("Kunci") else [])),
+                        key=f"{key_prefix}_kunci_{nomor}"
+                    )
+                    kunci = [x.strip() for x in kunci_teks.split("|") if x.strip()]
+                else:
+                    kunci_awal = str(awal.get("Kunci", "") or "")
+                    kunci = st.selectbox(
+                        "Kunci jawaban",
+                        [""] + opsi,
+                        index=([""] + opsi).index(kunci_awal) if kunci_awal in opsi else 0,
+                        key=f"{key_prefix}_kunci_{nomor}"
+                    )
+            elif tipe == "Benar-Salah":
+                kunci_awal = str(awal.get("Kunci", "Benar") or "Benar")
+                kunci = st.radio(
+                    "Kunci jawaban", ["Benar", "Salah"],
+                    index=0 if kunci_awal.casefold() == "benar" else 1,
+                    horizontal=True, key=f"{key_prefix}_kunci_{nomor}"
+                )
+                opsi = ["Benar", "Salah"]
+            elif tipe == "Essay":
+                st.caption("Tulis satu kriteria per baris: kata kunci | sinonim dipisahkan koma | bobot.")
+                rubrik_awal = awal.get("Rubrik_Kata_Kunci", []) or []
+                teks_rubrik_awal = "\n".join(
+                    f"{x.get('kata_kunci','')} | {', '.join(x.get('alternatif',[]) or [])} | {x.get('bobot',0)}"
+                    for x in rubrik_awal
+                )
+                rubrik_teks = st.text_area(
+                    "Rubrik kata kunci Essay",
+                    value=teks_rubrik_awal,
+                    height=110,
+                    key=f"{key_prefix}_rubrik_{nomor}",
+                    placeholder="fotosintesis | proses fotosintesis | 40\nmembuat makanan | menghasilkan makanan | 60"
+                )
+                try:
+                    rubrik = _parse_rubrik_kata_kunci(rubrik_teks)
+                except ValueError as exc:
+                    st.warning(str(exc))
+                    rubrik = []
+                kunci = ""
+            elif tipe == "Menjodohkan":
+                a_awal = awal.get("Pasangan", {}).get("kolom_A", {})
+                b_awal = awal.get("Pasangan", {}).get("kolom_B", {})
+                kp_awal = (awal.get("Kunci", {}) or {}).get("pasangan", {}) if isinstance(awal.get("Kunci", {}), dict) else {}
+                def _pasangan_ke_teks(data):
+                    return "\n".join(f"{k}:{v}" for k, v in (data or {}).items())
+                col_a = st.text_area(
+                    "Kolom A (satu baris kode:teks)",
+                    value=_pasangan_ke_teks(a_awal), key=f"{key_prefix}_a_{nomor}", height=90
+                )
+                col_b = st.text_area(
+                    "Kolom B (satu baris kode:teks)",
+                    value=_pasangan_ke_teks(b_awal), key=f"{key_prefix}_b_{nomor}", height=90
+                )
+                key_pair = st.text_input(
+                    "Kunci pasangan (format A:X|B:Y)",
+                    value="|".join(f"{k}:{v}" for k, v in kp_awal.items()),
+                    key=f"{key_prefix}_kp_{nomor}"
+                )
+                def _parse_baris_pasangan(teks):
+                    out = {}
+                    for row in str(teks or "").splitlines():
+                        if ":" in row:
+                            k, v = row.split(":", 1)
+                            if k.strip() and v.strip():
+                                out[k.strip()] = v.strip()
+                    return out
+                pasangan = {
+                    "kolom_A": _parse_baris_pasangan(col_a),
+                    "kolom_B": _parse_baris_pasangan(col_b)
+                }
+                kunci = {"pasangan": _parse_pasangan_manual(key_pair)}
+            soal = {
+                "Teks_Soal": "", "Bentuk_Soal": tipe, "Opsi_List": opsi,
+                "Pasangan": pasangan, "Kunci": kunci,
+                "Rubrik_Kata_Kunci": rubrik, "Bobot": float(bobot)
+            }
+            masalah = validasi_konfigurasi_soal(soal)
+            if masalah:
+                st.caption("Belum lengkap: " + "; ".join(masalah))
+            else:
+                st.caption("Konfigurasi nomor ini valid.")
+            hasil.append(soal)
+    return hasil
+
+
+def tampilkan_pratinjau_lembar_jawaban(daftar_soal, judul="Pratinjau lembar jawaban siswa"):
+    with st.expander("👁️ " + judul, expanded=False):
+        if not daftar_soal:
+            st.info("Belum ada konfigurasi soal.")
+            return
+        for nomor, soal in enumerate(daftar_soal, 1):
+            bentuk = str(soal.get("Bentuk_Soal", "")).casefold()
+            opsi = soal.get("Opsi_List", []) or []
+            st.markdown(f"**{nomor}. {soal.get('Teks_Soal') or 'Jawab berdasarkan soal pada lampiran.'}**")
+            if "benar" in bentuk:
+                st.caption("Pilihan siswa: ○ Benar   ○ Salah")
+            elif "pgk mcma" in bentuk or "pilihan ganda kompleks" in bentuk:
+                st.caption("Pilihan siswa (boleh lebih dari satu): " + " · ".join(f"□ {x}" for x in opsi))
+            elif "pgk kategori" in bentuk or "pilihan ganda" in bentuk:
+                st.caption("Pilihan siswa: " + " · ".join(f"○ {x}" for x in opsi))
+            elif "menjodohkan" in bentuk:
+                pasangan = soal.get("Pasangan", {}) or {}
+                kiri = pasangan.get("kolom_A", {}) or {}
+                kanan = pasangan.get("kolom_B", {}) or {}
+                st.caption("Kolom A: " + " · ".join(f"{k}. {v}" for k, v in kiri.items()))
+                st.caption("Kolom B: " + " · ".join(f"{k}. {v}" for k, v in kanan.items()))
+                st.caption("Siswa memilih pasangan untuk setiap item.")
+            else:
+                st.caption("Kolom jawaban uraian / Essay.")
+            st.divider()
+
+
+def tampilkan_laporan_perkembangan(nama_siswa, tugas, jawaban, nilai):
+    """Ringkasan perkembangan berdasarkan tugas, status pengumpulan, dan nilai terbit."""
+    tugas = [
+        x for x in tugas
+        if not adalah_materi(x)
+        and str(x.get("Nama_Siswa", "")).strip().casefold() == str(nama_siswa).strip().casefold()
+    ]
+    nilai_siswa = [
+        x for x in nilai
+        if str(x.get("Nama_Siswa", "")).strip().casefold() == str(nama_siswa).strip().casefold()
+    ]
+    ids = {str(x.get("ID_Tugas", "")) for x in tugas}
+    jawaban_siswa = [x for x in jawaban if str(x.get("ID_Tugas", "")) in ids]
+    nilai_angka = []
+    for x in nilai_siswa:
+        try:
+            nilai_angka.append(float(x.get("Nilai", 0)))
+        except (ValueError, TypeError):
+            pass
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total tugas", len(tugas))
+    c2.metric("Jawaban terkirim", len(jawaban_siswa))
+    c3.metric("Nilai diterbitkan", len(nilai_angka))
+    if nilai_angka:
+        st.metric("Rata-rata nilai terbit", f"{sum(nilai_angka)/len(nilai_angka):.1f}")
+    else:
+        st.caption("Belum ada nilai akhir yang diterbitkan.")
+
+
+
 def hitung_nilai_objektif(daftar_soal, jawaban):
     """Hitung nilai soal objektif. Soal uraian sengaja tidak dinilai otomatis."""
     total_objektif = 0
@@ -3162,7 +3633,13 @@ elif peran == "🔒 Pengajar / Tutor":
                     # Draft tugas disimpan di session state sampai tutor menekan tombol simpan.
                     draft_key = f"draft_tugas_{selected_siswa}"
                     if draft_key not in st.session_state:
-                        st.session_state[draft_key] = []
+                        try:
+                            id_siswa_draft = get_siswa_id_by_nama(selected_siswa)
+                            st.session_state[draft_key] = ambil_draft_tugas_persisten(
+                                id_siswa_draft, st.session_state.get("tutor_nama", "")
+                            )
+                        except Exception:
+                            st.session_state[draft_key] = []
 
                     with st.expander("➕ Buat tugas baru", expanded=True):
                         # Widget biasa (bukan st.form) supaya pilihan sumber/kategori langsung mengubah isian di bawahnya.
@@ -3279,6 +3756,10 @@ elif peran == "🔒 Pengajar / Tutor":
                             st.session_state.pop(mode_widget_key, None)
                             st.session_state.pop(f"jumlah_manual_{k}", None)
                             st.session_state.pop(f"konfigurasi_manual_{k}", None)
+                            st.session_state.pop(f"_template_awal_{k}", None)
+                            for widget_key in list(st.session_state.keys()):
+                                if str(widget_key).startswith(f"cfg_{k}_"):
+                                    st.session_state.pop(widget_key, None)
                             st.session_state[source_identity_key] = source_identity
 
                         # Pilihan cara pengerjaan baru ditampilkan setelah sumber soal tersedia.
@@ -3303,80 +3784,78 @@ elif peran == "🔒 Pengajar / Tutor":
                         else:
                             mode_pengerjaan = TASK_MODE_ONLINE
 
-                        # Untuk PDF/Drive, isi soal dibaca dari lampiran. Tutor membentuk
-                        # lembar jawaban di aplikasi tanpa perlu membuka Spreadsheet.
+                        # Konfigurasi custom memakai kartu per nomor, bukan tabel horizontal.
+                        masalah_konfigurasi = []
                         if sumber_tugas != SUMBER_BANK and source_ready and mode_pengerjaan == TASK_MODE_ONLINE:
-                            st.markdown("#### ⚙️ Buat lembar jawaban dari lampiran")
+                            st.markdown("#### ⚙️ Konfigurasi lembar jawaban")
                             st.caption(
-                                "Siswa membaca soal dari PDF atau tautan yang dilampirkan. "
-                                "Atur tipe secara bebas pada setiap nomor; tipe boleh berulang dan diselingi. "
-                                "Untuk Menjodohkan, isi Kolom A/B dengan format kode:teks dipisahkan |, "
-                                "lalu isi kunci pasangan dengan format A:X|B:Y."
+                                "Atur tipe jawaban setiap nomor. Essay memakai rubrik kata kunci untuk nilai sementara; "
+                                "nilai akhir tetap menunggu persetujuan tutor."
                             )
+                            templates = ambil_template_soal(st.session_state.get("tutor_nama", ""))
+                            template_map = {
+                                f"{x.get('Nama_Template')} · {x.get('Mapel')}": x
+                                for x in templates
+                            }
+                            pilih_template = st.selectbox(
+                                "Gunakan template (opsional):",
+                                ["— Mulai dari konfigurasi baru —"] + list(template_map.keys()),
+                                key=f"template_pilih_{k}"
+                            )
+                            if st.button("Muat template", key=f"template_muat_{k}",
+                                         disabled=pilih_template == "— Mulai dari konfigurasi baru —"):
+                                try:
+                                    data_tpl = json.loads(template_map[pilih_template].get("Konfigurasi_JSON", "[]"))
+                                    st.session_state[f"_template_awal_{k}"] = data_tpl if isinstance(data_tpl, list) else []
+                                    st.session_state[f"jumlah_manual_{k}"] = len(st.session_state[f"_template_awal_{k}"]) or 10
+                                    for widget_key in list(st.session_state.keys()):
+                                        if str(widget_key).startswith(f"cfg_{k}_"):
+                                            st.session_state.pop(widget_key, None)
+                                    st.success("Template dimuat. Periksa kembali konfigurasi sebelum digunakan.")
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.error(f"Template tidak dapat dimuat: {exc}")
+
+                            konfigurasi_awal = st.session_state.get(f"_template_awal_{k}", [])
+                            jumlah_default = len(konfigurasi_awal) if konfigurasi_awal else 10
                             jumlah_manual = st.number_input(
                                 "Jumlah nomor soal:", min_value=1, max_value=100,
-                                value=10, step=1, key=f"jumlah_manual_{k}"
+                                value=jumlah_default, step=1, key=f"jumlah_manual_{k}"
                             )
-                            tipe_manual = [
-                                "Pilihan ganda", "Pilihan ganda kompleks", "Benar-Salah",
-                                "PGK Kategori", "PGK MCMA", "Essay", "Menjodohkan"
-                            ]
-                            baris_manual = [{
-                                "Nomor": nomor,
-                                "Tipe Jawaban": "Pilihan ganda",
-                                "Opsi (pisahkan dengan |)": "A | B | C | D",
-                                "Kolom A (kode:teks|...)": "",
-                                "Kolom B (kode:teks|...)": "",
-                                "Kunci Pasangan (A:X|...)": "",
-                                "Kunci Jawaban": "",
-                                "Bobot": 1.0
-                            } for nomor in range(1, int(jumlah_manual) + 1)]
-                            edited_manual = st.data_editor(
-                                pd.DataFrame(baris_manual),
-                                use_container_width=True,
-                                hide_index=True,
-                                disabled=["Nomor"],
-                                key=f"konfigurasi_manual_{k}",
-                                column_config={
-                                    "Tipe Jawaban": st.column_config.SelectboxColumn(
-                                        "Tipe Jawaban", options=tipe_manual, required=True
-                                    ),
-                                    "Bobot": st.column_config.NumberColumn(
-                                        "Bobot", min_value=0.1, max_value=100.0, step=0.5
-                                    )
-                                }
+                            soal_dipilih = buat_konfigurasi_kartu_soal(
+                                int(jumlah_manual), f"cfg_{k}", konfigurasi_awal
                             )
-                            soal_dipilih = []
-                            for _, row_cfg in edited_manual.iterrows():
-                                opsi_cfg = [
-                                    x.strip() for x in str(row_cfg.get("Opsi (pisahkan dengan |)", "")).split("|")
-                                    if x.strip()
-                                ]
-                                tipe_cfg = str(row_cfg.get("Tipe Jawaban", "Pilihan ganda")).strip()
-                                def _parse_pasangan_manual(teks):
-                                    hasil = {}
-                                    for bagian in str(teks or "").split("|"):
-                                        if ":" in bagian:
-                                            kode, isi = bagian.split(":", 1)
-                                            if kode.strip() and isi.strip():
-                                                hasil[kode.strip()] = isi.strip()
-                                    return hasil
-                                pasangan_cfg = {}
-                                kunci_cfg = str(row_cfg.get("Kunci Jawaban", "")).strip()
-                                if tipe_cfg.casefold() == "menjodohkan":
-                                    pasangan_cfg = {
-                                        "kolom_A": _parse_pasangan_manual(row_cfg.get("Kolom A (kode:teks|...)", "")),
-                                        "kolom_B": _parse_pasangan_manual(row_cfg.get("Kolom B (kode:teks|...)", ""))
-                                    }
-                                    kunci_cfg = {"pasangan": _parse_pasangan_manual(row_cfg.get("Kunci Pasangan (A:X|...)", ""))}
-                                soal_dipilih.append({
-                                    "Teks_Soal": "",
-                                    "Bentuk_Soal": tipe_cfg,
-                                    "Opsi_List": opsi_cfg,
-                                    "Pasangan": pasangan_cfg,
-                                    "Kunci": kunci_cfg,
-                                    "Bobot": float(row_cfg.get("Bobot", 1) or 1)
-                                })
+                            for nomor, satu_soal in enumerate(soal_dipilih, 1):
+                                masalah = validasi_konfigurasi_soal(satu_soal)
+                                if masalah:
+                                    masalah_konfigurasi.append(f"Nomor {nomor}: " + "; ".join(masalah))
+                            tampilkan_pratinjau_lembar_jawaban(soal_dipilih)
+
+                            with st.expander("💾 Simpan konfigurasi sebagai template", expanded=False):
+                                nama_template_baru = st.text_input(
+                                    "Nama template:", key=f"template_nama_{k}",
+                                    placeholder="Contoh: 10 PG + 5 Essay"
+                                )
+                                if st.button("Simpan template", key=f"template_simpan_{k}"):
+                                    if masalah_konfigurasi:
+                                        st.error("Perbaiki konfigurasi yang belum valid sebelum menyimpan template.")
+                                    else:
+                                        try:
+                                            simpan_template_soal(
+                                                nama_template_baru,
+                                                st.session_state.get("tutor_nama", ""),
+                                                mapel_tugas,
+                                                soal_dipilih
+                                            )
+                                            st.success("Template berhasil disimpan.")
+                                            st.rerun()
+                                        except Exception as exc:
+                                            st.error(f"Template gagal disimpan: {exc}")
+
+                            if masalah_konfigurasi:
+                                with st.expander(f"⚠️ Perlu dilengkapi ({len(masalah_konfigurasi)} masalah)", expanded=False):
+                                    for pesan in masalah_konfigurasi:
+                                        st.warning(pesan)
 
                         # Detail penugasan dilengkapi setelah sumber dan cara pengerjaan ditentukan.
                         instruksi_tugas = st.text_area("Instruksi untuk siswa:", key=f"in_{k}")
@@ -3416,9 +3895,19 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.error("Ukuran tiap lampiran maksimal 20 MB. Kompres video/audio lalu unggah kembali.")
                             elif total_byte > 40 * 1024 * 1024:
                                 st.error("Total lampiran satu tugas maksimal 40 MB. Bagi menjadi beberapa tugas.")
+                            elif sumber_tugas != SUMBER_BANK and mode_pengerjaan == TASK_MODE_ONLINE and masalah_konfigurasi:
+                                st.error("Konfigurasi lembar jawaban belum valid. Periksa kartu soal yang ditandai.")
                             else:
-                                files = [{"name": f.name, "bytes": f.getvalue(), "mime": f.type or "application/octet-stream"}
-                                         for f in daftar_file]
+                                # Lampiran diunggah saat masuk draft agar draft dapat dipulihkan setelah sesi terputus.
+                                files = []
+                                for f in daftar_file:
+                                    url_file = upload_lampiran_ke_drive(
+                                        f.getvalue(), f.name, f.type or "application/octet-stream"
+                                    )
+                                    files.append({
+                                        "name": f.name, "mime": f.type or "application/octet-stream",
+                                        "url": url_file, "uploaded": True
+                                    })
                                 st.session_state[draft_key].append({
                                     "Mapel": mapel_tugas, "Judul": judul_tugas.strip(),
                                     # Kategori PR disimpan di Jenis_Tugas: "PR Online" / "PR Offline"
@@ -3428,6 +3917,14 @@ elif peran == "🔒 Pengajar / Tutor":
                                     "Links": link_list, "Files": files, "Soal": soal_dipilih,
                                     "Mode_Pengerjaan": mode_pengerjaan
                                 })
+                                try:
+                                    simpan_draft_tugas_persisten(
+                                        get_siswa_id_by_nama(selected_siswa), selected_siswa,
+                                        st.session_state.get("tutor_nama", ""),
+                                        st.session_state[draft_key]
+                                    )
+                                except Exception as exc:
+                                    st.warning(f"Draft tersimpan di sesi ini, tetapi sinkronisasi Google Sheets gagal: {exc}")
                                 st.session_state["form_n"] = n_form + 1  # kosongkan isian, siap menambah tugas berikutnya
                                 st.success("Masuk ke daftar draft. Anda bisa menambah tugas atau PR lain (mapel lain / jenis lain), lalu tekan Simpan & Kirim.")
                                 st.rerun()
@@ -3445,9 +3942,29 @@ elif peran == "🔒 Pengajar / Tutor":
                                 for link in item.get("Links", []):
                                     st.write(f"Link: {link}")
                                 for file_item in item.get("Files", []):
-                                    st.info(f"Lampiran siap diunggah ke Google Drive saat tugas dikirim: {file_item['name']}")
+                                    status_file = "sudah tersimpan di Google Drive" if file_item.get("url") else "menunggu diunggah"
+                                    st.info(f"Lampiran {status_file}: {file_item['name']}")
                                 if st.button("🗑️ Hapus dari daftar", key=f"hapus_item_{selected_siswa}_{i}"):
                                     daftar_draft.pop(i - 1)
+                                    try:
+                                        simpan_draft_tugas_persisten(
+                                            get_siswa_id_by_nama(selected_siswa), selected_siswa,
+                                            st.session_state.get("tutor_nama", ""), daftar_draft
+                                        )
+                                    except Exception:
+                                        pass
+                                    st.rerun()
+                                if st.button("📄 Duplikasi tugas ini", key=f"duplikasi_item_{selected_siswa}_{i}"):
+                                    salinan = json.loads(json.dumps(item, ensure_ascii=False))
+                                    salinan["Judul"] = str(salinan.get("Judul", "")) + " (Salinan)"
+                                    daftar_draft.append(salinan)
+                                    try:
+                                        simpan_draft_tugas_persisten(
+                                            get_siswa_id_by_nama(selected_siswa), selected_siswa,
+                                            st.session_state.get("tutor_nama", ""), daftar_draft
+                                        )
+                                    except Exception as exc:
+                                        st.warning(f"Salinan ada di sesi ini tetapi belum tersinkron: {exc}")
                                     st.rerun()
                         col_kirim, col_hapus = st.columns(2)
                         with col_kirim:
@@ -3462,8 +3979,15 @@ elif peran == "🔒 Pengajar / Tutor":
                                         for item in daftar_draft:
                                             entri_lampiran = []
                                             for file_item in item.get("Files", []):
-                                                url = upload_lampiran_ke_drive(file_item["bytes"], file_item["name"], file_item["mime"])
-                                                entri_lampiran.append(f"{jenis_dari_mime(file_item['mime'], file_item['name'])}::{url}")
+                                                url = file_item.get("url")
+                                                if not url and file_item.get("bytes"):
+                                                    url = upload_lampiran_ke_drive(
+                                                        file_item["bytes"], file_item["name"], file_item.get("mime", "application/octet-stream")
+                                                    )
+                                                if url:
+                                                    entri_lampiran.append(
+                                                        f"{jenis_dari_mime(file_item.get('mime', ''), file_item['name'])}::{url}"
+                                                    )
                                             for link in item.get("Links", []):
                                                 entri_lampiran.append(f"link::{link}")
                                             hasil_kirim.append((item, "|".join(entri_lampiran)))
@@ -3482,6 +4006,13 @@ elif peran == "🔒 Pengajar / Tutor":
                                         ws_tugas.append_rows(baris_baru, value_input_option="RAW")
                                         n_pr = sum(1 for it in daftar_draft if str(it["Jenis"]).startswith("PR"))
                                         st.session_state[draft_key] = []
+                                        try:
+                                            hapus_draft_tugas_persisten(
+                                                get_siswa_id_by_nama(selected_siswa),
+                                                st.session_state.get("tutor_nama", "")
+                                            )
+                                        except Exception:
+                                            pass
                                         st.success(f"{len(hasil_kirim)} penugasan terkirim untuk {selected_siswa} ({n_pr} PR, {len(hasil_kirim) - n_pr} tugas sesi).")
                                         st.rerun()
                                 except Exception as e:
@@ -3489,6 +4020,13 @@ elif peran == "🔒 Pengajar / Tutor":
                         with col_hapus:
                             if st.button("Kosongkan daftar draft", key=f"hapus_draft_{selected_siswa}"):
                                 st.session_state[draft_key] = []
+                                try:
+                                    hapus_draft_tugas_persisten(
+                                        get_siswa_id_by_nama(selected_siswa),
+                                        st.session_state.get("tutor_nama", "")
+                                    )
+                                except Exception:
+                                    pass
                                 st.rerun()
                     else:
                         st.info("Belum ada tugas di daftar draft.")
@@ -3639,7 +4177,44 @@ elif peran == "🔒 Pengajar / Tutor":
 
         elif menu_tutor == "📊 Portofolio Siswa":
                 st.header("📊 Portofolio & Pemeriksaan Jawaban Siswa")
+                st.subheader("📈 Ringkasan perkembangan siswa")
+                try:
+                    nama_siswa_laporan = st.selectbox(
+                        "Pilih siswa untuk melihat ringkasan:",
+                        ["— Pilih siswa —"] + get_siswa_aktif(),
+                        key="pilih_siswa_laporan_736"
+                    )
+                    if nama_siswa_laporan != "— Pilih siswa —":
+                        semua_tugas_laporan = get_student_tasks()
+                        semua_jawaban_laporan = baca_jawaban_tergabung(get_worksheet("DB_Jawaban_Siswa"))
+                        semua_nilai_laporan = baca_records_aman(get_worksheet("DB_Nilai_Tugas"))
+                        tampilkan_laporan_perkembangan(
+                            nama_siswa_laporan, semua_tugas_laporan,
+                            semua_jawaban_laporan, semua_nilai_laporan
+                        )
+                        tugas_siswa_laporan = [
+                            x for x in semua_tugas_laporan
+                            if str(x.get("Nama_Siswa", "")).strip().casefold() == nama_siswa_laporan.strip().casefold()
+                            and not adalah_materi(x)
+                        ]
+                        if tugas_siswa_laporan:
+                            nilai_map_laporan = {
+                                str(x.get("ID_Tugas", "")): x.get("Nilai")
+                                for x in semua_nilai_laporan
+                                if str(x.get("Nama_Siswa", "")).strip().casefold() == nama_siswa_laporan.strip().casefold()
+                            }
+                            st.dataframe(pd.DataFrame([
+                                {
+                                    "Mapel": x.get("Mapel", ""),
+                                    "Tugas": x.get("Judul_Tugas", ""),
+                                    "Kategori": "PR" if adalah_pr(x) else "Tugas sesi",
+                                    "Nilai akhir": nilai_map_laporan.get(str(x.get("ID_Tugas", "")), "Belum terbit")
+                                } for x in tugas_siswa_laporan
+                            ]), use_container_width=True, hide_index=True)
+                except Exception as exc:
+                    st.warning(f"Ringkasan perkembangan belum dapat dimuat: {exc}")
 
+                st.markdown("---")
                 try:
                     ws_jawaban = get_worksheet("DB_Jawaban_Siswa")
                     jawaban_records = baca_jawaban_tergabung(ws_jawaban)
@@ -3690,6 +4265,9 @@ elif peran == "🔒 Pengajar / Tutor":
                             "skor_objektif": None, "jumlah_objektif": 0,
                             "jumlah_benar_penuh": 0, "soal_manual": [], "rincian": []
                         }
+                        hasil_sementara = hitung_nilai_sementara(soal_untuk_nilai, jawaban_dict) if soal_untuk_nilai else {
+                            "nilai_sementara": None, "essay": [], "soal_manual": [], "siap_disetujui": False
+                        }
                         semua_objektif = bool(soal_untuk_nilai) and hasil_otomatis["jumlah_objektif"] == len(soal_untuk_nilai)
                         if hasil_otomatis["skor_objektif"] is not None:
                             st.markdown("**Hasil pemeriksaan otomatis (khusus soal objektif):**")
@@ -3706,13 +4284,41 @@ elif peran == "🔒 Pengajar / Tutor":
                         elif not soal_untuk_nilai:
                             st.warning("Data soal/kunci tidak tersedia pada tugas ini. Penilaian dilakukan manual.")
 
-                        nilai_awal = int(round(hasil_otomatis["skor_objektif"] or 0)) if semua_objektif else 0
-                        with st.form("form_penilaian_jawaban"):
-                            if semua_objektif:
-                                st.caption("Semua soal dapat dinilai otomatis. Tutor tetap dapat mengubah nilai akhir.")
+                        if hasil_sementara.get("nilai_sementara") is not None:
+                            st.markdown("### Nilai sementara (belum diterbitkan)")
+                            label_estimasi = (
+                                "Estimasi nilai sementara"
+                                if not hasil_sementara.get("soal_manual")
+                                else "Estimasi sementara untuk soal yang dapat dinilai otomatis"
+                            )
+                            st.metric(label_estimasi, f'{hasil_sementara["nilai_sementara"]:.2f}/100')
+                            st.caption(
+                                "Pencocokan ini berbasis kata/frasa yang disiapkan tutor, bukan pemahaman makna penuh. "
+                                "Nilai hanya bahan pertimbangan tutor dan belum terlihat oleh siswa."
+                            )
+                            if hasil_sementara.get("soal_manual"):
+                                st.warning(
+                                    "Nomor " + ", ".join(map(str, hasil_sementara["soal_manual"])) +
+                                    " belum memiliki hasil otomatis lengkap. Tutor perlu memeriksa dan menetapkan nilai akhirnya."
+                                )
+                        if hasil_sementara.get("essay"):
+                            with st.expander("Rincian pemeriksaan kata kunci Essay", expanded=True):
+                                for detail in hasil_sementara["essay"]:
+                                    st.markdown(f"**Essay nomor {detail['nomor']} — {detail.get('nilai') if detail.get('nilai') is not None else 'Perlu pemeriksaan manual'}**")
+                                    if detail.get("ditemukan"):
+                                        st.success("Kata kunci ditemukan: " + ", ".join(detail["ditemukan"]))
+                                    if detail.get("belum_ditemukan"):
+                                        st.warning("Belum ditemukan: " + ", ".join(detail["belum_ditemukan"]))
+                                    if detail.get("nilai") is None:
+                                        st.info("Rubrik belum tersedia atau tidak valid. Tentukan nilai secara manual.")
+
+                        nilai_awal = int(round(hasil_sementara.get("nilai_sementara") or hasil_otomatis["skor_objektif"] or 0))
+                        with st.form(f"form_penilaian_jawaban_{item.get('ID_Jawaban')}"):
+                            st.caption("Periksa jawaban dan nilai sementara. Nilai baru diterbitkan setelah persetujuan tutor.")
                             nilai = st.number_input("Nilai akhir (0–100):", min_value=0, max_value=100, value=nilai_awal)
                             catatan = st.text_area("Catatan tutor:")
-                            simpan_nilai = st.form_submit_button("Simpan Penilaian")
+                            persetujuan = st.checkbox("Saya sudah memeriksa hasil dan menyetujui penerbitan nilai akhir.")
+                            simpan_nilai = st.form_submit_button("Setujui dan Terbitkan Nilai", disabled=not persetujuan)
                             if simpan_nilai:
                                 ws_nilai = get_or_create_worksheet(
                                     "DB_Nilai_Tugas",
@@ -3732,6 +4338,12 @@ elif peran == "🔒 Pengajar / Tutor":
                                     st.session_state.tutor_nama,
                                     waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
                                 ])
+                                # Catat persetujuan terpisah; DB_Nilai_Tugas hanya berisi nilai yang sudah diterbitkan.
+                                catat_persetujuan_nilai(
+                                    item.get("ID_Jawaban"), item.get("ID_Tugas"),
+                                    item.get("ID_Siswa"), hasil_sementara.get("nilai_sementara"),
+                                    nilai, st.session_state.tutor_nama, catatan
+                                )
                                 # Tandai seluruh baris soal pada penugasan/siswa sebagai sudah dinilai.
                                 all_rows = baca_records_aman(ws_jawaban)
                                 pembaruan = [
@@ -3742,7 +4354,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                 ]
                                 if pembaruan:
                                     ws_jawaban.batch_update(pembaruan, value_input_option="RAW")
-                                st.success("Penilaian tersimpan.")
+                                st.success("Nilai akhir disetujui dan diterbitkan. Nilai sementara tidak pernah ditampilkan kepada siswa.")
                                 st.rerun()
 
                     else:
