@@ -1346,6 +1346,61 @@ def pastikan_header_tugas(ws):
     return headers == TASK_HEADERS
 
 
+ACTIVE_TASK_HEADERS = ["ID_Siswa", "ID_Tugas", "Waktu_Mulai", "Status", "Waktu_Selesai"]
+
+
+def get_active_task_worksheet():
+    """Status sesi online di server agar kunci materi berlaku lintas tab/perangkat."""
+    try:
+        ws = get_worksheet("Status_Sesi_Tugas")
+    except gspread.WorksheetNotFound:
+        ws = init_spreadsheet().add_worksheet(
+            title="Status_Sesi_Tugas", rows="2000", cols=len(ACTIVE_TASK_HEADERS)
+        )
+        ws.append_row(ACTIVE_TASK_HEADERS)
+        _worksheet_header_cached.clear()
+    if [str(x).strip() for x in ws.row_values(1)] != ACTIVE_TASK_HEADERS:
+        raise ValueError("Header Status_Sesi_Tugas tidak sesuai.")
+    return ws
+
+
+def baca_sesi_aktif_siswa(siswa_id):
+    rows = baca_records_aman(get_active_task_worksheet())
+    sid = str(siswa_id or "").strip()
+    aktif = [r for r in rows if str(r.get("ID_Siswa", "")).strip() == sid
+             and str(r.get("Status", "")).strip().lower() == "aktif"]
+    return aktif[-1] if aktif else None
+
+
+def mulai_sesi_online(siswa_id, task_id):
+    """Mencatat sesi mulai di server. Satu siswa hanya boleh punya satu sesi aktif."""
+    ws = get_active_task_worksheet()
+    aktif = baca_sesi_aktif_siswa(siswa_id)
+    if aktif and str(aktif.get("ID_Tugas", "")).strip() != str(task_id).strip():
+        return False, "Selesaikan tugas online yang sedang aktif terlebih dahulu."
+    if aktif:
+        return True, "Sesi tugas ini sudah aktif."
+    ws.append_row([
+        str(siswa_id).strip(), str(task_id).strip(),
+        waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"), "Aktif", ""
+    ], value_input_option="RAW")
+    return True, "Sesi pengerjaan dimulai."
+
+
+def akhiri_sesi_online(siswa_id, task_id):
+    ws = get_active_task_worksheet()
+    rows = baca_records_aman(ws)
+    sid, tid = str(siswa_id).strip(), str(task_id).strip()
+    for row in reversed(rows):
+        if (str(row.get("ID_Siswa", "")).strip() == sid
+                and str(row.get("ID_Tugas", "")).strip() == tid
+                and str(row.get("Status", "")).strip().lower() == "aktif"):
+            ws.update_cell(int(row["_baris"]), 4, "Selesai")
+            ws.update_cell(int(row["_baris"]), 5, waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"))
+            return True
+    return False
+
+
 def get_student_tasks():
     """Membaca tugas dari sheet V2, dengan konversi aman untuk sheet lama."""
     try:
@@ -2042,10 +2097,31 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
         mode_pengerjaan = mode_tugas(t)
 
         if mode_pengerjaan == TASK_MODE_MATERI:
+            sesi_aktif_materi = baca_sesi_aktif_siswa(siswa_id)
+            if sesi_aktif_materi:
+                st.error("🔒 Materi terkunci selama tugas online sedang dikerjakan. Kumpulkan tugas aktif terlebih dahulu.")
+                return
             st.info("Ini materi bacaan dari Tutor, tidak ada yang perlu dikirim.")
         elif mode_pengerjaan == TASK_MODE_ONLINE and daftar_soal:
-            # Alarm fokus hanya aktif saat tugas digital terbuka dan belum dikirim.
-            if not terkunci and not adalah_materi(t):
+            sesi_aktif = baca_sesi_aktif_siswa(siswa_id)
+            sesi_ini_aktif = bool(sesi_aktif and str(sesi_aktif.get("ID_Tugas", "")).strip() == task_id)
+            sesi_lain_aktif = bool(sesi_aktif and not sesi_ini_aktif)
+            if terkunci:
+                st.info("Jawaban sudah dikirim, jadi tidak bisa diubah lagi.")
+            elif sesi_lain_aktif:
+                st.warning("Tugas ini terkunci karena kamu sedang mengerjakan tugas online lain. Kumpulkan tugas yang aktif terlebih dahulu.")
+                return
+            elif not sesi_ini_aktif:
+                st.info("Tekan Mulai Mengerjakan jika sudah siap. Setelah dimulai, menu Materi akan terkunci sampai jawaban dikumpulkan.")
+                if st.button("▶️ Mulai Mengerjakan", key=f"mulai_online_{task_id}", type="primary"):
+                    ok_mulai, pesan_mulai = mulai_sesi_online(siswa_id, task_id)
+                    if ok_mulai:
+                        st.success(pesan_mulai)
+                        st.rerun()
+                    else:
+                        st.error(pesan_mulai)
+                return
+            if not terkunci and sesi_ini_aktif:
                 tampilkan_nazma_focus_alert(task_id, siswa_id)
             st.markdown("#### 📝 Lembar Jawaban Online")
             file_jawaban = []
@@ -2198,6 +2274,7 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                             simpan_lampiran_jawaban(task_id, siswa_id, file_jawaban)
                         ok = simpan_pengiriman_jawaban(task_id, siswa_id, current_answers)
                         if ok:
+                            akhiri_sesi_online(siswa_id, task_id)
                             st.session_state.get("_draft_pending_by_task", {}).pop(task_id, None)
                             st.session_state.setdefault("_draft_status_by_task", {})[task_id] = "Terkirim"
                         st.success("Jawaban berhasil dikirim. Tutor akan memeriksanya." if ok
@@ -2427,9 +2504,10 @@ if peran == "🎓 Siswa":
         m3.metric("Draft jawaban", draft_count)
         m4.metric("Sudah dinilai", marked)
 
+        sesi_online_aktif_global = baca_sesi_aktif_siswa(siswa_id_aktif)
         menu_siswa = st.sidebar.radio(
             "MENU SISWA",
-            ["🏠 Beranda", "📚 Materi & Tugas", "📌 PR", "📝 Hasil Penilaian", "📈 Riwayat Belajar"],
+            ["🏠 Beranda", "📖 Materi", "📝 Tugas", "📌 PR", "📝 Hasil Penilaian", "📈 Riwayat Belajar"],
             label_visibility="visible",
             key="menu_navigasi_siswa"
         )
@@ -2455,15 +2533,24 @@ if peran == "🎓 Siswa":
                 st.info(f"📌 Ada {pr_belum} PR yang belum dikerjakan. Buka menu PR.")
             st.info("Pilih menu di sebelah kiri untuk membuka materi, mengerjakan tugas, melihat nilai, atau memeriksa riwayat belajar.")
 
-        elif menu_siswa == "📚 Materi & Tugas":
-            st.markdown(f"### 🎒 Tugas Belajar Ananda {nama_aktif}")
-            if st.session_state.get("_galat_simpan"):
-                st.warning("Jawaban terakhir belum tersimpan otomatis: " + str(st.session_state.pop("_galat_simpan")))
-            if not tugas_reguler:
-                st.info("Belum ada tugas atau materi dari Tutor.")
+        elif menu_siswa == "📖 Materi":
+            st.markdown("### 📖 Materi Pembelajaran")
+            if sesi_online_aktif_global:
+                st.error("🔒 Materi dikunci selama kamu mengerjakan tugas online. Kumpulkan tugas aktif untuk membuka materi kembali.")
             else:
-                for t in tugas_reguler:
+                daftar_materi = [t for t in tugas_reguler if adalah_materi(t)]
+                if not daftar_materi:
+                    st.info("Belum ada materi yang diberikan.")
+                for t in daftar_materi:
                     tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids)
+
+        elif menu_siswa == "📝 Tugas":
+            st.markdown("### 📝 Tugas Pembelajaran")
+            daftar_tugas_menu = [t for t in tugas_reguler if not adalah_materi(t)]
+            if not daftar_tugas_menu:
+                st.info("Belum ada tugas yang diberikan.")
+            for t in daftar_tugas_menu:
+                tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids)
 
         elif menu_siswa == "📌 PR":
             st.markdown(f"### 📌 PR Ananda {nama_aktif}")
@@ -3095,8 +3182,8 @@ elif peran == "🔒 Pengajar / Tutor":
                             "Isi dengan salah satu nilai persis: Materi saja, Tugas online, atau Tugas upload."
                         )
                         sumber_tugas = st.radio(
-                            "Ambil sumber materi / soal:",
-                            [SUMBER_DRIVE, SUMBER_UPLOAD],
+                            "Sumber materi / soal:",
+                            [SUMBER_BANK, SUMBER_DRIVE, SUMBER_UPLOAD],
                             key=f"sm_{k}"
                         )
                         instruksi_tugas = st.text_area("Instruksi untuk siswa:", key=f"in_{k}")
