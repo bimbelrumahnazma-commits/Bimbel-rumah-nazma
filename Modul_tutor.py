@@ -48,7 +48,7 @@ MAPEL_OPTIONS = [
 # KONFIGURASI HALAMAN
 # =========================================================
 st.set_page_config(
-    page_title="Portal Bimbel Rumah Nazma - Tahap 7.28",
+    page_title="Portal Bimbel Rumah Nazma - Tahap 7.29",
     layout="wide",
     page_icon="🎓",
     initial_sidebar_state="expanded"
@@ -1903,6 +1903,49 @@ def label_status(t, status_by_task, nilai_ids):
     return "belum", ("⚠️ Terlambat" if terlambat else "🆕 Belum dikerjakan")
 
 
+
+def tampilkan_nazma_focus_alert(task_id, siswa_id):
+    task_safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(task_id or "tugas"))
+    siswa_safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(siswa_id or "siswa"))
+    storage_key = f"nazma_focus_{siswa_safe}_{task_safe}"
+    html = r'''<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:transparent;color:#172033}
+#alert{display:none;border:3px solid #991b1b;border-radius:14px;background:linear-gradient(135deg,#fff1f2,#fee2e2);padding:14px;box-shadow:0 5px 18px rgba(127,29,29,.18);animation:pop .28s ease-out}
+#alert.show{display:block}.top{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.tag{font-size:11px;font-weight:800;letter-spacing:.08em;color:#fff;background:#b91c1c;border-radius:20px;padding:5px 9px}
+h2{font-size:22px;line-height:1.1;margin:10px 0 6px;color:#991b1b;text-align:center}
+p{font-size:14px;line-height:1.4;margin:5px 0;text-align:center}
+#count{font-size:27px;font-weight:900;text-align:center;color:#991b1b;margin:8px}
+button{display:block;width:100%;border:0;border-radius:10px;padding:12px;background:#991b1b;color:white;font-size:14px;font-weight:800;cursor:pointer}
+.small{font-size:11px;color:#6b3340}@keyframes pop{from{transform:scale(.96);opacity:.5}to{transform:scale(1);opacity:1}}
+@media(prefers-reduced-motion:reduce){#alert{animation:none}}
+</style></head><body>
+<div id="alert" role="alert" aria-live="assertive">
+<div class="top"><span class="tag">🚨 NAZMA FOCUS ALERT</span><strong>PERHATIAN!</strong></div>
+<h2>🚨 KAMU KELUAR DARI MISI! 🚨</h2><p id="message">Halaman pengerjaan tadi ditinggalkan.</p>
+<div id="count">1 KALI</div><p>Yuk, kembali fokus dan lanjutkan tugasmu.</p>
+<button id="back" type="button">🫡 SAYA KEMBALI KE UJIAN!</button>
+<p class="small">Keluar halaman bukan otomatis berarti menyontek.</p></div>
+<script>
+(function(){
+ const KEY=__STORAGE_KEY__,box=document.getElementById('alert'),countEl=document.getElementById('count'),message=document.getElementById('message');
+ let count=0,hiddenAt=0,pending=false;
+ try{count=Math.max(0,parseInt(localStorage.getItem(KEY)||'0',10)||0)}catch(e){}
+ function save(){try{localStorage.setItem(KEY,String(count))}catch(e){}}
+ function alarm(){count++;save();countEl.textContent=count+' KALI';
+  message.textContent=count===1?'HALO! Fokus kembali ke soal, ya!':count===2?'PERHATIAN! Kamu sudah dua kali meninggalkan halaman tugas!':'ALARM AKTIVITAS! Tutor dapat memeriksa catatan fokus ini.';
+  box.classList.add('show');pending=false;}
+ document.addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='hidden'){hiddenAt=Date.now();pending=true}
+  else if(document.visibilityState==='visible'&&pending&&hiddenAt){const elapsed=(Date.now()-hiddenAt)/1000;hiddenAt=0;if(elapsed>=2)alarm();else pending=false;}
+ });
+ document.getElementById('back').addEventListener('click',function(){box.classList.remove('show')});
+})();
+</script></body></html>'''.replace("__STORAGE_KEY__", json.dumps(storage_key))
+    components.html(html, height=245, scrolling=False)
+
 def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
     """Satu kartu tugas/PR untuk siswa. Setiap tugas menyimpan jawabannya sendiri
     (tidak saling menimpa), dan terkunci setelah dikirim."""
@@ -1935,6 +1978,9 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
             daftar_soal = []
 
         if daftar_soal:
+            # Alarm fokus hanya aktif saat tugas digital terbuka dan belum dikirim.
+            if not terkunci and not adalah_materi(t):
+                tampilkan_nazma_focus_alert(task_id, siswa_id)
             st.markdown("#### 📝 Lembar Jawaban Online")
             file_jawaban = []
             if not terkunci:
