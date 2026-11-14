@@ -3187,10 +3187,13 @@ elif peran == "🔒 Pengajar / Tutor":
                             mode_pengerjaan = st.radio(
                                 "Cara siswa mengerjakan:",
                                 [TASK_MODE_ONLINE, TASK_MODE_UPLOAD],
+                                index=None,
                                 format_func=lambda x: "Lembar jawaban online" if x == TASK_MODE_ONLINE else "Upload hasil tulisan tangan",
                                 horizontal=True,
                                 key=f"mode_{k}"
                             )
+                            if mode_pengerjaan is None:
+                                st.info("Pilih cara siswa mengerjakan terlebih dahulu. Pengaturan lembar jawaban akan muncul setelah memilih lembar jawaban online.")
                         instruksi_tugas = st.text_area("Instruksi untuk siswa:", key=f"in_{k}")
                         timer_tugas = st.selectbox(
                             "Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=0 if untuk_pr else 2,
@@ -3247,47 +3250,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                     except Exception as e:
                                         st.warning(f"Soal {kode} dilewati: {e}")
 
-                                if soal_dipilih and mode_pengerjaan == TASK_MODE_ONLINE:
-                                    st.markdown("#### ⚙️ Pengaturan lembar jawaban")
-                                    st.caption("Teks soal tetap mengambil dari Bank Soal. Di tabel ini tutor dapat mengatur tipe jawaban, opsi, kunci, dan bobot.")
-                                    tipe_diizinkan = [
-                                        "Pilihan ganda", "Pilihan ganda kompleks", "Benar-Salah",
-                                        "PGK Kategori", "PGK MCMA", "Essay", "Menjodohkan"
-                                    ]
-                                    tabel_cfg = []
-                                    for nomor, qitem in enumerate(soal_dipilih, 1):
-                                        tabel_cfg.append({
-                                            "Nomor": nomor,
-                                            "Tipe Jawaban": qitem.get("Bentuk_Soal", "Pilihan ganda"),
-                                            "Opsi (pisahkan dengan |)": " | ".join(qitem.get("Opsi_List", [])),
-                                            "Kunci Jawaban": qitem.get("Kunci", ""),
-                                            "Bobot": float(qitem.get("Bobot", 1) or 1)
-                                        })
-                                    df_cfg = pd.DataFrame(tabel_cfg)
-                                    edited_cfg = st.data_editor(
-                                        df_cfg,
-                                        use_container_width=True,
-                                        hide_index=True,
-                                        disabled=["Nomor"],
-                                        key=f"konfigurasi_soal_{k}",
-                                        column_config={
-                                            "Tipe Jawaban": st.column_config.SelectboxColumn(
-                                                "Tipe Jawaban", options=tipe_diizinkan, required=True
-                                            ),
-                                            "Bobot": st.column_config.NumberColumn(
-                                                "Bobot", min_value=0.1, max_value=100.0, step=0.5
-                                            )
-                                        }
-                                    )
-                                    for idx, row_cfg in edited_cfg.iterrows():
-                                        if idx >= len(soal_dipilih):
-                                            continue
-                                        opsi_cfg = [x.strip() for x in str(row_cfg.get("Opsi (pisahkan dengan |)", "")).split("|") if x.strip()]
-                                        tipe_cfg = str(row_cfg.get("Tipe Jawaban", "")).strip()
-                                        soal_dipilih[idx]["Bentuk_Soal"] = tipe_cfg
-                                        soal_dipilih[idx]["Opsi_List"] = opsi_cfg
-                                        soal_dipilih[idx]["Kunci"] = str(row_cfg.get("Kunci Jawaban", "")).strip()
-                                        soal_dipilih[idx]["Bobot"] = float(row_cfg.get("Bobot", 1) or 1)
+                                if soal_dipilih:
+                                    st.caption("Soal, tipe, opsi, dan kunci diambil langsung dari Bank Soal Master. Tidak perlu konfigurasi ulang.")
 
                         elif sumber_tugas == SUMBER_DRIVE:
                             link_tugas = st.text_area("Link Google Drive / Flipbook (satu link per baris):",
@@ -3302,7 +3266,7 @@ elif peran == "🔒 Pengajar / Tutor":
 
                         # Untuk PDF/Drive, isi soal dibaca dari lampiran. Tutor membentuk
                         # lembar jawaban di aplikasi tanpa perlu membuka Spreadsheet.
-                        if sumber_tugas != SUMBER_BANK:
+                        if sumber_tugas != SUMBER_BANK and mode_pengerjaan == TASK_MODE_ONLINE:
                             st.markdown("#### ⚙️ Buat lembar jawaban dari lampiran")
                             st.caption(
                                 "Siswa membaca soal dari PDF atau tautan yang dilampirkan. "
@@ -3386,6 +3350,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.error("Judul / topik tugas wajib diisi.")
                             elif untuk_pr and tenggat_tugas < waktu_lokal().date():
                                 st.error("Tenggat PR tidak boleh sebelum hari ini.")
+                            elif sumber_tugas != SUMBER_BANK and mode_pengerjaan is None:
+                                st.error("Pilih cara siswa mengerjakan: lembar jawaban online atau upload hasil tulisan tangan.")
                             elif sumber_tugas == SUMBER_DRIVE and not link_list:
                                 st.error("Masukkan minimal satu link Drive / Flipbook.")
                             elif sumber_tugas == SUMBER_DRIVE and any(not l.lower().startswith(("http://", "https://")) for l in link_list):
