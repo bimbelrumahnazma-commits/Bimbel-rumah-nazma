@@ -3173,15 +3173,6 @@ elif peran == "🔒 Pengajar / Tutor":
                         untuk_pr = kategori_label == KATEGORI_PR
                         mapel_tugas = st.selectbox("Mata pelajaran:", MAPEL_OPTIONS, key=f"mp_{k}")
                         judul_tugas = st.text_input("Judul / topik tugas:", key=f"jd_{k}")
-                        # Mode dipilih di aplikasi; tidak perlu mengubah Spreadsheet secara manual.
-                        jenis_tugas = "Online"  # nilai kompatibilitas untuk kategori tugas lama
-                        mode_widget_key = f"mode_{k}"
-                        init_mode_key = f"_mode_widget_initialized_{k}"
-                        # Bersihkan nilai widget yang mungkin tertinggal dari sesi/kode sebelumnya.
-                        # Dilakukan satu kali sebelum widget dibuat, bukan pada setiap rerun.
-                        if init_mode_key not in st.session_state:
-                            st.session_state.pop(mode_widget_key, None)
-                            st.session_state[init_mode_key] = True
                         sumber_tugas = st.radio(
                             "Sumber materi / soal:",
                             [SUMBER_BANK, SUMBER_DRIVE, SUMBER_UPLOAD],
@@ -3189,30 +3180,10 @@ elif peran == "🔒 Pengajar / Tutor":
                             on_change=reset_mode_pengerjaan_widget,
                             args=(k,)
                         )
-                        if sumber_tugas == SUMBER_BANK:
-                            mode_pengerjaan = TASK_MODE_ONLINE
-                            st.caption("Bank Soal: lembar jawaban online dibuat otomatis dari tipe, opsi, dan kunci di Master Bank Soal.")
-                        else:
-                            mode_pengerjaan = st.radio(
-                                "Cara siswa mengerjakan:",
-                                [TASK_MODE_ONLINE, TASK_MODE_UPLOAD],
-                                index=None,
-                                format_func=lambda x: "Lembar jawaban online" if x == TASK_MODE_ONLINE else "Upload hasil tulisan tangan",
-                                horizontal=True,
-                                key=f"mode_{k}"
-                            )
-                            if mode_pengerjaan is None:
-                                st.info("Pilih cara siswa mengerjakan terlebih dahulu. Pengaturan lembar jawaban akan muncul setelah memilih lembar jawaban online.")
-                        instruksi_tugas = st.text_area("Instruksi untuk siswa:", key=f"in_{k}")
-                        timer_tugas = st.selectbox(
-                            "Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=0 if untuk_pr else 2,
-                            format_func=lambda x: "Tanpa timer" if x == 0 else f"{x} menit", key=f"tm_{k}_{'pr' if untuk_pr else 'sesi'}"
-                        )
-                        tenggat_tugas = st.date_input(
-                            "Tenggat PR:" if untuk_pr else "Tanggal tenggat:",
-                            value=waktu_lokal().date() + (timedelta(days=3) if untuk_pr else timedelta(days=0)),
-                            key=f"tg_{k}_{'pr' if untuk_pr else 'sesi'}"
-                        )
+                        # Sumber soal harus dipilih dan tersedia sebelum tutor menentukan cara pengerjaan.
+                        jenis_tugas = "Online"  # nilai kompatibilitas untuk kategori tugas lama
+                        mode_widget_key = f"mode_{k}"
+                        source_identity_key = f"_source_identity_{k}"
 
                         link_tugas = ""
                         file_tugas = []
@@ -3262,20 +3233,79 @@ elif peran == "🔒 Pengajar / Tutor":
                                 if soal_dipilih:
                                     st.caption("Soal, tipe, opsi, dan kunci diambil langsung dari Bank Soal Master. Tidak perlu konfigurasi ulang.")
 
+                            source_ready = bool(soal_dipilih)
+                            mode_pengerjaan = TASK_MODE_ONLINE
+                            source_identity = "bank:" + "|".join(
+                                str(q.get("ID_Soal", "")) for q in soal_dipilih
+                            )
+                            if source_ready:
+                                st.caption("Lembar jawaban online akan dibuat otomatis dari soal yang dipilih.")
+
                         elif sumber_tugas == SUMBER_DRIVE:
-                            link_tugas = st.text_area("Link Google Drive / Flipbook (satu link per baris):",
-                                                      placeholder="https://...", key=f"lk_{k}")
+                            link_tugas = st.text_area(
+                                "Masukkan link Google Drive / Flipbook (satu link per baris):",
+                                placeholder="https://...",
+                                key=f"lk_{k}"
+                            )
+                            link_list_sumber = [x.strip() for x in link_tugas.splitlines() if x.strip()]
+                            link_valid = bool(link_list_sumber) and all(
+                                x.lower().startswith(("http://", "https://")) for x in link_list_sumber
+                            )
+                            source_ready = link_valid
+                            source_identity = "drive:" + "|".join(link_list_sumber)
+                            if link_list_sumber and not link_valid:
+                                st.warning("Periksa tautan. Setiap link harus diawali http:// atau https://.")
+
                         else:
                             file_tugas = st.file_uploader(
-                                "Pilih materi/soal dari perangkat (PDF, dokumen, gambar, audio, video):",
+                                "Unggah file soal/materi dari perangkat (PDF, dokumen, gambar, audio, video):",
                                 type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg", "webp",
                                       "mp4", "mov", "webm", "m4v", "mp3", "wav", "m4a", "ogg", "aac"],
-                                accept_multiple_files=True, key=f"up_{k}"
+                                accept_multiple_files=True,
+                                key=f"up_{k}"
                             )
+                            daftar_file_sumber = list(file_tugas or [])
+                            source_ready = bool(daftar_file_sumber)
+                            identitas_file = [
+                                hashlib.sha256(f.getvalue()).hexdigest()
+                                for f in daftar_file_sumber
+                            ]
+                            source_identity = "upload:" + "|".join(identitas_file)
+
+                        # Jika sumber diganti, dihapus, atau isinya berubah, pilihan mode dan konfigurasi lama
+                        # direset agar tidak tertaut ke lampiran yang berbeda.
+                        identity_lama = st.session_state.get(source_identity_key)
+                        if identity_lama != source_identity:
+                            st.session_state.pop(mode_widget_key, None)
+                            st.session_state.pop(f"jumlah_manual_{k}", None)
+                            st.session_state.pop(f"konfigurasi_manual_{k}", None)
+                            st.session_state[source_identity_key] = source_identity
+
+                        # Pilihan cara pengerjaan baru ditampilkan setelah sumber soal tersedia.
+                        if sumber_tugas != SUMBER_BANK:
+                            if source_ready:
+                                st.markdown("#### Cara siswa mengerjakan:")
+                                mode_pengerjaan = st.radio(
+                                    "Pilih cara pengerjaan:",
+                                    [TASK_MODE_ONLINE, TASK_MODE_UPLOAD],
+                                    index=None,
+                                    format_func=lambda x: (
+                                        "Terbitkan lembar jawaban online"
+                                        if x == TASK_MODE_ONLINE
+                                        else "Upload hasil tulisan tangan"
+                                    ),
+                                    horizontal=True,
+                                    key=mode_widget_key
+                                )
+                            else:
+                                mode_pengerjaan = None
+                                st.info("Unggah file atau masukkan link soal terlebih dahulu. Pilihan cara pengerjaan akan muncul setelah sumber tersedia.")
+                        else:
+                            mode_pengerjaan = TASK_MODE_ONLINE
 
                         # Untuk PDF/Drive, isi soal dibaca dari lampiran. Tutor membentuk
                         # lembar jawaban di aplikasi tanpa perlu membuka Spreadsheet.
-                        if sumber_tugas != SUMBER_BANK and mode_pengerjaan == TASK_MODE_ONLINE:
+                        if sumber_tugas != SUMBER_BANK and source_ready and mode_pengerjaan == TASK_MODE_ONLINE:
                             st.markdown("#### ⚙️ Buat lembar jawaban dari lampiran")
                             st.caption(
                                 "Siswa membaca soal dari PDF atau tautan yang dilampirkan. "
@@ -3348,6 +3378,19 @@ elif peran == "🔒 Pengajar / Tutor":
                                     "Bobot": float(row_cfg.get("Bobot", 1) or 1)
                                 })
 
+                        # Detail penugasan dilengkapi setelah sumber dan cara pengerjaan ditentukan.
+                        instruksi_tugas = st.text_area("Instruksi untuk siswa:", key=f"in_{k}")
+                        timer_tugas = st.selectbox(
+                            "Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=0 if untuk_pr else 2,
+                            format_func=lambda x: "Tanpa timer" if x == 0 else f"{x} menit",
+                            key=f"tm_{k}_{'pr' if untuk_pr else 'sesi'}"
+                        )
+                        tenggat_tugas = st.date_input(
+                            "Tenggat PR:" if untuk_pr else "Tanggal tenggat:",
+                            value=waktu_lokal().date() + (timedelta(days=3) if untuk_pr else timedelta(days=0)),
+                            key=f"tg_{k}_{'pr' if untuk_pr else 'sesi'}"
+                        )
+
                         tambah_draft = st.button("Tambahkan ke daftar tugas", key=f"tambah_{k}")
 
                         if tambah_draft:
@@ -3359,6 +3402,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.error("Judul / topik tugas wajib diisi.")
                             elif untuk_pr and tenggat_tugas < waktu_lokal().date():
                                 st.error("Tenggat PR tidak boleh sebelum hari ini.")
+                            elif sumber_tugas == SUMBER_BANK and not soal_dipilih:
+                                st.error("Pilih minimal satu soal dari Bank Soal Master.")
                             elif sumber_tugas != SUMBER_BANK and mode_pengerjaan is None:
                                 st.error("Pilih cara siswa mengerjakan: lembar jawaban online atau upload hasil tulisan tangan.")
                             elif sumber_tugas == SUMBER_DRIVE and not link_list:
