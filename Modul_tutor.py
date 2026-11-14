@@ -48,7 +48,7 @@ MAPEL_OPTIONS = [
 # KONFIGURASI HALAMAN
 # =========================================================
 st.set_page_config(
-    page_title="Portal Bimbel Rumah Nazma",
+    page_title="Portal Bimbel Rumah Nazma - Tahap 7.28",
     layout="wide",
     page_icon="🎓",
     initial_sidebar_state="expanded"
@@ -145,6 +145,24 @@ def init_spreadsheet():
     return gc.open_by_key("17JI1x966HfVG4YpfzCz_bssBwOmUTIJFbRutl0qyIZE")
 
 
+@st.cache_resource
+def _worksheet_cached(spreadsheet_id, worksheet_title):
+    """Cache handle worksheet agar pemanggilan sheet.worksheet tidak meminta metadata berulang."""
+    return init_spreadsheet().worksheet(worksheet_title)
+
+
+def get_worksheet(worksheet_title):
+    """Ambil handle worksheet dari cache proses."""
+    book = init_spreadsheet()
+    return _worksheet_cached(book.id, worksheet_title)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _worksheet_header_cached(spreadsheet_id, worksheet_title):
+    """Header jarang berubah; cache satu jam untuk mengurangi Read API."""
+    return _worksheet_cached(spreadsheet_id, worksheet_title).row_values(1)
+
+
 # Koneksi Google Sheets dibuat secara lazy (saat benar-benar dibutuhkan).
 # Dengan begitu, halaman login dapat dirender lebih dahulu tanpa menunggu Google.
 client = None
@@ -206,7 +224,7 @@ def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
     Header ditulis saat worksheet baru dibuat; worksheet lama dipertahankan apa adanya.
     """
     try:
-        return sheet.worksheet(title)
+        return get_worksheet(title)
     except gspread.WorksheetNotFound:
         ws = sheet.add_worksheet(title=title, rows=rows, cols=cols)
         ws.append_row(headers)
@@ -312,13 +330,12 @@ def upgrade_pin_lama(ws, record, field_name, pin_input):
 
 
 def simpan_pin_baru(ws, record_aktif, field_name, pin_baru, identity_field=None, identity_value=None):
-    headers = [str(x).strip() for x in ws.row_values(1)]
+    """Simpan PIN hash pada satu baris akun yang tervalidasi."""
+    headers = [str(x).strip() for x in _worksheet_header_cached(init_spreadsheet().id, ws.title)]
     if field_name not in headers:
         raise ValueError(f"Kolom {field_name} tidak ditemukan pada {ws.title}.")
     pin_hash_baru = hash_pin(pin_baru)
 
-    # Khusus PIN Owner: jadikan satu baris PIN_OWNER sebagai sumber utama
-    # dan bersihkan baris duplikat setelah nilai baru berhasil ditulis.
     if ws.title == "Pengaturan_Aplikasi" and "Kunci" in headers:
         rows = ws.get_all_values()
         key_idx = headers.index("Kunci")
@@ -333,40 +350,24 @@ def simpan_pin_baru(ws, record_aktif, field_name, pin_baru, identity_field=None,
         ws.update_cell(canonical_row, value_idx + 1, pin_hash_baru)
         for row_number in sorted(pin_rows[1:], reverse=True):
             ws.delete_rows(row_number)
+        nilai_tersimpan = ws.cell(canonical_row, value_idx + 1).value
+        cocok_tersimpan, _ = verifikasi_pin(pin_baru, nilai_tersimpan)
+        if not cocok_tersimpan:
+            raise RuntimeError("Penulisan PIN Owner belum berhasil diverifikasi.")
     else:
-        # Untuk reset Tutor/Orang Tua, cari baris akun langsung dari identitas unik
-        # (Username) agar tidak menulis ke nomor baris cache yang mungkin sudah usang.
-        nomor_baris = None
+        nomor_baris = int(record_aktif.get("_baris", 0) or 0)
+        if nomor_baris < 2:
+            raise ValueError("Baris akun tidak valid. Muat ulang halaman lalu coba lagi.")
         if identity_field and identity_value:
-            semua_baris = ws.get_all_values()
-            if not semua_baris:
-                raise ValueError("Worksheet akun kosong.")
-            header_aktual = [str(x).strip() for x in semua_baris[0]]
-            if identity_field not in header_aktual:
+            if identity_field not in headers:
                 raise ValueError(f"Kolom identitas {identity_field} tidak ditemukan.")
-            if field_name not in header_aktual:
-                raise ValueError(f"Kolom {field_name} tidak ditemukan.")
-            idx_identitas = header_aktual.index(identity_field)
-            idx_pin = header_aktual.index(field_name)
-            baris_cocok = []
-            for nomor, row in enumerate(semua_baris[1:], start=2):
-                nilai = row[idx_identitas] if idx_identitas < len(row) else ""
-                if str(nilai).strip().casefold() == str(identity_value).strip().casefold():
-                    baris_cocok.append(nomor)
-            if len(baris_cocok) == 0:
-                raise ValueError(f"Akun dengan {identity_field} tersebut tidak ditemukan.")
-            if len(baris_cocok) > 1:
-                raise ValueError(f"Ditemukan lebih dari satu akun dengan {identity_field} yang sama. Perlu periksa data akun terlebih dahulu.")
-            nomor_baris = baris_cocok[0]
-        else:
-            if not record_aktif or not record_aktif.get("_baris"):
-                raise ValueError("Baris akun tidak valid. Muat ulang halaman lalu coba lagi.")
-            nomor_baris = int(record_aktif["_baris"])
+            row_values = ws.row_values(nomor_baris)
+            idx_identitas = headers.index(identity_field)
+            nilai_identitas = row_values[idx_identitas] if idx_identitas < len(row_values) else ""
+            if str(nilai_identitas).strip().casefold() != str(identity_value).strip().casefold():
+                raise ValueError("Identitas akun berubah. Muat ulang daftar akun sebelum reset PIN.")
 
         ws.update_cell(nomor_baris, headers.index(field_name) + 1, pin_hash_baru)
-
-        # Jangan tampilkan sukses sebelum nilai di baris target terbaca kembali
-        # dan terbukti cocok dengan PIN baru yang dimasukkan.
         nilai_tersimpan = ws.cell(nomor_baris, headers.index(field_name) + 1).value
         cocok_tersimpan, _ = verifikasi_pin(pin_baru, nilai_tersimpan)
         if not cocok_tersimpan:
@@ -428,7 +429,7 @@ def ambil_pin_terkini(ws, record, field_name):
 
 
 def form_ganti_pin(ws, record, field_name, key_prefix, identity_field=None, identity_value=None):
-    """Form ganti PIN; verifikasi memakai nilai terbaru langsung dari sheet, bukan cache."""
+    """Form ganti PIN; validasi identitas dilakukan pada baris target, tanpa membaca seluruh sheet."""
     with st.container(border=True):
         st.markdown("#### 🔐 Keamanan Akun — Ganti PIN")
         st.caption("Username dan identitas akun tidak berubah. Hanya PIN yang diperbarui.")
@@ -439,32 +440,21 @@ def form_ganti_pin(ws, record, field_name, key_prefix, identity_field=None, iden
             submit = st.form_submit_button("Simpan PIN Baru")
         if submit:
             try:
-                # Untuk akun siswa, cari ulang berdasarkan ID_User unik saat tombol ditekan.
-                # Jangan mengandalkan nomor baris yang disimpan ketika login.
                 record_aktif = dict(record)
+                nomor_baris = int(record_aktif.get("_baris", 0) or 0)
+                if nomor_baris < 2:
+                    raise ValueError("Baris akun tidak valid. Silakan logout lalu login kembali.")
+
+                headers = [str(x).strip() for x in _worksheet_header_cached(init_spreadsheet().id, ws.title)]
+                row_values = ws.row_values(nomor_baris)
                 if identity_field and identity_value:
-                    semua_baris = ws.get_all_values()
-                    if not semua_baris:
-                        raise ValueError("Data Akun_Pengguna kosong.")
-                    header_aktual = [str(x).strip() for x in semua_baris[0]]
-                    if identity_field not in header_aktual:
-                        raise ValueError(f"Kolom identitas {identity_field} tidak ditemukan.")
-                    idx_identitas = header_aktual.index(identity_field)
-                    idx_pin = header_aktual.index(field_name) if field_name in header_aktual else -1
-                    if idx_pin < 0:
-                        raise ValueError(f"Kolom {field_name} tidak ditemukan.")
-                    baris_cocok = None
-                    for nomor, row in enumerate(semua_baris[1:], start=2):
-                        nilai_identitas = row[idx_identitas] if idx_identitas < len(row) else ""
-                        if str(nilai_identitas).strip() == str(identity_value).strip():
-                            baris_cocok = nomor
-                            pin_tersimpan = row[idx_pin] if idx_pin < len(row) else ""
-                            break
-                    if baris_cocok is None:
-                        raise ValueError("Akun tidak ditemukan berdasarkan ID_User. Silakan logout dan login kembali.")
-                    record_aktif["_baris"] = baris_cocok
-                else:
-                    pin_tersimpan = ambil_pin_terkini(ws, record_aktif, field_name)
+                    idx_identity = headers.index(identity_field)
+                    actual_identity = row_values[idx_identity] if idx_identity < len(row_values) else ""
+                    if str(actual_identity).strip().casefold() != str(identity_value).strip().casefold():
+                        raise ValueError("Identitas akun tidak cocok dengan sesi login. Silakan logout dan login kembali.")
+                idx_pin = headers.index(field_name)
+                pin_tersimpan = row_values[idx_pin] if idx_pin < len(row_values) else ""
+
                 cocok, _ = verifikasi_pin(pin_lama, pin_tersimpan)
                 if not cocok:
                     st.error("PIN saat ini tidak sesuai. Jika PIN baru saja di-reset Owner, logout lalu login kembali dengan PIN hasil reset.")
@@ -475,11 +465,15 @@ def form_ganti_pin(ws, record, field_name, key_prefix, identity_field=None, iden
                 elif hmac.compare_digest(pin_lama.strip(), pin_baru.strip()):
                     st.error("PIN baru harus berbeda dari PIN saat ini.")
                 else:
-                    simpan_pin_baru(ws, record_aktif, field_name, pin_baru)
+                    simpan_pin_baru(
+                        ws, record_aktif, field_name, pin_baru,
+                        identity_field=identity_field, identity_value=identity_value
+                    )
                     st.success("PIN berhasil diperbarui dan disimpan dalam bentuk HASH.")
                     st.rerun()
             except Exception as exc:
                 st.error(f"PIN belum berhasil diperbarui: {exc}")
+
 
 def header_cocok(actual, expected):
     """Bandingkan header sheet dengan struktur yang diharapkan (abaikan kolom kosong di ujung kanan)."""
@@ -490,7 +484,7 @@ def header_cocok(actual, expected):
 
 
 def get_siswa_aktif():
-    rows = baca_records_aman(sheet.worksheet("Data_Siswa"))
+    rows = baca_records_aman(get_worksheet("Data_Siswa"))
     return [
         str(s.get("Nama_Lengkap", "")).strip()
         for s in rows
@@ -500,7 +494,7 @@ def get_siswa_aktif():
 
 
 def get_siswa_id_by_nama(nama):
-    for s in baca_records_aman(sheet.worksheet("Data_Siswa")):
+    for s in baca_records_aman(get_worksheet("Data_Siswa")):
         if str(s.get("Nama_Lengkap", "")).strip().lower() == str(nama).strip().lower():
             return str(s.get("ID_Siswa", "")).strip()
     return ""
@@ -513,7 +507,7 @@ def adalah_akun_ortu(akun):
 
 def get_bank_soal():
     """Bank soal tunggal dengan 15 header baru."""
-    ws = sheet.worksheet("Bank_Soal_Master")
+    ws = get_worksheet("Bank_Soal_Master")
     wajib = {"Kode_Soal", "Jenjang", "Kelas", "Mapel", "Bab_Atau_Topik", "Bentuk_Soal", "Teks_Soal", "Opsi_Jawaban", "Kunci_Jawaban", "Status"}
     kurang = sorted(wajib - set(ws.row_values(1)))
     if kurang:
@@ -1207,7 +1201,7 @@ def resolve_tutor_id(user_row):
     user_id = str(user_row.get("ID_User", "")).strip()
     nama_user = str(user_row.get("Nama_Pengguna", "")).strip()
     try:
-        tutor_rows = baca_records_aman(sheet.worksheet("Data_Tutor"))
+        tutor_rows = baca_records_aman(get_worksheet("Data_Tutor"))
     except Exception:
         return ""
     matches = []
@@ -1227,7 +1221,7 @@ def siswa_tutor_terhubung(tutor_id):
     if not tutor_id:
         return set()
     try:
-        relasi = baca_records_aman(sheet.worksheet("Relasi_Tutor_Siswa"))
+        relasi = baca_records_aman(get_worksheet("Relasi_Tutor_Siswa"))
     except Exception:
         return set()
     ids = set()
@@ -1339,12 +1333,12 @@ ANSWER_HEADERS = ["ID_Jawaban", "ID_Penugasan", "ID_Siswa", "Nomor_Soal", "Jawab
 def get_student_tasks():
     """Membaca tugas dari sheet V2, dengan konversi aman untuk sheet lama."""
     try:
-        ws = sheet.worksheet("Tugas_Sesi_Siswa_v2")
+        ws = get_worksheet("Tugas_Sesi_Siswa_v2")
         records = baca_records_aman(ws)
         return records
     except gspread.WorksheetNotFound:
         try:
-            ws = sheet.worksheet("Tugas_Sesi_Siswa")
+            ws = get_worksheet("Tugas_Sesi_Siswa")
             old = baca_records_aman(ws)
         except gspread.WorksheetNotFound:
             return []
@@ -1357,11 +1351,12 @@ def get_student_tasks():
 
 def get_answers_worksheet():
     try:
-        ws = sheet.worksheet("DB_Jawaban_Siswa")
+        ws = get_worksheet("DB_Jawaban_Siswa")
     except gspread.WorksheetNotFound:
         ws = sheet.add_worksheet(title="DB_Jawaban_Siswa", rows="3000", cols="8")
         ws.append_row(ANSWER_HEADERS)
-    headers = ws.row_values(1)
+        _worksheet_header_cached.clear()
+    headers = _worksheet_header_cached(init_spreadsheet().id, "DB_Jawaban_Siswa")
     if not header_cocok(headers, ANSWER_HEADERS):
         raise ValueError("Header DB_Jawaban_Siswa tidak sesuai. Struktur yang dibutuhkan: " + ", ".join(ANSWER_HEADERS))
     return ws
@@ -1433,7 +1428,7 @@ def get_pesan_ortu_worksheet():
     """
     nama_sheet = "Pesan_Orangtua_Tutor"
     try:
-        ws = sheet.worksheet(nama_sheet)
+        ws = get_worksheet(nama_sheet)
     except gspread.WorksheetNotFound:
         try:
             ws = sheet.add_worksheet(title=nama_sheet, rows="3000", cols="13")
@@ -1532,7 +1527,7 @@ def baca_jawaban_tergabung(ws):
         item["Waktu_Kirim"] = r.get("Waktu_Dikumpulkan", "") or item["Waktu_Kirim"]
     result = []
     try:
-        siswa_rows = baca_records_aman(sheet.worksheet("Data_Siswa"))
+        siswa_rows = baca_records_aman(get_worksheet("Data_Siswa"))
         names = {str(x.get("ID_Siswa", "")).strip(): x.get("Nama_Lengkap", "") for x in siswa_rows}
     except Exception:
         names = {}
@@ -1543,39 +1538,177 @@ def baca_jawaban_tergabung(ws):
     return result
 
 
+
+def _panggil_sheets_dengan_retry_429(func, *args, **kwargs):
+    """Ulangi hanya respons kuota 429 dengan jeda bertahap; jangan ulangi error jaringan ambigu."""
+    jeda = (1, 2, 4)
+    for percobaan in range(len(jeda) + 1):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            pesan = str(exc).lower()
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            is_429 = status == 429 or "429" in pesan or "quota exceeded" in pesan or "resource_exhausted" in pesan
+            if not is_429 or percobaan >= len(jeda):
+                raise
+            time.sleep(jeda[percobaan])
+
+
+def _tampung_jawaban_draft(task_id, student_id, answers):
+    """Callback widget hanya menampung perubahan; tidak memanggil Google Sheets."""
+    task_id = str(task_id)
+    student_id = str(student_id)
+    pending_all = st.session_state.setdefault("_draft_pending_by_task", {})
+    pending = pending_all.setdefault(task_id, {})
+    for nomor, nilai in (answers or {}).items():
+        pending[str(nomor)] = nilai
+    st.session_state.setdefault("_draft_student_by_task", {})[task_id] = student_id
+    st.session_state.setdefault("_draft_status_by_task", {})[task_id] = "Menunggu penyimpanan"
+    st.session_state.setdefault("_draft_changed_at_by_task", {})[task_id] = time.time()
+    st.session_state.pop("_galat_simpan", None)
+
+
+def _flush_draft_task(task_id, student_id, paksa=False):
+    """Kirim seluruh jawaban tertunda dalam satu operasi batch per jenis perubahan."""
+    task_id = str(task_id)
+    student_id = str(student_id)
+    pending_all = st.session_state.setdefault("_draft_pending_by_task", {})
+    pending = pending_all.get(task_id, {})
+    if not pending:
+        return True, "Tidak ada perubahan yang menunggu."
+
+    # Snapshot agar perubahan baru yang masuk tidak terhapus setelah proses simpan.
+    snapshot = dict(pending)
+    try:
+        ok = simpan_jawaban_per_soal(task_id, student_id, snapshot, submitted=False)
+        if not ok:
+            return False, "Tugas sudah terkunci atau tidak dapat diperbarui."
+        pending_now = pending_all.get(task_id, {})
+        for nomor, nilai in snapshot.items():
+            if nomor in pending_now and pending_now[nomor] == nilai:
+                pending_now.pop(nomor, None)
+        if not pending_now:
+            pending_all.pop(task_id, None)
+        st.session_state.setdefault("_draft_status_by_task", {})[task_id] = "Tersimpan"
+        st.session_state.setdefault("_draft_saved_at_by_task", {})[task_id] = time.time()
+        st.session_state.pop("_galat_simpan", None)
+        return True, "Draft berhasil disimpan."
+    except Exception as exc:
+        st.session_state.setdefault("_draft_status_by_task", {})[task_id] = "Gagal menyimpan"
+        st.session_state["_galat_simpan"] = str(exc)
+        return False, str(exc)
+
+
+if hasattr(st, "fragment"):
+    @st.fragment(run_every="25s")
+    def _autosave_semua_draft_fragment(student_id):
+        """Satu pemantau autosave untuk seluruh tugas, tetap aktif saat siswa berpindah menu."""
+        pending_all = st.session_state.get("_draft_pending_by_task", {})
+        student_map = st.session_state.get("_draft_student_by_task", {})
+        changed_map = st.session_state.get("_draft_changed_at_by_task", {})
+        for task_key, pending in list(pending_all.items()):
+            if not pending:
+                continue
+            owner_id = str(student_map.get(task_key, student_id))
+            if owner_id != str(student_id):
+                continue
+            changed_at = changed_map.get(task_key, 0)
+            if changed_at and (time.time() - float(changed_at) >= 25):
+                _flush_draft_task(task_key, student_id)
+        pending_count = sum(len(v) for v in st.session_state.get("_draft_pending_by_task", {}).values())
+        if pending_count:
+            st.caption(f"⏳ {pending_count} perubahan jawaban menunggu penyimpanan batch.")
+else:
+    def _autosave_semua_draft_fragment(student_id):
+        st.caption("Autosave berkala tidak tersedia pada versi Streamlit ini. Simpan draft secara manual sebelum berpindah menu.")
+
+
 def simpan_jawaban_per_soal(task_id, student_id, answers, submitted=False):
-    """Simpan jawaban per soal secara batch. Draft TIDAK menimpa jawaban yang sudah dikirim/dinilai."""
+    """Simpan jawaban dengan indeks baris sesi; satu pembacaan awal, lalu update langsung."""
     ws = get_answers_worksheet()
-    rows = baca_records_aman(ws)
-    now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
-    status = "Dikirim - Menunggu Penilaian" if submitted else "Draft"
-    existing = {}
-    sudah_terkunci = False
-    for row in rows:
-        if str(row.get("ID_Penugasan", "")) == str(task_id) and str(row.get("ID_Siswa", "")) == str(student_id):
-            existing[str(row.get("Nomor_Soal", ""))] = row["_baris"]
-            st_low = str(row.get("Status_Jawaban", "")).lower()
-            if "dikirim" in st_low or "menunggu" in st_low or "dinilai" in st_low:
-                sudah_terkunci = True
-    if sudah_terkunci:
+    cache_key = "_indeks_baris_jawaban_siswa"
+    locked_key = "_tugas_jawaban_terkunci"
+    if cache_key not in st.session_state:
+        rows = baca_records_aman(ws)
+        index = {}
+        locked = set()
+        for row in rows:
+            key = (
+                str(row.get("ID_Penugasan", "")).strip(),
+                str(row.get("ID_Siswa", "")).strip(),
+                str(row.get("Nomor_Soal", "")).strip()
+            )
+            if all(key):
+                index[key] = int(row.get("_baris", 0) or 0)
+            status_row = str(row.get("Status_Jawaban", "")).strip().lower()
+            if key[0] and key[1] and (
+                "dikirim" in status_row or "menunggu" in status_row or "dinilai" in status_row
+            ):
+                locked.add((key[0], key[1]))
+        st.session_state[cache_key] = index
+        st.session_state[locked_key] = locked
+
+    index = st.session_state[cache_key]
+    locked = st.session_state.get(locked_key, set())
+    pair = (str(task_id), str(student_id))
+    if pair in locked:
         return False
 
-    updates, new_rows = [], []
+    now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    status = "Dikirim - Menunggu Penilaian" if submitted else "Draft"
+    updates, new_rows, new_keys = [], [], []
     for nomor, jawaban in answers.items():
         nomor = str(nomor)
         if jawaban is None:
             jawaban = ""
         teks = json.dumps(jawaban, ensure_ascii=False) if isinstance(jawaban, (list, dict)) else str(jawaban)
         values = [teks, status, now, now if submitted else ""]
-        if nomor in existing:
-            r = existing[nomor]
-            updates.append({"range": f"E{r}:H{r}", "values": [values]})
+        key = (str(task_id), str(student_id), nomor)
+        row_number = index.get(key)
+        if row_number:
+            updates.append({"range": f"E{row_number}:H{row_number}", "values": [values]})
         else:
-            new_rows.append(["JWB-" + uuid.uuid4().hex[:10].upper(), task_id, student_id, nomor] + values)
+            new_rows.append([
+                "JWB-" + uuid.uuid4().hex[:10].upper(),
+                str(task_id), str(student_id), nomor
+            ] + values)
+            new_keys.append(key)
+
     if updates:
-        ws.batch_update(updates, value_input_option="RAW")
+        _panggil_sheets_dengan_retry_429(ws.batch_update, updates, value_input_option="RAW")
     if new_rows:
-        ws.append_rows(new_rows, value_input_option="RAW")
+        try:
+            response = _panggil_sheets_dengan_retry_429(ws.append_rows, new_rows, value_input_option="RAW")
+        except Exception:
+            # Hindari append ganda jika respons jaringan gagal setelah Google mungkin menerima penulisan.
+            st.session_state.pop(cache_key, None)
+            st.session_state.pop(locked_key, None)
+            _baca_values_cache.clear()
+            raise
+        updated_range = ((response or {}).get("updates") or {}).get("updatedRange", "")
+        match = re.search(r"![A-Z]+(\d+):", updated_range)
+        if match:
+            first_row = int(match.group(1))
+            for offset, key in enumerate(new_keys):
+                index[key] = first_row + offset
+        else:
+            fresh_rows = baca_records_aman(ws, refresh=True)
+            for row in fresh_rows:
+                key = (
+                    str(row.get("ID_Penugasan", "")).strip(),
+                    str(row.get("ID_Siswa", "")).strip(),
+                    str(row.get("Nomor_Soal", "")).strip()
+                )
+                if key in new_keys:
+                    index[key] = int(row.get("_baris", 0) or 0)
+
+    if submitted:
+        locked.add(pair)
+        st.session_state[locked_key] = locked
+        _baca_values_cache.clear()
+    else:
+        st.session_state["_draft_saved_for_task"] = str(task_id)
+        st.session_state.pop("_galat_simpan", None)
     return True
 
 
@@ -1838,12 +1971,12 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                     st.image(img_url(soal["Url_Gambar"]), use_container_width=True)
                 tampilkan_media_soal(soal)
 
-                # Simpan HANYA soal ini, ke tugas ini (bukan tugas terakhir yang ditampilkan)
+                # Callback hanya menampung perubahan di session; fragment akan mengirim batch berkala.
                 def _simpan_satu(nilai, question_no=i, tid=task_id):
-                    try:
-                        simpan_jawaban_per_soal(tid, st.session_state.get("siswa_id", ""), {str(question_no): nilai}, submitted=False)
-                    except Exception as e:
-                        st.session_state["_galat_simpan"] = str(e)
+                    _tampung_jawaban_draft(
+                        tid, st.session_state.get("siswa_id", ""),
+                        {str(question_no): nilai}
+                    )
 
                 def _update_answer(question_no=i, widget_key=qkey, tid=task_id):
                     _simpan_satu(st.session_state.get(widget_key, ""), question_no, tid)
@@ -1912,6 +2045,21 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                                  key=qkey, on_change=_update_answer, disabled=terkunci)
 
             if not terkunci:
+                status_draft = st.session_state.get("_draft_status_by_task", {}).get(task_id, "")
+                if status_draft == "Menunggu penyimpanan":
+                    st.info("⏳ Jawaban tersimpan sementara di sesi ini dan menunggu autosave batch.")
+                elif status_draft == "Tersimpan":
+                    st.caption("✓ Draft terakhir berhasil disimpan ke server.")
+                if st.button("💾 Simpan Draft Sekarang", key=f"simpan_draft_{task_id}"):
+                    ok_draft, pesan_draft = _flush_draft_task(task_id, siswa_id, paksa=True)
+                    if ok_draft:
+                        st.success(pesan_draft)
+                    else:
+                        st.error("Draft belum berhasil disimpan: " + pesan_draft)
+                if st.session_state.get("_galat_simpan"):
+                    st.warning("Draft belum tersimpan. Periksa koneksi; sistem akan mencoba lagi.")
+
+            if not terkunci:
                 current_answers = {}
                 for i in range(1, len(daftar_soal) + 1):
                     v = st.session_state.get(f"student_{task_id}_{i}", "")
@@ -1928,6 +2076,9 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                         if file_jawaban:
                             simpan_lampiran_jawaban(task_id, siswa_id, file_jawaban)
                         ok = simpan_pengiriman_jawaban(task_id, siswa_id, current_answers)
+                        if ok:
+                            st.session_state.get("_draft_pending_by_task", {}).pop(task_id, None)
+                            st.session_state.setdefault("_draft_status_by_task", {})[task_id] = "Terkirim"
                         st.success("Jawaban berhasil dikirim. Tutor akan memeriksanya." if ok
                                    else "Jawaban untuk tugas ini sudah dikirim sebelumnya.")
                         st.rerun()
@@ -2020,9 +2171,9 @@ if peran == "🎓 Siswa":
                 st.error("ID dan PIN wajib diisi.")
             else:
                 try:
-                    ws_akun_login = sheet.worksheet("Akun_Pengguna")
+                    ws_akun_login = get_worksheet("Akun_Pengguna")
                     akun_rows_login = pastikan_pemetaan_id_siswa(
-                        ws_akun_login, sheet.worksheet("Data_Siswa")
+                        ws_akun_login, get_worksheet("Data_Siswa")
                     )
                     akun_siswa = next((
                         r for r in akun_rows_login
@@ -2031,7 +2182,7 @@ if peran == "🎓 Siswa":
                         and verifikasi_pin(pin_siswa, r.get("PIN_Password", ""))[0]
                     ), None)
 
-                    data_siswa_login = baca_records_aman(sheet.worksheet("Data_Siswa"))
+                    data_siswa_login = baca_records_aman(get_worksheet("Data_Siswa"))
                     siswa_match = next((
                         r for r in data_siswa_login
                         if str(r.get("ID_SISWA", r.get("ID_Siswa", ""))).strip().upper() == id_siswa_login
@@ -2065,30 +2216,42 @@ if peran == "🎓 Siswa":
             st.success(f"Halo, Ananda **{nama_aktif}** ({jenjang_aktif})! Semangat Belajar! 🌟")
         with col_logout:
             if st.button("🚪 Logout"):
-                st.session_state.siswa_logged_in = False
-                st.session_state.siswa_nama = ""
-                st.session_state.siswa_id = ""
-                st.session_state.siswa_jenjang = ""
-                st.session_state.pop("siswa_baris", None)
-                st.session_state.pop("siswa_akun_baris", None)
-                st.session_state.pop("siswa_user_id", None)
-                st.rerun()
+                draft_pending = st.session_state.get("_draft_pending_by_task", {})
+                draft_errors = []
+                for draft_task_id in list(draft_pending.keys()):
+                    ok_logout, msg_logout = _flush_draft_task(
+                        draft_task_id, st.session_state.get("siswa_id", ""), paksa=True
+                    )
+                    if not ok_logout:
+                        draft_errors.append(f"{draft_task_id}: {msg_logout}")
+                if draft_errors:
+                    st.error(
+                        "Logout ditunda karena ada draft yang belum tersimpan. "
+                        "Periksa koneksi lalu tekan Simpan Draft: " + " | ".join(draft_errors)
+                    )
+                else:
+                    st.session_state.siswa_logged_in = False
+                    st.session_state.siswa_nama = ""
+                    st.session_state.siswa_id = ""
+                    st.session_state.siswa_jenjang = ""
+                    st.session_state.pop("siswa_baris", None)
+                    st.session_state.pop("siswa_akun_baris", None)
+                    st.session_state.pop("siswa_user_id", None)
+                    st.session_state.pop("_indeks_baris_jawaban_siswa", None)
+                    st.session_state.pop("_tugas_jawaban_terkunci", None)
+                    st.session_state.pop("_draft_saved_for_task", None)
+                    st.session_state.pop("_draft_pending_by_task", None)
+                    st.session_state.pop("_draft_student_by_task", None)
+                    st.session_state.pop("_draft_status_by_task", None)
+                    st.session_state.pop("_draft_changed_at_by_task", None)
+                    st.session_state.pop("_draft_saved_at_by_task", None)
+                    st.rerun()
 
-        if st.session_state.get("siswa_akun_baris"):
-            akun_siswa_aktif = next((
-                r for r in baca_records_aman(sheet.worksheet("Akun_Pengguna"))
-                if int(r.get("_baris", 0)) == int(st.session_state.siswa_akun_baris)
-                and str(r.get("Level_Akses", "")).strip().casefold() == "siswa"
-            ), None)
-            if akun_siswa_aktif:
-                form_ganti_pin(
-                    sheet.worksheet("Akun_Pengguna"),
-                    akun_siswa_aktif,
-                    "PIN_Password",
-                    "siswa",
-                    identity_field="ID_User",
-                    identity_value=st.session_state.get("siswa_user_id", "")
-                )
+        # Tetap aktif di semua menu siswa agar antrean draft tidak berhenti saat berpindah halaman.
+        _autosave_semua_draft_fragment(st.session_state.get("siswa_id", ""))
+
+        # Panel ganti PIN tidak ditampilkan di beranda siswa.
+        # Reset PIN siswa dilakukan oleh Owner; autentikasi tetap memakai PIN hash.
 
         try:
             tugas_anak = [
@@ -2118,7 +2281,7 @@ if peran == "🎓 Siswa":
             status_by_task[str(ans.get("ID_Tugas", ""))] = str(ans.get("Status", "Draft"))
 
         try:
-            nilai_records = baca_records_aman(sheet.worksheet("DB_Nilai_Tugas"))
+            nilai_records = baca_records_aman(get_worksheet("DB_Nilai_Tugas"))
         except Exception:
             nilai_records = []
         nilai_ids = {str(n.get("ID_Tugas", "")).strip() for n in nilai_records}
@@ -2221,7 +2384,7 @@ if peran == "🎓 Siswa":
         elif menu_siswa == "📈 Riwayat Belajar":
             st.markdown("### 📈 Riwayat Belajar")
             try:
-                ws_r = sheet.worksheet("Riwayat_Latihan")
+                ws_r = get_worksheet("Riwayat_Latihan")
                 data_tabel_siswa = [
                     {
                         "Tanggal": str(r.get("Waktu_Selesai", ""))[:10],
@@ -2261,7 +2424,7 @@ elif peran == "🔒 Pengajar / Tutor":
         if st.button("Masuk Pengajar"):
             pastikan_koneksi()
             # Login harus membaca PIN terbaru dari Google Sheets, bukan cache 180 detik.
-            data = baca_records_aman(sheet.worksheet("Akun_Pengguna"), refresh=True)
+            data = baca_records_aman(get_worksheet("Akun_Pengguna"), refresh=True)
             user_found = False
             is_active = True
             salah_menu = False
@@ -2274,7 +2437,7 @@ elif peran == "🔒 Pengajar / Tutor":
                     user_found = True
                     cocok_pin, pin_lama_plain = verifikasi_pin(pin, row.get("PIN_Password", ""))
                     if cocok_pin and pin_lama_plain:
-                        upgrade_pin_lama(sheet.worksheet("Akun_Pengguna"), row, "PIN_Password", pin)
+                        upgrade_pin_lama(get_worksheet("Akun_Pengguna"), row, "PIN_Password", pin)
                     status_tutor = str(row.get("Status", "Aktif")).strip().lower()
                     if status_tutor == "nonaktif":
                         is_active = False
@@ -2752,12 +2915,12 @@ elif peran == "🔒 Pengajar / Tutor":
                 akun_tutor_aktif = None
                 if st.session_state.get("tutor_baris"):
                     akun_tutor_aktif = next((
-                        r for r in baca_records_aman(sheet.worksheet("Akun_Pengguna"))
+                        r for r in baca_records_aman(get_worksheet("Akun_Pengguna"))
                         if int(r.get("_baris", 0)) == int(st.session_state.tutor_baris)
                     ), None)
                 if akun_tutor_aktif:
                     form_ganti_pin(
-                        sheet.worksheet("Akun_Pengguna"),
+                        get_worksheet("Akun_Pengguna"),
                         akun_tutor_aktif,
                         "PIN_Password",
                         "tutor",
@@ -3042,7 +3205,7 @@ elif peran == "🔒 Pengajar / Tutor":
                         status_pantau = {str(x.get("ID_Tugas", "")): str(x.get("Status", "")) for x in jwb_pantau}
                         try:
                             nilai_pantau = {str(n.get("ID_Tugas", "")).strip()
-                                            for n in baca_records_aman(sheet.worksheet("DB_Nilai_Tugas"))}
+                                            for n in baca_records_aman(get_worksheet("DB_Nilai_Tugas"))}
                         except Exception:
                             nilai_pantau = set()
 
@@ -3080,7 +3243,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                 pilih_batal = st.selectbox("Pilih tugas:", list(peta_batal.keys()), key="pantau_batal_pilih")
                                 yakin_batal = st.checkbox("Saya yakin membatalkan tugas ini (siswa tidak akan melihatnya lagi).", key="pantau_batal_yakin")
                                 if st.button("Batalkan tugas", disabled=not yakin_batal, key="pantau_batal_tombol"):
-                                    ws_t = sheet.worksheet("Tugas_Sesi_Siswa_v2")
+                                    ws_t = get_worksheet("Tugas_Sesi_Siswa_v2")
                                     kolom = ws_t.row_values(1)
                                     if "Status_Tugas" in kolom:
                                         ws_t.update_cell(peta_batal[pilih_batal]["_baris"], kolom.index("Status_Tugas") + 1, "Dibatalkan")
@@ -3099,7 +3262,7 @@ elif peran == "🔒 Pengajar / Tutor":
                 st.header("📊 Portofolio & Pemeriksaan Jawaban Siswa")
 
                 try:
-                    ws_jawaban = sheet.worksheet("DB_Jawaban_Siswa")
+                    ws_jawaban = get_worksheet("DB_Jawaban_Siswa")
                     jawaban_records = baca_jawaban_tergabung(ws_jawaban)
                 except gspread.WorksheetNotFound:
                     jawaban_records = []
@@ -3213,7 +3376,7 @@ elif peran == "🔒 Pengajar / Tutor":
                 nama_portofolio = st.text_input("Cari nama siswa untuk melihat rekap:", key="nama_portofolio")
                 if nama_portofolio:
                     try:
-                        ws_r = sheet.worksheet("Riwayat_Latihan")
+                        ws_r = get_worksheet("Riwayat_Latihan")
                         data_rekap = []
                         for r in baca_records_aman(ws_r):
                             if str(r.get("Nama_Siswa", "")).strip().lower() == nama_portofolio.strip().lower():
@@ -3317,7 +3480,7 @@ elif peran == "🔒 Pengajar / Tutor":
                 else:
                     try:
                         allowed_ids = siswa_tutor_terhubung(tutor_id)
-                        student_records = baca_records_aman(sheet.worksheet("Data_Siswa"))
+                        student_records = baca_records_aman(get_worksheet("Data_Siswa"))
                         pilihan_siswa = [
                             r for r in student_records
                             if str(r.get("ID_Siswa", "")).strip() in allowed_ids
@@ -3405,7 +3568,7 @@ elif peran == "🔒 Pengajar / Tutor":
             st.header("📨 Pesan dari Orang Tua")
             try:
                 allowed_ids = siswa_tutor_terhubung(st.session_state.get("tutor_id", ""))
-                siswa_rows = baca_records_aman(sheet.worksheet("Data_Siswa"))
+                siswa_rows = baca_records_aman(get_worksheet("Data_Siswa"))
                 nama_by_id = {
                     str(r.get("ID_SISWA", r.get("ID_Siswa", ""))).strip():
                     str(r.get("Nama_Siswa", r.get("Nama_Lengkap", ""))).strip()
@@ -3538,7 +3701,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.header("➕ Pendaftaran Siswa Baru")
             st.caption("Isi satu formulir saja. ID dibuat otomatis dan data disimpan ke Data_Siswa.")
             try:
-                ws_daftar = sheet.worksheet("Data_Siswa")
+                ws_daftar = get_worksheet("Data_Siswa")
                 values_daftar = _baca_values_cache(sheet.id, ws_daftar.title)
                 headers_daftar = [str(h).strip() for h in values_daftar[0]] if values_daftar else []
                 kolom_id = "ID_SISWA" if "ID_SISWA" in headers_daftar else (
@@ -3737,7 +3900,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                 st.error(f"Form pendaftaran siswa belum dapat dibuka: {exc}")
 
         with tab1:
-            data_siswa_all = baca_records_aman(sheet.worksheet("Data_Siswa"))
+            data_siswa_all = baca_records_aman(get_worksheet("Data_Siswa"))
             peserta_undian = []
             for s in data_siswa_all:
                 try:
@@ -3762,7 +3925,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                 st.info("Belum ada siswa yang mencapai 100 poin.")
 
         with tab2:
-            ws_siswa = sheet.worksheet("Data_Siswa")
+            ws_siswa = get_worksheet("Data_Siswa")
             records_siswa = baca_records_aman(ws_siswa)
             if records_siswa:
                 kolom_tampil = [
@@ -3791,7 +3954,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
 
         with tab3:
             try:
-                ws_bank = sheet.worksheet("Bank_Soal_Master")
+                ws_bank = get_worksheet("Bank_Soal_Master")
                 st.dataframe(pd.DataFrame(baca_records_aman(ws_bank)).drop(columns=["_baris"], errors="ignore"), use_container_width=True)
             except Exception as e:
                 st.error(f"Bank soal belum dapat dibuka: {e}")
@@ -3800,8 +3963,8 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.caption("Owner dapat membuat PIN pengganti. PIN langsung disimpan dalam bentuk HASH; pengguna dapat menggantinya lagi setelah login.")
             jenis_akun = st.radio("Jenis akun", ["Siswa", "Tutor / Orang Tua"], horizontal=True, key="owner_jenis_reset")
             if jenis_akun == "Siswa":
-                ws_reset = sheet.worksheet("Akun_Pengguna")
-                ws_siswa_reset = sheet.worksheet("Data_Siswa")
+                ws_reset = get_worksheet("Akun_Pengguna")
+                ws_siswa_reset = get_worksheet("Data_Siswa")
                 daftar_reset = pastikan_pemetaan_id_siswa(ws_reset, ws_siswa_reset)
                 field_pin_reset = "PIN_Password"
                 pilihan_reset = {
@@ -3812,7 +3975,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     and str(r.get("Akses_Khusus", "Siswa")).strip().casefold() == "siswa"
                 }
             else:
-                ws_reset = sheet.worksheet("Akun_Pengguna")
+                ws_reset = get_worksheet("Akun_Pengguna")
                 daftar_reset = baca_records_aman(ws_reset)
                 field_pin_reset = "PIN_Password"
                 pilihan_reset = {
@@ -3847,7 +4010,9 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                                 )
                             else:
                                 simpan_pin_baru(
-                                    ws_reset, record_target, field_pin_reset, pin_reset
+                                    ws_reset, record_target, field_pin_reset, pin_reset,
+                                    identity_field="ID_User",
+                                    identity_value=record_target.get("ID_User", "")
                                 )
                             st.success("PIN akun berhasil direset, dibaca ulang, dan diverifikasi pada baris akun yang tepat.")
                             st.rerun()
@@ -3869,7 +4034,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                 owner_pin_records[0] if owner_pin_records else None
             )
             if owner_pin_record:
-                form_ganti_pin(ws_owner_security, owner_pin_record, "Nilai", "owner")
+                form_ganti_pin(ws_owner_security, owner_pin_record, "Nilai", "owner", identity_field="Kunci", identity_value="PIN_OWNER")
             else:
                 st.error("Data PIN Owner belum ditemukan. Silakan logout lalu login kembali untuk membuat penyimpanan PIN aman.")
 
@@ -3898,8 +4063,8 @@ elif peran == "👨‍👩‍👧 Orang Tua":
         return status not in {"nonaktif", "tidak aktif", "inactive", "0", "false", "berhenti"}
 
     def _ambil_anak_wali(id_ortu):
-        relasi_rows = baca_records_aman(sheet.worksheet("Relasi_Orangtua_Siswa"))
-        siswa_rows = baca_records_aman(sheet.worksheet("Data_Siswa"))
+        relasi_rows = baca_records_aman(get_worksheet("Relasi_Orangtua_Siswa"))
+        siswa_rows = baca_records_aman(get_worksheet("Data_Siswa"))
 
         # Header Data_Siswa yang dipastikan pengguna adalah ID_SISWA (huruf kapital).
         siswa_by_id = {}
@@ -3947,7 +4112,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
         if st.button("Masuk Portal Wali Murid", key="btn_login_ortu"):
             pastikan_koneksi()
             try:
-                akun_rows = baca_records_aman(sheet.worksheet("Akun_Pengguna"))
+                akun_rows = baca_records_aman(get_worksheet("Akun_Pengguna"))
                 akun = next((
                     r for r in akun_rows
                     if str(r.get("ID_User", "")).strip().upper() == id_wali_login
@@ -3957,7 +4122,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 if akun:
                     cocok_pin, pin_lama_plain = verifikasi_pin(pin_ortu, akun.get("PIN_Password", ""))
                     if cocok_pin and pin_lama_plain:
-                        upgrade_pin_lama(sheet.worksheet("Akun_Pengguna"), akun, "PIN_Password", pin_ortu)
+                        upgrade_pin_lama(get_worksheet("Akun_Pengguna"), akun, "PIN_Password", pin_ortu)
 
                 if not id_wali_login or not pin_ortu.strip():
                     st.error("ID Wali dan PIN wajib diisi.")
@@ -3971,7 +4136,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                         st.error("Akun ini bukan akun Wali Murid. Periksa Level_Akses di Akun_Pengguna.")
                     else:
                         user_id = str(akun.get("ID_User", "")).strip()
-                        ortu_rows = baca_records_aman(sheet.worksheet("Data_Orangtua"))
+                        ortu_rows = baca_records_aman(get_worksheet("Data_Orangtua"))
                         ortu = next((
                             r for r in ortu_rows
                             if str(r.get("ID_User", "")).strip() == user_id
@@ -4011,9 +4176,14 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 st.rerun()
 
         if st.session_state.get("ortu_baris"):
-            akun_ortu_aktif = next((r for r in baca_records_aman(sheet.worksheet("Akun_Pengguna")) if int(r.get("_baris", 0)) == int(st.session_state.ortu_baris)), None)
+            akun_ortu_aktif = next((r for r in baca_records_aman(get_worksheet("Akun_Pengguna")) if int(r.get("_baris", 0)) == int(st.session_state.ortu_baris)), None)
             if akun_ortu_aktif:
-                form_ganti_pin(sheet.worksheet("Akun_Pengguna"), akun_ortu_aktif, "PIN_Password", "ortu")
+                form_ganti_pin(
+                    get_worksheet("Akun_Pengguna"), akun_ortu_aktif,
+                    "PIN_Password", "ortu",
+                    identity_field="ID_User",
+                    identity_value=akun_ortu_aktif.get("ID_User", "")
+                )
 
         anak_list = st.session_state.get("ortu_children", [])
         if not anak_list:
@@ -4072,7 +4242,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
         elif menu_ortu == "📋 Transparansi Sesi & PR":
             laporan_list = []
             try:
-                ws_riwayat = sheet.worksheet("Riwayat_Latihan")
+                ws_riwayat = get_worksheet("Riwayat_Latihan")
                 for r in baca_records_aman(ws_riwayat):
                     nama_r = str(r.get("Nama_Siswa", "")).strip()
                     if _norm_text(nama_r) == _norm_text(nama_anak_aktif):
@@ -4086,7 +4256,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 pass
 
             try:
-                ws_jurnal = sheet.worksheet("Form Responses 1")
+                ws_jurnal = get_worksheet("Form Responses 1")
                 for j in baca_records_aman(ws_jurnal):
                     val_nama = str(j.get("Nama Siswa", j.get("Nama_Siswa", ""))).strip()
                     if _norm_text(val_nama) == _norm_text(nama_anak_aktif):
@@ -4107,7 +4277,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
         elif menu_ortu == "📈 Rekap Nilai & Evaluasi":
             data_tabel_ortu = []
             try:
-                ws_r = sheet.worksheet("Riwayat_Latihan")
+                ws_r = get_worksheet("Riwayat_Latihan")
                 for r in baca_records_aman(ws_r):
                     if _norm_text(r.get("Nama_Siswa", "")) == _norm_text(nama_anak_aktif):
                         data_tabel_ortu.append({
