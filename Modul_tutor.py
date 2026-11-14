@@ -2058,7 +2058,11 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                 qkey = f"student_{task_id}_{i}"
                 bentuk = str(soal.get("Bentuk_Soal", "")).lower()
                 opsi = soal.get("Opsi_List", [])
-                st.markdown(f"**{i}. {soal.get('Teks_Soal', '')}**")
+                teks_tampil = str(soal.get("Teks_Soal", "") or "").strip()
+                if teks_tampil:
+                    st.markdown(f"**{i}. {teks_tampil}**")
+                else:
+                    st.markdown(f"**{i}. Jawab berdasarkan soal pada lampiran di atas.**")
                 if soal.get("Url_Gambar"):
                     st.image(img_url(soal["Url_Gambar"]), use_container_width=True)
                 tampilkan_media_soal(soal)
@@ -3181,6 +3185,58 @@ elif peran == "🔒 Pengajar / Tutor":
                                 accept_multiple_files=True, key=f"up_{k}"
                             )
 
+                        # Untuk PDF/Drive, isi soal dibaca dari lampiran. Tutor membentuk
+                        # lembar jawaban di aplikasi tanpa perlu membuka Spreadsheet.
+                        if sumber_tugas != SUMBER_BANK and mode_pengerjaan == TASK_MODE_ONLINE:
+                            st.markdown("#### ⚙️ Buat lembar jawaban dari lampiran")
+                            st.caption(
+                                "Siswa membaca soal dari PDF atau tautan yang dilampirkan. "
+                                "Atur nomor, tipe jawaban, opsi, kunci, dan bobot di sini."
+                            )
+                            jumlah_manual = st.number_input(
+                                "Jumlah nomor soal:", min_value=1, max_value=100,
+                                value=10, step=1, key=f"jumlah_manual_{k}"
+                            )
+                            tipe_manual = [
+                                "Pilihan ganda", "Pilihan ganda kompleks", "Benar-Salah",
+                                "PGK Kategori", "PGK MCMA", "Essay"
+                            ]
+                            baris_manual = [{
+                                "Nomor": nomor,
+                                "Tipe Jawaban": "Pilihan ganda",
+                                "Opsi (pisahkan dengan |)": "A | B | C | D",
+                                "Kunci Jawaban": "",
+                                "Bobot": 1.0
+                            } for nomor in range(1, int(jumlah_manual) + 1)]
+                            edited_manual = st.data_editor(
+                                pd.DataFrame(baris_manual),
+                                use_container_width=True,
+                                hide_index=True,
+                                disabled=["Nomor"],
+                                key=f"konfigurasi_manual_{k}",
+                                column_config={
+                                    "Tipe Jawaban": st.column_config.SelectboxColumn(
+                                        "Tipe Jawaban", options=tipe_manual, required=True
+                                    ),
+                                    "Bobot": st.column_config.NumberColumn(
+                                        "Bobot", min_value=0.1, max_value=100.0, step=0.5
+                                    )
+                                }
+                            )
+                            soal_dipilih = []
+                            for _, row_cfg in edited_manual.iterrows():
+                                opsi_cfg = [
+                                    x.strip() for x in str(row_cfg.get("Opsi (pisahkan dengan |)", "")).split("|")
+                                    if x.strip()
+                                ]
+                                soal_dipilih.append({
+                                    "Teks_Soal": "",
+                                    "Bentuk_Soal": str(row_cfg.get("Tipe Jawaban", "Pilihan ganda")).strip(),
+                                    "Opsi_List": opsi_cfg,
+                                    "Kunci": str(row_cfg.get("Kunci Jawaban", "")).strip(),
+                                    "Bobot": float(row_cfg.get("Bobot", 1) or 1)
+                                })
+
                         tambah_draft = st.button("Tambahkan ke daftar tugas", key=f"tambah_{k}")
 
                         if tambah_draft:
@@ -3192,15 +3248,13 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.error("Judul / topik tugas wajib diisi.")
                             elif untuk_pr and tenggat_tugas < waktu_lokal().date():
                                 st.error("Tenggat PR tidak boleh sebelum hari ini.")
-                            elif mode_pengerjaan == TASK_MODE_ONLINE and sumber_tugas != SUMBER_BANK:
-                                st.error("Tugas online saat ini harus menggunakan soal dari Bank Soal agar lembar jawaban dapat dibentuk.")
                             elif mode_pengerjaan == TASK_MODE_ONLINE and not soal_dipilih:
-                                st.error("Pilih minimal satu soal dari Bank Soal untuk tugas online.")
+                                st.error("Buat minimal satu nomor pada konfigurasi lembar jawaban.")
                             elif sumber_tugas == SUMBER_DRIVE and not link_list:
                                 st.error("Masukkan minimal satu link Drive / Flipbook.")
                             elif sumber_tugas == SUMBER_DRIVE and any(not l.lower().startswith(("http://", "https://")) for l in link_list):
                                 st.error("Setiap link harus diawali https://")
-                            elif sumber_tugas == SUMBER_UPLOAD and not daftar_file and mode_pengerjaan != TASK_MODE_ONLINE:
+                            elif sumber_tugas == SUMBER_UPLOAD and not daftar_file:
                                 st.error("Pilih minimal satu file yang akan dilampirkan.")
                             elif any(len(f.getvalue()) > 20 * 1024 * 1024 for f in daftar_file):
                                 st.error("Ukuran tiap lampiran maksimal 20 MB. Kompres video/audio lalu unggah kembali.")
