@@ -1840,14 +1840,14 @@ def hitung_nilai_objektif(daftar_soal, jawaban):
         total_bobot += bobot
         if "pilihan ganda kompleks" in bentuk:
             # Pilihan ganda kompleks: jawaban dinilai benar hanya jika himpunan pilihan tepat sama.
-            k = kunci if isinstance(kunci, list) else [x.strip() for x in str(kunci).split("|") if x.strip()]
+            k = pecah_kunci_pilihan(kunci)
             s = siswa if isinstance(siswa, list) else ([siswa] if siswa not in ("", None) else [])
             k_norm = {_nilai_normalisasi(x) for x in k}
             s_norm = {_nilai_normalisasi(x) for x in s}
             poin = 1.0 if k_norm and s_norm == k_norm else 0.0
         elif "pgk mcma" in bentuk:
             # MCMA: nilai parsial proporsional; pilihan salah mengurangi skor.
-            k = kunci if isinstance(kunci, list) else [x.strip() for x in str(kunci).split("|") if x.strip()]
+            k = pecah_kunci_pilihan(kunci)
             s = siswa if isinstance(siswa, list) else ([siswa] if siswa not in ("", None) else [])
             k_norm = {_nilai_normalisasi(x) for x in k}
             s_norm = {_nilai_normalisasi(x) for x in s}
@@ -1894,6 +1894,63 @@ def normalisasi_opsi(teks):
     if not teks:
         return []
     return [x.strip() for x in str(teks).split("|") if x.strip()]
+
+
+def teks_sel(v):
+    """Isi sel tabel sebagai teks; sel kosong (None/NaN) menjadi string kosong, bukan 'None'."""
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(v).strip()
+
+
+def pecah_kunci_pilihan(kunci):
+    """Pecah kunci beberapa jawaban. Menerima list, JSON list, 'A | C', atau 'A, C'."""
+    if isinstance(kunci, (list, tuple, set)):
+        return [str(x).strip() for x in kunci if str(x).strip()]
+    teks = str(kunci or "").strip()
+    if not teks:
+        return []
+    if teks.startswith("["):
+        try:
+            parsed = json.loads(teks)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except (ValueError, TypeError):
+            pass
+    pemisah = r"\|" if "|" in teks else r"[,;]"
+    return [x.strip() for x in re.split(pemisah, teks) if x.strip()]
+
+
+def selaraskan_kunci_pilihan(tipe, opsi, kunci):
+    """Samakan kunci dengan teks opsi persis seperti yang dilihat siswa.
+    Huruf A, B, C... dipetakan ke opsi urutan ke-1, 2, 3...
+    Mengembalikan (kunci_baru, daftar_token_yang_tidak_cocok).
+    PG biasa -> string; PGK/MCMA -> list. Tipe lain dikembalikan apa adanya."""
+    t = str(tipe or "").casefold()
+    jamak = "pilihan ganda kompleks" in t or "pgk mcma" in t
+    tunggal = ("pilihan ganda" in t) and not jamak
+    if not (jamak or tunggal) or not opsi:
+        return kunci, []
+    token = pecah_kunci_pilihan(kunci)
+    peta = {str(o).strip().casefold(): o for o in opsi}
+    hasil, gagal = [], []
+    for tk in token:
+        kunci_tk = tk.casefold()
+        if kunci_tk in peta:
+            hasil.append(peta[kunci_tk])
+        elif len(tk) == 1 and tk.isalpha() and 0 <= ord(tk.upper()) - 65 < len(opsi):
+            hasil.append(opsi[ord(tk.upper()) - 65])
+        else:
+            gagal.append(tk)
+    hasil = list(dict.fromkeys(hasil))
+    if jamak:
+        return hasil, gagal
+    return (hasil[0] if hasil else ""), gagal
 
 
 def simpan_tugas_dan_soal(
@@ -3297,18 +3354,18 @@ elif peran == "🔒 Pengajar / Tutor":
                                     for idx, row_cfg in edited_cfg.iterrows():
                                         if idx >= len(soal_dipilih):
                                             continue
-                                        opsi_cfg = [x.strip() for x in str(row_cfg.get("Opsi (pisahkan dengan |)", "")).split("|") if x.strip()]
-                                        tipe_cfg = str(row_cfg.get("Tipe Jawaban", "")).strip()
+                                        opsi_cfg = [x.strip() for x in teks_sel(row_cfg.get("Opsi (pisahkan dengan |)", "")).split("|") if x.strip()]
+                                        tipe_cfg = teks_sel(row_cfg.get("Tipe Jawaban", ""))
                                         soal_dipilih[idx]["Bentuk_Soal"] = tipe_cfg
                                         soal_dipilih[idx]["Opsi_List"] = opsi_cfg
-                                        soal_dipilih[idx]["Kunci"] = str(row_cfg.get("Kunci Jawaban", "")).strip()
-                                        nilai_pasangan = row_cfg.get("Pasangan (JSON)", "")
-                                        try:
-                                            pasangan_kosong = nilai_pasangan is None or pd.isna(nilai_pasangan) or not str(nilai_pasangan).strip()
-                                        except (TypeError, ValueError):
-                                            pasangan_kosong = not str(nilai_pasangan).strip()
-                                        pasangan_teks = "" if pasangan_kosong else str(nilai_pasangan).strip()
-                                        if pasangan_teks:
+                                        soal_dipilih[idx]["Kunci"] = teks_sel(row_cfg.get("Kunci Jawaban", ""))
+                                        soal_dipilih[idx]["Kunci"], kunci_gagal = selaraskan_kunci_pilihan(
+                                            tipe_cfg, opsi_cfg, soal_dipilih[idx]["Kunci"]
+                                        )
+                                        if kunci_gagal:
+                                            st.warning(f"Nomor {idx + 1}: kunci {', '.join(kunci_gagal)} tidak cocok dengan opsi.")
+                                        pasangan_teks = teks_sel(row_cfg.get("Pasangan (JSON)", ""))
+                                        if pasangan_teks and tipe_cfg.casefold() == "menjodohkan":
                                             try:
                                                 pasangan_cfg = json.loads(pasangan_teks)
                                                 if not isinstance(pasangan_cfg, dict) or not isinstance(pasangan_cfg.get("kolom_A"), dict) or not isinstance(pasangan_cfg.get("kolom_B"), dict):
@@ -3327,11 +3384,42 @@ elif peran == "🔒 Pengajar / Tutor":
                                                       placeholder="https://...", key=f"lk_{k}")
                         else:
                             file_tugas = st.file_uploader(
-                                "Pilih file Materi dari perangkat (PDF, dokumen, gambar, audio, video):" if untuk_materi else "Pilih file Soal/PR dari perangkat (PDF, dokumen, gambar, audio, video):",
+                                "Pilih file Materi dari perangkat (PDF, dokumen, gambar, audio, video):" if untuk_materi else "Pilih file SOAL / PR dari perangkat (hanya soal; materi diunggah terpisah di bawah):",
                                 type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg", "webp",
                                       "mp4", "mov", "webm", "m4v", "mp3", "wav", "m4a", "ogg", "aac"],
                                 accept_multiple_files=True, key=f"up_{k}"
                             )
+
+                        # Materi pendukung dipisah dari soal: disimpan sebagai tugas Materi tersendiri,
+                        # sehingga lembar jawaban online hanya dibuat untuk file soal.
+                        materi_links_txt = ""
+                        materi_files = []
+                        if not untuk_materi:
+                            st.markdown("#### 📖 Materi pendukung (opsional, dipisah dari soal)")
+                            st.caption(
+                                "Ringkasan/rangkuman/modul diunggah di sini, bukan di kolom soal. "
+                                "Materi akan dikirim sebagai tugas Materi tersendiri dalam paket yang sama "
+                                "dan tidak dibuatkan lembar jawaban."
+                            )
+                            materi_links_txt = st.text_area(
+                                "Link materi (opsional, satu link per baris):",
+                                placeholder="https://...", key=f"mlk_{k}"
+                            )
+                            materi_files = st.file_uploader(
+                                "Pilih file MATERI dari perangkat (opsional):",
+                                type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg", "webp",
+                                      "mp4", "mov", "webm", "m4v", "mp3", "wav", "m4a", "ogg", "aac"],
+                                accept_multiple_files=True, key=f"mup_{k}"
+                            )
+                            nama_mirip_materi = [
+                                f.name for f in (file_tugas or [])
+                                if any(x in f.name.lower() for x in ("ringkasan", "rangkuman", "materi", "modul"))
+                            ]
+                            if nama_mirip_materi:
+                                st.warning(
+                                    "File ini tampak seperti materi, bukan soal: " + ", ".join(nama_mirip_materi)
+                                    + ". Pindahkan ke kolom MATERI di atas agar tidak tercampur dengan soal."
+                                )
 
                         # Untuk PDF/Drive, isi soal dibaca dari lampiran. Tutor membentuk
                         # lembar jawaban di aplikasi tanpa perlu membuka Spreadsheet.
@@ -3350,10 +3438,26 @@ elif peran == "🔒 Pengajar / Tutor":
                                 "Pilihan ganda", "Pilihan ganda kompleks", "Benar-Salah",
                                 "PGK Kategori", "PGK MCMA", "Essay", "Menjodohkan"
                             ]
+                            kol_tipe, kol_opsi = st.columns(2)
+                            with kol_tipe:
+                                tipe_awal = st.selectbox(
+                                    "Tipe jawaban semua nomor:", tipe_manual, key=f"tipe_awal_{k}",
+                                    help="Atur sekali untuk semua nomor. Nomor yang berbeda bisa diubah di tabel."
+                                )
+                            with kol_opsi:
+                                opsi_awal = st.text_input(
+                                    "Opsi awal (pisahkan dengan |):", value="A | B | C | D", key=f"opsi_awal_{k}"
+                                )
+                            opsi_default = "" if tipe_awal in ("Essay", "Menjodohkan", "Benar-Salah") else opsi_awal
+                            st.caption(
+                                "Kunci Pilihan ganda: tulis satu huruf atau teks opsi, misalnya B. "
+                                "Kunci Pilihan ganda kompleks / PGK MCMA: tulis semua jawaban benar, "
+                                "misalnya A, C atau A | C. Kolom Pasangan (JSON) hanya diisi untuk Menjodohkan."
+                            )
                             baris_manual = [{
                                 "Nomor": nomor,
-                                "Tipe Jawaban": "Pilihan ganda",
-                                "Opsi (pisahkan dengan |)": "A | B | C | D",
+                                "Tipe Jawaban": tipe_awal,
+                                "Opsi (pisahkan dengan |)": opsi_default,
                                 "Kunci Jawaban": "",
                                 "Pasangan (JSON)": "",
                                 "Bobot": 1.0
@@ -3363,10 +3467,16 @@ elif peran == "🔒 Pengajar / Tutor":
                                 use_container_width=True,
                                 hide_index=True,
                                 disabled=["Nomor"],
-                                key=f"konfigurasi_manual_{k}",
+                                key=f"konfigurasi_manual_{k}_{tipe_awal}_{opsi_default}",
                                 column_config={
                                     "Tipe Jawaban": st.column_config.SelectboxColumn(
                                         "Tipe Jawaban", options=tipe_manual, required=True
+                                    ),
+                                    "Kunci Jawaban": st.column_config.TextColumn(
+                                        "Kunci Jawaban", help="PGK: pisahkan jawaban benar dengan koma atau |"
+                                    ),
+                                    "Pasangan (JSON)": st.column_config.TextColumn(
+                                        "Pasangan (JSON)", help="Hanya untuk tipe Menjodohkan. Kosongkan untuk tipe lain."
                                     ),
                                     "Bobot": st.column_config.NumberColumn(
                                         "Bobot", min_value=0.1, max_value=100.0, step=0.5
@@ -3375,38 +3485,45 @@ elif peran == "🔒 Pengajar / Tutor":
                             )
                             soal_dipilih = []
                             for _, row_cfg in edited_manual.iterrows():
+                                nomor_cfg = int(row_cfg.get("Nomor", 0) or 0)
                                 opsi_cfg = [
-                                    x.strip() for x in str(row_cfg.get("Opsi (pisahkan dengan |)", "")).split("|")
+                                    x.strip() for x in teks_sel(row_cfg.get("Opsi (pisahkan dengan |)", "")).split("|")
                                     if x.strip()
                                 ]
-                                tipe_jawaban_cfg = str(row_cfg.get("Tipe Jawaban", "Pilihan ganda")).strip()
-                                kunci_cfg = str(row_cfg.get("Kunci Jawaban", "")).strip()
-                                nilai_pasangan = row_cfg.get("Pasangan (JSON)", "")
-                                try:
-                                    kosong_pasangan = nilai_pasangan is None or pd.isna(nilai_pasangan) or not str(nilai_pasangan).strip()
-                                except (TypeError, ValueError):
-                                    kosong_pasangan = not str(nilai_pasangan).strip()
-                                try:
-                                    pasangan_cfg = {} if kosong_pasangan else json.loads(str(nilai_pasangan).strip())
-                                except (ValueError, TypeError):
-                                    st.error(f"Format Pasangan (JSON) nomor {int(row_cfg.get('Nomor', 0))} tidak valid. Kosongkan jika bukan soal menjodohkan.")
-                                    pasangan_cfg = {}
-                                if pasangan_cfg and (
-                                    not isinstance(pasangan_cfg, dict)
-                                    or not isinstance(pasangan_cfg.get("kolom_A"), dict)
-                                    or not isinstance(pasangan_cfg.get("kolom_B"), dict)
-                                ):
-                                    st.error(f"Pasangan nomor {int(row_cfg.get('Nomor', 0))} harus berisi JSON kolom_A dan kolom_B.")
-                                    pasangan_cfg = {}
-                                if tipe_jawaban_cfg.casefold() == "menjodohkan" and kunci_cfg:
-                                    try:
-                                        kunci_parsed = json.loads(kunci_cfg)
-                                        kunci_cfg = kunci_parsed if isinstance(kunci_parsed, dict) else {}
-                                        if "pasangan" not in kunci_cfg:
-                                            kunci_cfg = {"pasangan": kunci_cfg}
-                                    except (ValueError, TypeError):
-                                        st.warning(f"Kunci nomor {int(row_cfg.get('Nomor', 0))} harus berupa JSON pasangan, misalnya {{\"A\":\"1\"}}.")
-                                        kunci_cfg = {}
+                                tipe_jawaban_cfg = teks_sel(row_cfg.get("Tipe Jawaban", "")) or "Pilihan ganda"
+                                kunci_cfg = teks_sel(row_cfg.get("Kunci Jawaban", ""))
+                                pasangan_cfg = {}
+                                if tipe_jawaban_cfg.casefold() == "menjodohkan":
+                                    teks_pasangan = teks_sel(row_cfg.get("Pasangan (JSON)", ""))
+                                    if teks_pasangan:
+                                        try:
+                                            pasangan_cfg = json.loads(teks_pasangan)
+                                        except (ValueError, TypeError):
+                                            st.error(f"Format Pasangan (JSON) nomor {nomor_cfg} tidak valid.")
+                                            pasangan_cfg = {}
+                                    if pasangan_cfg and (
+                                        not isinstance(pasangan_cfg, dict)
+                                        or not isinstance(pasangan_cfg.get("kolom_A"), dict)
+                                        or not isinstance(pasangan_cfg.get("kolom_B"), dict)
+                                    ):
+                                        st.error(f"Pasangan nomor {nomor_cfg} harus berisi JSON kolom_A dan kolom_B.")
+                                        pasangan_cfg = {}
+                                    if kunci_cfg:
+                                        try:
+                                            kunci_parsed = json.loads(kunci_cfg)
+                                            kunci_cfg = kunci_parsed if isinstance(kunci_parsed, dict) else {}
+                                            if "pasangan" not in kunci_cfg:
+                                                kunci_cfg = {"pasangan": kunci_cfg}
+                                        except (ValueError, TypeError):
+                                            st.warning(f"Kunci nomor {nomor_cfg} harus berupa JSON pasangan, misalnya {{\"A\":\"1\"}}.")
+                                            kunci_cfg = {}
+                                else:
+                                    tipe_kecil = tipe_jawaban_cfg.casefold()
+                                    if ("pilihan ganda" in tipe_kecil or "pgk" in tipe_kecil) and len(opsi_cfg) < 2 and "kategori" not in tipe_kecil:
+                                        st.warning(f"Nomor {nomor_cfg}: isi minimal 2 opsi (pisahkan dengan |).")
+                                    kunci_cfg, kunci_gagal = selaraskan_kunci_pilihan(tipe_jawaban_cfg, opsi_cfg, kunci_cfg)
+                                    if kunci_gagal:
+                                        st.warning(f"Nomor {nomor_cfg}: kunci {', '.join(kunci_gagal)} tidak cocok dengan opsi.")
                                 soal_dipilih.append({
                                     "Teks_Soal": "",
                                     "Bentuk_Soal": tipe_jawaban_cfg,
@@ -3421,7 +3538,9 @@ elif peran == "🔒 Pengajar / Tutor":
                         if tambah_draft:
                             link_list = [x.strip() for x in link_tugas.splitlines() if x.strip()]
                             daftar_file = list(file_tugas or [])
-                            total_byte = sum(len(f.getvalue()) for f in daftar_file)
+                            daftar_materi = list(materi_files or [])
+                            link_materi = [x.strip() for x in materi_links_txt.splitlines() if x.strip()]
+                            total_byte = sum(len(f.getvalue()) for f in daftar_file + daftar_materi)
 
                             if not judul_tugas.strip():
                                 st.error("Judul / topik tugas wajib diisi.")
@@ -3433,7 +3552,9 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.error("Setiap link harus diawali https://")
                             elif sumber_tugas == SUMBER_UPLOAD and not daftar_file:
                                 st.error("Pilih minimal satu file yang akan dilampirkan.")
-                            elif any(len(f.getvalue()) > 20 * 1024 * 1024 for f in daftar_file):
+                            elif any(not l.lower().startswith(("http://", "https://")) for l in link_materi):
+                                st.error("Setiap link materi harus diawali https://")
+                            elif any(len(f.getvalue()) > 20 * 1024 * 1024 for f in daftar_file + daftar_materi):
                                 st.error("Ukuran tiap lampiran maksimal 20 MB. Kompres video/audio lalu unggah kembali.")
                             elif total_byte > 40 * 1024 * 1024:
                                 st.error("Total lampiran satu tugas maksimal 40 MB. Bagi menjadi beberapa tugas.")
@@ -3444,6 +3565,20 @@ elif peran == "🔒 Pengajar / Tutor":
                                 if package_key not in st.session_state:
                                     st.session_state[package_key] = "PKT-" + uuid.uuid4().hex[:8].upper()
                                 group_id = st.session_state[package_key]
+                                if not untuk_materi and (daftar_materi or link_materi):
+                                    # Materi pendukung menjadi tugas Materi tersendiri (tanpa lembar jawaban).
+                                    st.session_state[draft_key].append({
+                                        "Group_ID": group_id, "Komponen": "Materi",
+                                        "Mapel": mapel_tugas, "Judul": f"Materi: {judul_tugas.strip()}",
+                                        "Jenis": "Materi Tambahan",
+                                        "Sumber": SUMBER_UPLOAD if daftar_materi else SUMBER_DRIVE,
+                                        "Instruksi": "", "Timer": 0,
+                                        "Tenggat": tenggat_tugas.strftime("%Y-%m-%d"),
+                                        "Links": link_materi,
+                                        "Files": [{"name": f.name, "bytes": f.getvalue(), "mime": f.type or "application/octet-stream"}
+                                                  for f in daftar_materi],
+                                        "Soal": [], "Mode_Pengerjaan": TASK_MODE_MATERI
+                                    })
                                 st.session_state[draft_key].append({
                                     "Group_ID": group_id, "Komponen": kategori_label,
                                     "Mapel": mapel_tugas, "Judul": judul_tugas.strip(),
