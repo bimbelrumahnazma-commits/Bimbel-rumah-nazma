@@ -1838,12 +1838,19 @@ def hitung_nilai_objektif(daftar_soal, jawaban):
         bobot = max(0.0, float(soal.get("Bobot", 1) or 1))
         total_objektif += 1
         total_bobot += bobot
-        if "pgk mcma" in bentuk or "pilihan ganda kompleks" in bentuk:
+        if "pilihan ganda kompleks" in bentuk:
+            # Pilihan ganda kompleks: jawaban dinilai benar hanya jika himpunan pilihan tepat sama.
             k = kunci if isinstance(kunci, list) else [x.strip() for x in str(kunci).split("|") if x.strip()]
             s = siswa if isinstance(siswa, list) else ([siswa] if siswa not in ("", None) else [])
             k_norm = {_nilai_normalisasi(x) for x in k}
             s_norm = {_nilai_normalisasi(x) for x in s}
-            # Nilai parsial: proporsi pilihan kunci yang tepat, tanpa bonus untuk pilihan salah.
+            poin = 1.0 if k_norm and s_norm == k_norm else 0.0
+        elif "pgk mcma" in bentuk:
+            # MCMA: nilai parsial proporsional; pilihan salah mengurangi skor.
+            k = kunci if isinstance(kunci, list) else [x.strip() for x in str(kunci).split("|") if x.strip()]
+            s = siswa if isinstance(siswa, list) else ([siswa] if siswa not in ("", None) else [])
+            k_norm = {_nilai_normalisasi(x) for x in k}
+            s_norm = {_nilai_normalisasi(x) for x in s}
             poin = len(k_norm & s_norm) / len(k_norm) if k_norm else 0
             if s_norm - k_norm:
                 poin = max(0, poin - len(s_norm - k_norm) / max(len(k_norm), 1))
@@ -1953,11 +1960,15 @@ TASK_MODE_UPLOAD = "Tugas upload"
 TASK_META_KEY = "_nazma_task_meta"
 
 
-def bungkus_soal_dengan_mode(daftar_soal, mode):
-    """Simpan mode tugas sebagai metadata dalam Soal_JSON tanpa menambah kolom sheet."""
+def bungkus_soal_dengan_mode(daftar_soal, mode, group_id="", component=""):
+    """Simpan mode dan relasi paket dalam metadata JSON; kolom sheet lama tetap utuh."""
     soal = [dict(x) for x in (daftar_soal or []) if isinstance(x, dict)]
-    meta = {TASK_META_KEY: {"mode": mode}}
-    return [meta] + soal
+    meta_data = {"mode": mode}
+    if group_id:
+        meta_data["group_id"] = str(group_id)
+    if component:
+        meta_data["component"] = str(component)
+    return [{TASK_META_KEY: meta_data}] + soal
 
 
 def buka_soal_dan_mode(nilai_json, jenis_tugas=""):
@@ -3169,18 +3180,23 @@ elif peran == "🔒 Pengajar / Tutor":
                         n_form = st.session_state.get("form_n", 0)
                         k = f"{selected_siswa}_{n_form}"
 
-                        kategori_label = st.radio("Kategori penugasan:", [KATEGORI_SESI, KATEGORI_PR], key=f"kt_{k}")
-                        untuk_pr = kategori_label == KATEGORI_PR
+                        kategori_label = st.radio(
+                            "Komponen paket belajar:", ["Materi", "Soal", "PR"],
+                            horizontal=True, key=f"kt_{k}"
+                        )
+                        untuk_materi = kategori_label == "Materi"
+                        untuk_pr = kategori_label == "PR"
                         mapel_tugas = st.selectbox("Mata pelajaran:", MAPEL_OPTIONS, key=f"mp_{k}")
                         judul_tugas = st.text_input("Judul / topik tugas:", key=f"jd_{k}")
-                        # Jenis pengerjaan dan mode siswa tidak dipilih di sini.
-                        # Mode_Pengerjaan ditetapkan per baris pada Tugas_Sesi_Siswa_v2.
-                        jenis_tugas = "Online"  # nilai kompatibilitas untuk kategori tugas lama
-                        mode_pengerjaan = TASK_MODE_UPLOAD  # default aman; tutor dapat mengubah kolom di Spreadsheet
-                        st.caption(
-                            "Cara siswa mengerjakan diatur pada kolom Mode_Pengerjaan di Spreadsheet setelah tugas dibuat. "
-                            "Isi dengan salah satu nilai persis: Materi saja, Tugas online, atau Tugas upload."
-                        )
+                        jenis_tugas = "Materi Tambahan" if untuk_materi else "Online"
+                        if untuk_materi:
+                            mode_pengerjaan = TASK_MODE_MATERI
+                            st.caption("Materi dapat dibuka bebas selama tidak ada tugas online yang sedang dikerjakan.")
+                        else:
+                            mode_pengerjaan = st.radio(
+                                "Cara siswa mengerjakan:", [TASK_MODE_ONLINE, TASK_MODE_UPLOAD],
+                                horizontal=True, key=f"mode_{k}"
+                            )
                         sumber_tugas = st.radio(
                             "Sumber materi / soal:",
                             [SUMBER_BANK, SUMBER_DRIVE, SUMBER_UPLOAD],
@@ -3188,13 +3204,15 @@ elif peran == "🔒 Pengajar / Tutor":
                         )
                         instruksi_tugas = st.text_area("Instruksi untuk siswa:", key=f"in_{k}")
                         timer_tugas = st.selectbox(
-                            "Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=0 if untuk_pr else 2,
-                            format_func=lambda x: "Tanpa timer" if x == 0 else f"{x} menit", key=f"tm_{k}_{'pr' if untuk_pr else 'sesi'}"
+                            "Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=0 if untuk_pr or untuk_materi else 2,
+                            format_func=lambda x: "Tanpa timer" if x == 0 else f"{x} menit", key=f"tm_{k}_{'pr' if untuk_pr else 'materi' if untuk_materi else 'soal'}",
+                            disabled=untuk_materi
                         )
                         tenggat_tugas = st.date_input(
                             "Tenggat PR:" if untuk_pr else "Tanggal tenggat:",
                             value=waktu_lokal().date() + (timedelta(days=3) if untuk_pr else timedelta(days=0)),
-                            key=f"tg_{k}_{'pr' if untuk_pr else 'sesi'}"
+                            key=f"tg_{k}_{'pr' if untuk_pr else 'materi' if untuk_materi else 'soal'}",
+                            disabled=untuk_materi
                         )
 
                         link_tugas = ""
@@ -3247,7 +3265,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                     st.caption("Teks soal tetap mengambil dari Bank Soal. Di tabel ini tutor dapat mengatur tipe jawaban, opsi, kunci, dan bobot.")
                                     tipe_diizinkan = [
                                         "Pilihan ganda", "Pilihan ganda kompleks", "Benar-Salah",
-                                        "PGK Kategori", "PGK MCMA", "Essay"
+                                        "PGK Kategori", "PGK MCMA", "Essay", "Menjodohkan"
                                     ]
                                     tabel_cfg = []
                                     for nomor, qitem in enumerate(soal_dipilih, 1):
@@ -3256,6 +3274,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                             "Tipe Jawaban": qitem.get("Bentuk_Soal", "Pilihan ganda"),
                                             "Opsi (pisahkan dengan |)": " | ".join(qitem.get("Opsi_List", [])),
                                             "Kunci Jawaban": qitem.get("Kunci", ""),
+                                            "Pasangan (JSON)": json.dumps(qitem.get("Pasangan", {}), ensure_ascii=False) if qitem.get("Pasangan") else "",
                                             "Bobot": float(qitem.get("Bobot", 1) or 1)
                                         })
                                     df_cfg = pd.DataFrame(tabel_cfg)
@@ -3282,6 +3301,19 @@ elif peran == "🔒 Pengajar / Tutor":
                                         soal_dipilih[idx]["Bentuk_Soal"] = tipe_cfg
                                         soal_dipilih[idx]["Opsi_List"] = opsi_cfg
                                         soal_dipilih[idx]["Kunci"] = str(row_cfg.get("Kunci Jawaban", "")).strip()
+                                        pasangan_teks = str(row_cfg.get("Pasangan (JSON)", "")).strip()
+                                        if pasangan_teks:
+                                            try:
+                                                pasangan_cfg = json.loads(pasangan_teks)
+                                                if not isinstance(pasangan_cfg, dict) or not isinstance(pasangan_cfg.get("kolom_A"), dict) or not isinstance(pasangan_cfg.get("kolom_B"), dict):
+                                                    raise ValueError("Gunakan objek kolom_A dan kolom_B.")
+                                                soal_dipilih[idx]["Pasangan"] = pasangan_cfg
+                                                if tipe_cfg.casefold() == "menjodohkan":
+                                                    pasangan_kunci = json.loads(soal_dipilih[idx]["Kunci"]) if soal_dipilih[idx]["Kunci"] else {}
+                                                    if not isinstance(pasangan_kunci, dict) or "pasangan" not in pasangan_kunci:
+                                                        soal_dipilih[idx]["Kunci"] = {"pasangan": pasangan_kunci}
+                                            except (ValueError, TypeError) as err:
+                                                st.warning(f"Format Pasangan JSON nomor {idx + 1} tidak valid: {err}")
                                         soal_dipilih[idx]["Bobot"] = float(row_cfg.get("Bobot", 1) or 1)
 
                         elif sumber_tugas == SUMBER_DRIVE:
@@ -3309,13 +3341,14 @@ elif peran == "🔒 Pengajar / Tutor":
                             )
                             tipe_manual = [
                                 "Pilihan ganda", "Pilihan ganda kompleks", "Benar-Salah",
-                                "PGK Kategori", "PGK MCMA", "Essay"
+                                "PGK Kategori", "PGK MCMA", "Essay", "Menjodohkan"
                             ]
                             baris_manual = [{
                                 "Nomor": nomor,
                                 "Tipe Jawaban": "Pilihan ganda",
                                 "Opsi (pisahkan dengan |)": "A | B | C | D",
                                 "Kunci Jawaban": "",
+                                "Pasangan (JSON)": "",
                                 "Bobot": 1.0
                             } for nomor in range(1, int(jumlah_manual) + 1)]
                             edited_manual = st.data_editor(
@@ -3339,11 +3372,24 @@ elif peran == "🔒 Pengajar / Tutor":
                                     x.strip() for x in str(row_cfg.get("Opsi (pisahkan dengan |)", "")).split("|")
                                     if x.strip()
                                 ]
+                                tipe_jawaban_cfg = str(row_cfg.get("Tipe Jawaban", "Pilihan ganda")).strip()
+                                kunci_cfg = str(row_cfg.get("Kunci Jawaban", "")).strip()
+                                pasangan_cfg = json.loads(str(row_cfg.get("Pasangan (JSON)", "")).strip()) if str(row_cfg.get("Pasangan (JSON)", "")).strip() else {}
+                                if tipe_jawaban_cfg.casefold() == "menjodohkan" and kunci_cfg:
+                                    try:
+                                        kunci_parsed = json.loads(kunci_cfg)
+                                        kunci_cfg = kunci_parsed if isinstance(kunci_parsed, dict) else {}
+                                        if "pasangan" not in kunci_cfg:
+                                            kunci_cfg = {"pasangan": kunci_cfg}
+                                    except (ValueError, TypeError):
+                                        st.warning(f"Kunci nomor {int(row_cfg.get('Nomor', 0))} harus berupa JSON pasangan, misalnya {{\"A\":\"1\"}}.")
+                                        kunci_cfg = {}
                                 soal_dipilih.append({
                                     "Teks_Soal": "",
-                                    "Bentuk_Soal": str(row_cfg.get("Tipe Jawaban", "Pilihan ganda")).strip(),
+                                    "Bentuk_Soal": tipe_jawaban_cfg,
                                     "Opsi_List": opsi_cfg,
-                                    "Kunci": str(row_cfg.get("Kunci Jawaban", "")).strip(),
+                                    "Kunci": kunci_cfg,
+                                    "Pasangan": pasangan_cfg,
                                     "Bobot": float(row_cfg.get("Bobot", 1) or 1)
                                 })
 
@@ -3371,10 +3417,15 @@ elif peran == "🔒 Pengajar / Tutor":
                             else:
                                 files = [{"name": f.name, "bytes": f.getvalue(), "mime": f.type or "application/octet-stream"}
                                          for f in daftar_file]
+                                package_key = f"paket_aktif_{selected_siswa}"
+                                if package_key not in st.session_state:
+                                    st.session_state[package_key] = "PKT-" + uuid.uuid4().hex[:8].upper()
+                                group_id = st.session_state[package_key]
                                 st.session_state[draft_key].append({
+                                    "Group_ID": group_id, "Komponen": kategori_label,
                                     "Mapel": mapel_tugas, "Judul": judul_tugas.strip(),
                                     # Kategori PR disimpan di Jenis_Tugas: "PR Online" / "PR Offline"
-                                    "Jenis": f"PR {jenis_tugas}" if untuk_pr else jenis_tugas,
+                                    "Jenis": f"PR {jenis_tugas}" if untuk_pr else ("Materi Tambahan" if untuk_materi else jenis_tugas),
                                     "Sumber": sumber_tugas, "Instruksi": instruksi_tugas.strip(), "Timer": timer_tugas,
                                     "Tenggat": tenggat_tugas.strftime("%Y-%m-%d"),
                                     "Links": link_list, "Files": files, "Soal": soal_dipilih,
@@ -3390,6 +3441,7 @@ elif peran == "🔒 Pengajar / Tutor":
                         for i, item in enumerate(daftar_draft, 1):
                             ikon = "📌" if str(item["Jenis"]).startswith("PR") else "📝"
                             with st.expander(f"{i}. {ikon} {item['Mapel']} — {item['Judul']} ({item['Jenis']})"):
+                                st.write(f"Paket: {item.get('Group_ID', '-') } · Komponen: {item.get('Komponen', item['Jenis'])}")
                                 st.write(f"Sumber: {item['Sumber']}")
                                 st.write(f"Mode pengerjaan: {item.get('Mode_Pengerjaan', TASK_MODE_UPLOAD)}")
                                 st.write(f"Timer: {'Tanpa timer' if item['Timer'] == 0 else str(item['Timer']) + ' menit'} | Tenggat: {item['Tenggat']}")
@@ -3427,13 +3479,35 @@ elif peran == "🔒 Pengajar / Tutor":
                                                 "TGS-" + uuid.uuid4().hex[:10].upper(), now_txt, selected_siswa,
                                                 item["Mapel"], item["Judul"], item["Jenis"], item["Sumber"], item["Instruksi"],
                                                 file_info, item["Timer"], item["Tenggat"],
-                                                json.dumps(bungkus_soal_dengan_mode(item["Soal"], item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD)), ensure_ascii=False),
+                                                json.dumps(bungkus_soal_dengan_mode(
+                                                    item["Soal"], item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD),
+                                                    item.get("Group_ID", ""), item.get("Komponen", "")
+                                                ), ensure_ascii=False),
                                                 "Diberikan", st.session_state.tutor_nama,
                                                 item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD)
                                             ])
                                         ws_tugas.append_rows(baris_baru, value_input_option="RAW")
+                                        # Tabel relasi paket terpisah; tidak mengubah atau menggeser kolom tugas lama.
+                                        ws_paket = get_or_create_worksheet(
+                                            "Relasi_Paket_Tugas",
+                                            ["ID_Paket", "ID_Tugas", "ID_Siswa", "Komponen", "Mapel", "Prasyarat", "Tutor"],
+                                            cols="20"
+                                        )
+                                        header_paket = [str(x).strip() for x in ws_paket.row_values(1)]
+                                        if header_paket == ["ID_Paket", "ID_Tugas", "ID_Siswa", "Komponen", "Mapel", "Prasyarat", "Tutor"]:
+                                            relasi_rows = []
+                                            for (item, _), baris in zip(hasil_kirim, baris_baru):
+                                                relasi_rows.append([
+                                                    item.get("Group_ID", ""), baris[0], selected_siswa,
+                                                    item.get("Komponen", ""), item.get("Mapel", ""),
+                                                    "" if item.get("Komponen") == "Materi" else "Tutor mengatur urutan secara manual",
+                                                    st.session_state.tutor_nama
+                                                ])
+                                            if relasi_rows:
+                                                ws_paket.append_rows(relasi_rows, value_input_option="RAW")
                                         n_pr = sum(1 for it in daftar_draft if str(it["Jenis"]).startswith("PR"))
                                         st.session_state[draft_key] = []
+                                        st.session_state.pop(f"paket_aktif_{selected_siswa}", None)
                                         st.success(f"{len(hasil_kirim)} penugasan terkirim untuk {selected_siswa} ({n_pr} PR, {len(hasil_kirim) - n_pr} tugas sesi).")
                                         st.rerun()
                                 except Exception as e:
