@@ -3197,9 +3197,10 @@ elif peran == "🔒 Pengajar / Tutor":
                                 "Cara siswa mengerjakan:", [TASK_MODE_ONLINE, TASK_MODE_UPLOAD],
                                 horizontal=True, key=f"mode_{k}"
                             )
+                        opsi_sumber = [SUMBER_DRIVE, SUMBER_UPLOAD] if untuk_materi else [SUMBER_BANK, SUMBER_DRIVE, SUMBER_UPLOAD]
                         sumber_tugas = st.radio(
-                            "Sumber materi / soal:",
-                            [SUMBER_BANK, SUMBER_DRIVE, SUMBER_UPLOAD],
+                            "Sumber materi:" if untuk_materi else "Sumber soal / tugas:",
+                            opsi_sumber,
                             key=f"sm_{k}"
                         )
                         instruksi_tugas = st.text_area("Instruksi untuk siswa:", key=f"in_{k}")
@@ -3301,7 +3302,12 @@ elif peran == "🔒 Pengajar / Tutor":
                                         soal_dipilih[idx]["Bentuk_Soal"] = tipe_cfg
                                         soal_dipilih[idx]["Opsi_List"] = opsi_cfg
                                         soal_dipilih[idx]["Kunci"] = str(row_cfg.get("Kunci Jawaban", "")).strip()
-                                        pasangan_teks = str(row_cfg.get("Pasangan (JSON)", "")).strip()
+                                        nilai_pasangan = row_cfg.get("Pasangan (JSON)", "")
+                                        try:
+                                            pasangan_kosong = nilai_pasangan is None or pd.isna(nilai_pasangan) or not str(nilai_pasangan).strip()
+                                        except (TypeError, ValueError):
+                                            pasangan_kosong = not str(nilai_pasangan).strip()
+                                        pasangan_teks = "" if pasangan_kosong else str(nilai_pasangan).strip()
                                         if pasangan_teks:
                                             try:
                                                 pasangan_cfg = json.loads(pasangan_teks)
@@ -3321,7 +3327,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                                       placeholder="https://...", key=f"lk_{k}")
                         else:
                             file_tugas = st.file_uploader(
-                                "Pilih materi/soal dari perangkat (PDF, dokumen, gambar, audio, video):",
+                                "Pilih file Materi dari perangkat (PDF, dokumen, gambar, audio, video):" if untuk_materi else "Pilih file Soal/PR dari perangkat (PDF, dokumen, gambar, audio, video):",
                                 type=["pdf", "docx", "xlsx", "png", "jpg", "jpeg", "webp",
                                       "mp4", "mov", "webm", "m4v", "mp3", "wav", "m4a", "ogg", "aac"],
                                 accept_multiple_files=True, key=f"up_{k}"
@@ -3329,11 +3335,12 @@ elif peran == "🔒 Pengajar / Tutor":
 
                         # Untuk PDF/Drive, isi soal dibaca dari lampiran. Tutor membentuk
                         # lembar jawaban di aplikasi tanpa perlu membuka Spreadsheet.
-                        if sumber_tugas != SUMBER_BANK:
+                        if sumber_tugas != SUMBER_BANK and not untuk_materi:
                             st.markdown("#### ⚙️ Buat lembar jawaban dari lampiran")
                             st.caption(
-                                "Siswa membaca soal dari PDF atau tautan yang dilampirkan. "
-                                "Atur nomor, tipe jawaban, opsi, kunci, dan bobot di sini."
+                                "Bagian ini khusus untuk komponen Soal/PR, bukan Materi. "
+                                "Siswa membaca soal dari PDF atau tautan; atur tipe jawaban setiap nomor, opsi, kunci, dan bobot di tabel. "
+                                "Untuk jawaban lebih dari satu pilihan, pilih Pilihan ganda kompleks atau PGK MCMA."
                             )
                             jumlah_manual = st.number_input(
                                 "Jumlah nomor soal:", min_value=1, max_value=100,
@@ -3374,7 +3381,23 @@ elif peran == "🔒 Pengajar / Tutor":
                                 ]
                                 tipe_jawaban_cfg = str(row_cfg.get("Tipe Jawaban", "Pilihan ganda")).strip()
                                 kunci_cfg = str(row_cfg.get("Kunci Jawaban", "")).strip()
-                                pasangan_cfg = json.loads(str(row_cfg.get("Pasangan (JSON)", "")).strip()) if str(row_cfg.get("Pasangan (JSON)", "")).strip() else {}
+                                nilai_pasangan = row_cfg.get("Pasangan (JSON)", "")
+                                try:
+                                    kosong_pasangan = nilai_pasangan is None or pd.isna(nilai_pasangan) or not str(nilai_pasangan).strip()
+                                except (TypeError, ValueError):
+                                    kosong_pasangan = not str(nilai_pasangan).strip()
+                                try:
+                                    pasangan_cfg = {} if kosong_pasangan else json.loads(str(nilai_pasangan).strip())
+                                except (ValueError, TypeError):
+                                    st.error(f"Format Pasangan (JSON) nomor {int(row_cfg.get('Nomor', 0))} tidak valid. Kosongkan jika bukan soal menjodohkan.")
+                                    pasangan_cfg = {}
+                                if pasangan_cfg and (
+                                    not isinstance(pasangan_cfg, dict)
+                                    or not isinstance(pasangan_cfg.get("kolom_A"), dict)
+                                    or not isinstance(pasangan_cfg.get("kolom_B"), dict)
+                                ):
+                                    st.error(f"Pasangan nomor {int(row_cfg.get('Nomor', 0))} harus berisi JSON kolom_A dan kolom_B.")
+                                    pasangan_cfg = {}
                                 if tipe_jawaban_cfg.casefold() == "menjodohkan" and kunci_cfg:
                                     try:
                                         kunci_parsed = json.loads(kunci_cfg)
