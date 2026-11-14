@@ -1953,6 +1953,11 @@ TASK_MODE_UPLOAD = "Tugas upload"
 TASK_META_KEY = "_nazma_task_meta"
 
 
+def reset_mode_pengerjaan_widget(widget_key):
+    """Hapus pilihan mode lama ketika sumber soal berubah."""
+    st.session_state.pop(f"mode_{widget_key}", None)
+
+
 def bungkus_soal_dengan_mode(daftar_soal, mode):
     """Simpan mode tugas sebagai metadata dalam Soal_JSON tanpa menambah kolom sheet."""
     soal = [dict(x) for x in (daftar_soal or []) if isinstance(x, dict)]
@@ -3175,10 +3180,19 @@ elif peran == "🔒 Pengajar / Tutor":
                         judul_tugas = st.text_input("Judul / topik tugas:", key=f"jd_{k}")
                         # Mode dipilih di aplikasi; tidak perlu mengubah Spreadsheet secara manual.
                         jenis_tugas = "Online"  # nilai kompatibilitas untuk kategori tugas lama
+                        mode_widget_key = f"mode_{k}"
+                        init_mode_key = f"_mode_widget_initialized_{k}"
+                        # Bersihkan nilai widget yang mungkin tertinggal dari sesi/kode sebelumnya.
+                        # Dilakukan satu kali sebelum widget dibuat, bukan pada setiap rerun.
+                        if init_mode_key not in st.session_state:
+                            st.session_state.pop(mode_widget_key, None)
+                            st.session_state[init_mode_key] = True
                         sumber_tugas = st.radio(
                             "Sumber materi / soal:",
                             [SUMBER_BANK, SUMBER_DRIVE, SUMBER_UPLOAD],
-                            key=f"sm_{k}"
+                            key=f"sm_{k}",
+                            on_change=reset_mode_pengerjaan_widget,
+                            args=(k,)
                         )
                         if sumber_tugas == SUMBER_BANK:
                             mode_pengerjaan = TASK_MODE_ONLINE
