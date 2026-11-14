@@ -3173,19 +3173,24 @@ elif peran == "🔒 Pengajar / Tutor":
                         untuk_pr = kategori_label == KATEGORI_PR
                         mapel_tugas = st.selectbox("Mata pelajaran:", MAPEL_OPTIONS, key=f"mp_{k}")
                         judul_tugas = st.text_input("Judul / topik tugas:", key=f"jd_{k}")
-                        # Jenis pengerjaan dan mode siswa tidak dipilih di sini.
-                        # Mode_Pengerjaan ditetapkan per baris pada Tugas_Sesi_Siswa_v2.
+                        # Mode dipilih di aplikasi; tidak perlu mengubah Spreadsheet secara manual.
                         jenis_tugas = "Online"  # nilai kompatibilitas untuk kategori tugas lama
-                        mode_pengerjaan = TASK_MODE_UPLOAD  # default aman; tutor dapat mengubah kolom di Spreadsheet
-                        st.caption(
-                            "Cara siswa mengerjakan diatur pada kolom Mode_Pengerjaan di Spreadsheet setelah tugas dibuat. "
-                            "Isi dengan salah satu nilai persis: Materi saja, Tugas online, atau Tugas upload."
-                        )
                         sumber_tugas = st.radio(
                             "Sumber materi / soal:",
                             [SUMBER_BANK, SUMBER_DRIVE, SUMBER_UPLOAD],
                             key=f"sm_{k}"
                         )
+                        if sumber_tugas == SUMBER_BANK:
+                            mode_pengerjaan = TASK_MODE_ONLINE
+                            st.caption("Bank Soal: lembar jawaban online dibuat otomatis dari tipe, opsi, dan kunci di Master Bank Soal.")
+                        else:
+                            mode_pengerjaan = st.radio(
+                                "Cara siswa mengerjakan:",
+                                [TASK_MODE_ONLINE, TASK_MODE_UPLOAD],
+                                format_func=lambda x: "Lembar jawaban online" if x == TASK_MODE_ONLINE else "Upload hasil tulisan tangan",
+                                horizontal=True,
+                                key=f"mode_{k}"
+                            )
                         instruksi_tugas = st.text_area("Instruksi untuk siswa:", key=f"in_{k}")
                         timer_tugas = st.selectbox(
                             "Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=0 if untuk_pr else 2,
@@ -3247,7 +3252,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                     st.caption("Teks soal tetap mengambil dari Bank Soal. Di tabel ini tutor dapat mengatur tipe jawaban, opsi, kunci, dan bobot.")
                                     tipe_diizinkan = [
                                         "Pilihan ganda", "Pilihan ganda kompleks", "Benar-Salah",
-                                        "PGK Kategori", "PGK MCMA", "Essay"
+                                        "PGK Kategori", "PGK MCMA", "Essay", "Menjodohkan"
                                     ]
                                     tabel_cfg = []
                                     for nomor, qitem in enumerate(soal_dipilih, 1):
@@ -3301,7 +3306,9 @@ elif peran == "🔒 Pengajar / Tutor":
                             st.markdown("#### ⚙️ Buat lembar jawaban dari lampiran")
                             st.caption(
                                 "Siswa membaca soal dari PDF atau tautan yang dilampirkan. "
-                                "Atur nomor, tipe jawaban, opsi, kunci, dan bobot di sini."
+                                "Atur tipe secara bebas pada setiap nomor; tipe boleh berulang dan diselingi. "
+                                "Untuk Menjodohkan, isi Kolom A/B dengan format kode:teks dipisahkan |, "
+                                "lalu isi kunci pasangan dengan format A:X|B:Y."
                             )
                             jumlah_manual = st.number_input(
                                 "Jumlah nomor soal:", min_value=1, max_value=100,
@@ -3309,12 +3316,15 @@ elif peran == "🔒 Pengajar / Tutor":
                             )
                             tipe_manual = [
                                 "Pilihan ganda", "Pilihan ganda kompleks", "Benar-Salah",
-                                "PGK Kategori", "PGK MCMA", "Essay"
+                                "PGK Kategori", "PGK MCMA", "Essay", "Menjodohkan"
                             ]
                             baris_manual = [{
                                 "Nomor": nomor,
                                 "Tipe Jawaban": "Pilihan ganda",
                                 "Opsi (pisahkan dengan |)": "A | B | C | D",
+                                "Kolom A (kode:teks|...)": "",
+                                "Kolom B (kode:teks|...)": "",
+                                "Kunci Pasangan (A:X|...)": "",
                                 "Kunci Jawaban": "",
                                 "Bobot": 1.0
                             } for nomor in range(1, int(jumlah_manual) + 1)]
@@ -3339,11 +3349,29 @@ elif peran == "🔒 Pengajar / Tutor":
                                     x.strip() for x in str(row_cfg.get("Opsi (pisahkan dengan |)", "")).split("|")
                                     if x.strip()
                                 ]
+                                tipe_cfg = str(row_cfg.get("Tipe Jawaban", "Pilihan ganda")).strip()
+                                def _parse_pasangan_manual(teks):
+                                    hasil = {}
+                                    for bagian in str(teks or "").split("|"):
+                                        if ":" in bagian:
+                                            kode, isi = bagian.split(":", 1)
+                                            if kode.strip() and isi.strip():
+                                                hasil[kode.strip()] = isi.strip()
+                                    return hasil
+                                pasangan_cfg = {}
+                                kunci_cfg = str(row_cfg.get("Kunci Jawaban", "")).strip()
+                                if tipe_cfg.casefold() == "menjodohkan":
+                                    pasangan_cfg = {
+                                        "kolom_A": _parse_pasangan_manual(row_cfg.get("Kolom A (kode:teks|...)", "")),
+                                        "kolom_B": _parse_pasangan_manual(row_cfg.get("Kolom B (kode:teks|...)", ""))
+                                    }
+                                    kunci_cfg = {"pasangan": _parse_pasangan_manual(row_cfg.get("Kunci Pasangan (A:X|...)", ""))}
                                 soal_dipilih.append({
                                     "Teks_Soal": "",
-                                    "Bentuk_Soal": str(row_cfg.get("Tipe Jawaban", "Pilihan ganda")).strip(),
+                                    "Bentuk_Soal": tipe_cfg,
                                     "Opsi_List": opsi_cfg,
-                                    "Kunci": str(row_cfg.get("Kunci Jawaban", "")).strip(),
+                                    "Pasangan": pasangan_cfg,
+                                    "Kunci": kunci_cfg,
                                     "Bobot": float(row_cfg.get("Bobot", 1) or 1)
                                 })
 
