@@ -2708,7 +2708,17 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
     tenggat = str(t.get("Tenggat", "")).strip()
     tambahan = f" · tenggat {tenggat}" if tenggat and not adalah_materi(t) else ""
 
-    with st.expander(f"{ikon} {t.get('Mapel', 'Mapel')} · {judul} · {label}{tambahan}", expanded=False):
+    # Pertahankan kartu tetap terbuka setelah tombol Mulai memicu st.rerun().
+    # Cek sesi dari server juga agar kartu terbuka kembali setelah refresh halaman.
+    expander_state_key = f"_buka_kartu_tugas_{task_id}"
+    sesi_awal = baca_sesi_aktif_siswa(siswa_id) if siswa_id else None
+    sesi_tugas_ini_awal = bool(
+        sesi_awal and str(sesi_awal.get("ID_Tugas", "")).strip() == task_id
+        and str(sesi_awal.get("Status", "")).strip().lower() == "aktif"
+    )
+    kartu_terbuka = bool(st.session_state.get(expander_state_key, False) or sesi_tugas_ini_awal)
+
+    with st.expander(f"{ikon} {t.get('Mapel', 'Mapel')} · {judul} · {label}{tambahan}", expanded=kartu_terbuka):
         timer_txt = str(t.get("Timer_Menit", "")).strip()
         st.write(f"**Instruksi Tutor:** {t.get('Instruksi') or '-'}")
         st.write(f"**Diberikan:** {t.get('Tanggal') or '-'}")
@@ -2745,6 +2755,7 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                 if st.button("▶️ Mulai Mengerjakan", key=f"mulai_online_{task_id}", type="primary"):
                     ok_mulai, pesan_mulai = mulai_sesi_online(siswa_id, task_id)
                     if ok_mulai:
+                        st.session_state[expander_state_key] = True
                         st.success(pesan_mulai)
                         st.rerun()
                     else:
@@ -2779,15 +2790,27 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
             if terkunci:
                 st.info("Jawaban sudah dikirim, jadi tidak bisa diubah lagi.")
 
+            data_soal_tidak_lengkap = False
             for i, soal in enumerate(daftar_soal, 1):
                 qkey = f"student_{task_id}_{i}"
                 bentuk = str(soal.get("Bentuk_Soal", "")).lower()
                 opsi = soal.get("Opsi_List", [])
+                if not isinstance(opsi, list):
+                    opsi = []
                 teks_tampil = str(soal.get("Teks_Soal", "") or "").strip()
                 if teks_tampil:
                     st.markdown(f"**{i}. {teks_tampil}**")
                 else:
-                    st.markdown(f"**{i}. Jawab berdasarkan soal pada lampiran di atas.**")
+                    data_soal_tidak_lengkap = True
+                    st.warning(f"Soal nomor {i} belum memiliki teks pertanyaan. Tutor perlu memperbaiki soal ini.")
+                    st.markdown(f"**{i}. Teks pertanyaan belum tersedia.**")
+                if "pilihan ganda" in bentuk:
+                    opsi_hanya_label = bool(opsi) and all(
+                        re.fullmatch(r"[A-Da-d][.)]?", str(x).strip()) for x in opsi
+                    )
+                    if len(opsi) < 2 or opsi_hanya_label:
+                        data_soal_tidak_lengkap = True
+                        st.warning(f"Pilihan jawaban nomor {i} belum lengkap. Hubungi tutor.")
                 if soal.get("Url_Gambar"):
                     st.image(img_url(soal["Url_Gambar"]), use_container_width=True)
                 tampilkan_media_soal(soal)
@@ -2891,12 +2914,17 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                     v = st.session_state.get(f"student_{task_id}_{i}", "")
                     current_answers[str(i)] = "" if v is None else v
                 belum = [n for n, v in current_answers.items() if jawaban_kosong(v)]
-                boleh_kirim = True
+                boleh_kirim = not data_soal_tidak_lengkap
+                if data_soal_tidak_lengkap:
+                    st.error("Tugas ini belum dapat dikirim karena ada data soal yang tidak lengkap. Tutor perlu memperbaikinya terlebih dahulu.")
                 if belum:
                     st.warning("Soal nomor " + ", ".join(belum) + " belum dijawab.")
-                    boleh_kirim = st.checkbox("Saya yakin ingin mengirim walaupun masih ada soal yang kosong.",
-                                              key=f"yakin_{task_id}")
-                if st.button("📤 Kirim Jawaban", key=f"submit_{task_id}", disabled=not boleh_kirim):
+                    konfirmasi_kosong = st.checkbox(
+                        "Saya yakin ingin mengirim walaupun masih ada soal yang kosong.",
+                        key=f"yakin_{task_id}"
+                    )
+                    boleh_kirim = boleh_kirim and konfirmasi_kosong
+                if st.button("📤 Kirim Jawaban", key=f"submit_{task_id}", disabled=(not boleh_kirim)):
                     try:
                         # Upload file lebih dulu; tabel jawaban online yang lama tidak diubah.
                         if file_jawaban:
@@ -2915,7 +2943,7 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
         else:
             # Mode upload: siswa mengerjakan di kertas lalu mengunggah hasilnya.
             if mode_pengerjaan == TASK_MODE_ONLINE and not daftar_soal:
-                st.error("Lembar jawaban online belum tersedia. Hubungi tutor; jangan kirim sebagai tugas upload.")
+                st.error("Mode tugas terbaca sebagai online, tetapi daftar soal tidak ditemukan atau format Soal_JSON tidak valid. Hubungi tutor untuk memeriksa data tugas.")
             elif terkunci:
                 st.info("Sudah ditandai selesai. Tutor akan memeriksa hasilnya." if kode == "dikirim"
                         else "Sudah dinilai oleh Tutor.")
