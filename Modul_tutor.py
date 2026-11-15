@@ -2,7 +2,7 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import Request as GoogleAuthRequest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 import time
 import pandas as pd
@@ -48,7 +48,7 @@ MAPEL_OPTIONS = [
 # KONFIGURASI HALAMAN
 # =========================================================
 st.set_page_config(
-    page_title="Portal Bimbel Rumah Nazma - Tahap 7.29",
+    page_title="Portal Bimbel Rumah Nazma - Tahap 7.37",
     layout="wide",
     page_icon="🎓",
     initial_sidebar_state="expanded"
@@ -1821,7 +1821,7 @@ def _nilai_parse_jawaban(v):
 # =========================================================
 # TAHAP 7.36 — MODUL 8 RANCANGAN PENGEMBANGAN
 # Kartu soal, validasi, rubrik essay, persetujuan nilai,
-# pratinjau, draft persisten, template, dan laporan.
+# pratinjau, draft persisten, template, laporan, dan pemulihan form aktif.
 # =========================================================
 
 TEMPLATE_SOAL_HEADERS = [
@@ -1830,6 +1830,10 @@ TEMPLATE_SOAL_HEADERS = [
 ]
 DRAFT_TUGAS_HEADERS = [
     "ID_Draft", "ID_Siswa", "Nama_Siswa", "Tutor",
+    "Payload_JSON", "Status", "Dibuat_Pada", "Diperbarui_Pada"
+]
+FORM_AKTIF_HEADERS = [
+    "ID_Form", "ID_Siswa", "Nama_Siswa", "Tutor",
     "Payload_JSON", "Status", "Dibuat_Pada", "Diperbarui_Pada"
 ]
 PERSETUJUAN_NILAI_HEADERS = [
@@ -1862,29 +1866,52 @@ def _parse_pasangan_manual(teks):
 
 def _parse_rubrik_kata_kunci(teks):
     """
-    Format per baris: kata_kunci | sinonim1, sinonim2 | bobot
-    Contoh: fotosintesis | proses fotosintesis, membuat makanan | 40
+    Menerima dua format:
+    1) Kata kunci | sinonim1, sinonim2 | bobot
+    2) Kata kunci | sinonim (bobot)
+    Satu kriteria ditulis dalam satu baris.
     """
     hasil = []
-    for baris in str(teks or "").splitlines():
+    pola_bobot_akhir = re.compile(r"^(.*?)\s*\(\s*([0-9]+(?:[.,][0-9]+)?)\s*\)\s*$")
+    for nomor_baris, baris in enumerate(str(teks or "").splitlines(), 1):
         baris = baris.strip()
         if not baris:
             continue
         bagian = [x.strip() for x in baris.split("|")]
-        if len(bagian) < 3:
-            raise ValueError(
-                "Format rubrik Essay: Kata kunci | sinonim dipisahkan koma | bobot. "
-                "Satu kriteria ditulis dalam satu baris."
-            )
-        kata = bagian[0]
-        sinonim = [x.strip() for x in bagian[1].split(",") if x.strip()]
+        kata = ""
+        sinonim_teks = ""
+        bobot_teks = ""
+
+        if len(bagian) >= 3:
+            kata, sinonim_teks, bobot_teks = bagian[0], bagian[1], bagian[2]
+        elif len(bagian) == 2:
+            kata, kolom_sinonim = bagian
+            cocok = pola_bobot_akhir.match(kolom_sinonim)
+            if not cocok:
+                raise ValueError(
+                    f"Baris {nomor_baris}: gunakan 'Kata kunci | sinonim (bobot)' "
+                    "atau 'Kata kunci | sinonim | bobot'."
+                )
+            sinonim_teks, bobot_teks = cocok.group(1).strip(), cocok.group(2).strip()
+        else:
+            cocok = pola_bobot_akhir.match(bagian[0])
+            if not cocok:
+                raise ValueError(
+                    f"Baris {nomor_baris}: format rubrik belum benar. "
+                    "Contoh: Fotosintesis | proses fotosintesis (30)."
+                )
+            kata, bobot_teks = cocok.group(1).strip(), cocok.group(2).strip()
+            sinonim_teks = ""
+
+        sinonim = [x.strip() for x in sinonim_teks.split(",") if x.strip()]
         try:
-            bobot = float(bagian[2])
+            bobot = float(str(bobot_teks).replace(",", "."))
         except (ValueError, TypeError):
             raise ValueError(f"Bobot rubrik '{kata}' harus berupa angka.")
         if not kata or bobot <= 0:
             raise ValueError("Kata kunci wajib diisi dan bobot harus lebih dari nol.")
         hasil.append({"kata_kunci": kata, "alternatif": sinonim, "bobot": bobot})
+
     if hasil and sum(float(x["bobot"]) for x in hasil) <= 0:
         raise ValueError("Total bobot rubrik harus lebih dari nol.")
     return hasil
@@ -2039,6 +2066,129 @@ def hapus_draft_tugas_persisten(id_siswa, tutor):
         pass
 
 
+def _serialisasi_form_aman(nilai):
+    """Ubah state widget menjadi struktur JSON yang aman untuk dipulihkan."""
+    if isinstance(nilai, datetime):
+        return {"__nazma_type__": "datetime", "value": nilai.isoformat()}
+    if isinstance(nilai, date):
+        return {"__nazma_type__": "date", "value": nilai.isoformat()}
+    if isinstance(nilai, dict):
+        return {str(k): _serialisasi_form_aman(v) for k, v in nilai.items()}
+    if isinstance(nilai, (list, tuple)):
+        return [_serialisasi_form_aman(v) for v in nilai]
+    if nilai is None or isinstance(nilai, (str, int, float, bool)):
+        return nilai
+    return None
+
+
+def _pulihkan_form_aman(nilai):
+    if isinstance(nilai, dict):
+        tipe = nilai.get("__nazma_type__")
+        if tipe == "date":
+            try:
+                return date.fromisoformat(str(nilai.get("value", "")))
+            except ValueError:
+                return None
+        if tipe == "datetime":
+            try:
+                return datetime.fromisoformat(str(nilai.get("value", "")))
+            except ValueError:
+                return None
+        return {k: _pulihkan_form_aman(v) for k, v in nilai.items()}
+    if isinstance(nilai, list):
+        return [_pulihkan_form_aman(v) for v in nilai]
+    return nilai
+
+
+def simpan_form_aktif_persisten(id_siswa, nama_siswa, tutor, payload):
+    """Simpan satu pekerjaan form aktif per tutor-siswa; draft yang sudah dibuat tetap terpisah."""
+    ws = _sheet_v2("DB_Form_Tugas_Aktif", FORM_AKTIF_HEADERS)
+    now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    payload_json = json.dumps(_serialisasi_form_aman(payload), ensure_ascii=False)
+    records = baca_records_aman(ws, refresh=True)
+    aktif = next((
+        r for r in reversed(records)
+        if str(r.get("ID_Siswa", "")) == str(id_siswa)
+        and str(r.get("Tutor", "")) == str(tutor)
+        and str(r.get("Status", "")) == "Aktif"
+    ), None)
+    data = [
+        aktif.get("ID_Form") if aktif else "FRM-" + uuid.uuid4().hex[:10].upper(),
+        str(id_siswa), str(nama_siswa), str(tutor), payload_json, "Aktif",
+        aktif.get("Dibuat_Pada", now) if aktif else now, now
+    ]
+    if aktif:
+        ws.update(f"A{aktif['_baris']}:H{aktif['_baris']}", [data], value_input_option="RAW")
+    else:
+        ws.append_row(data, value_input_option="RAW")
+    return hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
+
+def ambil_form_aktif_persisten(id_siswa, tutor):
+    ws = _sheet_v2("DB_Form_Tugas_Aktif", FORM_AKTIF_HEADERS)
+    record = next((
+        r for r in reversed(baca_records_aman(ws, refresh=True))
+        if str(r.get("ID_Siswa", "")) == str(id_siswa)
+        and str(r.get("Tutor", "")) == str(tutor)
+        and str(r.get("Status", "")) == "Aktif"
+    ), None)
+    if not record:
+        return None
+    payload = json.loads(record.get("Payload_JSON", "{}") or "{}")
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "ID_Form": record.get("ID_Form", ""),
+        "Diperbarui_Pada": record.get("Diperbarui_Pada", ""),
+        "payload": _pulihkan_form_aman(payload)
+    }
+
+
+def ubah_status_form_aktif(id_siswa, tutor, status):
+    ws = _sheet_v2("DB_Form_Tugas_Aktif", FORM_AKTIF_HEADERS)
+    for record in baca_records_aman(ws, refresh=True):
+        if (str(record.get("ID_Siswa", "")) == str(id_siswa)
+            and str(record.get("Tutor", "")) == str(tutor)
+            and str(record.get("Status", "")) == "Aktif"):
+            ws.update_cell(record["_baris"], FORM_AKTIF_HEADERS.index("Status") + 1, str(status))
+
+
+def _kunci_autosave_form(id_siswa, tutor):
+    return "_nazma_form_autosave_" + hashlib.sha1(
+        f"{id_siswa}|{tutor}".encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _ambil_widget_state_form(k):
+    """Ambil state kontrol form yang perlu dipulihkan; file uploader disimpan terpisah."""
+    prefix_tepat = (
+        f"kt_{k}", f"mp_{k}", f"jd_{k}", f"sm_{k}", f"lk_{k}",
+        f"mode_{k}", f"jumlah_manual_{k}", f"_template_awal_{k}",
+        f"in_{k}", f"tm_{k}_", f"tg_{k}_", f"template_pilih_{k}",
+        f"template_nama_{k}", f"ps_{k}_", f"fj_{k}", f"fk_{k}",
+        f"fm_{k}", f"ft_{k}", f"fb_{k}"
+    )
+    prefix_awalan = f"cfg_{k}_"
+    hasil = {}
+    for key, value in list(st.session_state.items()):
+        nama = str(key)
+        if nama.startswith(prefix_awalan) or any(
+            nama == p or (p.endswith("_") and nama.startswith(p))
+            for p in prefix_tepat
+        ):
+            if nama.startswith(f"up_{k}"):
+                continue
+            aman = _serialisasi_form_aman(value)
+            if aman is not None:
+                hasil[nama] = aman
+    return hasil
+
+
+def _hapus_lampiran_autosave(k):
+    st.session_state.pop(f"_autosave_files_{k}", None)
+    st.session_state.pop(f"up_{k}", None)
+
+
 def catat_persetujuan_nilai(id_jawaban, id_tugas, id_siswa, nilai_sementara,
                             nilai_akhir, tutor, catatan):
     ws = _sheet_v2("DB_Persetujuan_Nilai", PERSETUJUAN_NILAI_HEADERS)
@@ -2165,7 +2315,7 @@ def buat_konfigurasi_kartu_soal(jumlah, key_prefix, konfigurasi_awal=None):
                 )
                 opsi = ["Benar", "Salah"]
             elif tipe == "Essay":
-                st.caption("Tulis satu kriteria per baris: kata kunci | sinonim dipisahkan koma | bobot.")
+                st.caption("Satu kriteria per baris. Format: Kata kunci | sinonim | bobot, atau Kata kunci | sinonim (bobot). Sinonim lebih dari satu dipisahkan koma.")
                 rubrik_awal = awal.get("Rubrik_Kata_Kunci", []) or []
                 teks_rubrik_awal = "\n".join(
                     f"{x.get('kata_kunci','')} | {', '.join(x.get('alternatif',[]) or [])} | {x.get('bobot',0)}"
@@ -3641,10 +3791,61 @@ elif peran == "🔒 Pengajar / Tutor":
                         except Exception:
                             st.session_state[draft_key] = []
 
+                    # Pulihkan pekerjaan form yang belum dipindahkan ke daftar draft.
+                    id_siswa_form = get_siswa_id_by_nama(selected_siswa)
+                    tutor_form = st.session_state.get("tutor_nama", "")
+                    recovery_key = _kunci_autosave_form(id_siswa_form, tutor_form)
+                    keputusan_key = f"_nazma_form_recovery_decided_{recovery_key}"
+                    try:
+                        pekerjaan_aktif = ambil_form_aktif_persisten(id_siswa_form, tutor_form)
+                    except Exception as exc:
+                        pekerjaan_aktif = None
+                        st.error(f"Status pekerjaan terakhir tidak dapat diperiksa dari Google Sheets: {exc}")
+
+                    if pekerjaan_aktif and not st.session_state.get(keputusan_key):
+                        st.warning(
+                            "Ada pekerjaan yang belum selesai untuk siswa ini. "
+                            f"Pembaruan terakhir: {pekerjaan_aktif.get('Diperbarui_Pada') or 'waktu tidak tersedia'}."
+                        )
+                        col_lanjut, col_baru = st.columns(2)
+                        with col_lanjut:
+                            if st.button("↩ Lanjutkan pekerjaan terakhir", key=f"pulihkan_form_{recovery_key}", type="primary"):
+                                st.session_state["_nazma_form_restore_payload"] = pekerjaan_aktif["payload"]
+                                st.session_state[keputusan_key] = True
+                                st.rerun()
+                        with col_baru:
+                            if st.button("＋ Mulai pekerjaan baru", key=f"baru_form_{recovery_key}"):
+                                nomor_lama = int(pekerjaan_aktif["payload"].get("form_n", st.session_state.get("form_n", 0)) or 0)
+                                ubah_status_form_aktif(id_siswa_form, tutor_form, "Diarsipkan")
+                                st.session_state["form_n"] = max(int(st.session_state.get("form_n", 0)), nomor_lama + 1)
+                                st.session_state[keputusan_key] = True
+                                st.rerun()
+
+                    # Terapkan state sebelum widget dibuat agar Streamlit tidak menolak perubahan session_state.
+                    payload_pulih = st.session_state.pop("_nazma_form_restore_payload", None)
+                    if isinstance(payload_pulih, dict):
+                        n_pulih = int(payload_pulih.get("form_n", 0) or 0)
+                        st.session_state["form_n"] = n_pulih
+                        k_pulih = f"{selected_siswa}_{n_pulih}"
+                        for nama_widget, nilai_widget in (payload_pulih.get("widget_state", {}) or {}).items():
+                            st.session_state[nama_widget] = nilai_widget
+                        st.session_state[f"_source_identity_{k_pulih}"] = payload_pulih.get("source_identity", "")
+                        st.session_state[f"_autosave_files_{k_pulih}"] = payload_pulih.get("files", []) or []
+                        st.session_state[f"_nazma_restored_notice_{k_pulih}"] = True
+                        st.session_state[recovery_key] = payload_pulih
+                        restored_json = json.dumps(
+                            _serialisasi_form_aman(payload_pulih), ensure_ascii=False, sort_keys=True
+                        )
+                        st.session_state[f"_nazma_form_autosave_hash_{recovery_key}"] = hashlib.sha256(
+                            restored_json.encode("utf-8")
+                        ).hexdigest()
+
                     with st.expander("➕ Buat tugas baru", expanded=True):
                         # Widget biasa (bukan st.form) supaya pilihan sumber/kategori langsung mengubah isian di bawahnya.
                         n_form = st.session_state.get("form_n", 0)
                         k = f"{selected_siswa}_{n_form}"
+                        if st.session_state.pop(f"_nazma_restored_notice_{k}", False):
+                            st.success("Pekerjaan terakhir berhasil dipulihkan. Periksa kembali sebelum melanjutkan.")
 
                         kategori_label = st.radio("Kategori penugasan:", [KATEGORI_SESI, KATEGORI_PR], key=f"kt_{k}")
                         untuk_pr = kategori_label == KATEGORI_PR
@@ -3742,12 +3943,46 @@ elif peran == "🔒 Pengajar / Tutor":
                                 key=f"up_{k}"
                             )
                             daftar_file_sumber = list(file_tugas or [])
-                            source_ready = bool(daftar_file_sumber)
+                            autosave_files_key = f"_autosave_files_{k}"
+                            autosave_files = list(st.session_state.get(autosave_files_key, []) or [])
                             identitas_file = [
                                 hashlib.sha256(f.getvalue()).hexdigest()
                                 for f in daftar_file_sumber
                             ]
-                            source_identity = "upload:" + "|".join(identitas_file)
+                            hash_tersimpan = {str(x.get("sha256", "")) for x in autosave_files}
+                            # File baru ditambahkan ke lampiran tersimpan; penghapusan dilakukan lewat tombol khusus.
+                            file_gagal_autosave = []
+                            for f, hash_file in zip(daftar_file_sumber, identitas_file):
+                                if hash_file in hash_tersimpan:
+                                    continue
+                                try:
+                                    url_file = upload_lampiran_ke_drive(
+                                        f.getvalue(), f.name, f.type or "application/octet-stream"
+                                    )
+                                    autosave_files.append({
+                                        "name": f.name, "mime": f.type or "application/octet-stream",
+                                        "url": url_file, "uploaded": True, "sha256": hash_file
+                                    })
+                                    hash_tersimpan.add(hash_file)
+                                except Exception as exc:
+                                    file_gagal_autosave.append(f"{f.name}: {exc}")
+                            st.session_state[autosave_files_key] = autosave_files
+                            if file_gagal_autosave:
+                                st.error("Lampiran belum berhasil diamankan untuk pemulihan: " + "; ".join(file_gagal_autosave))
+                            if autosave_files:
+                                st.caption(f"{len(autosave_files)} lampiran sudah diamankan di Google Drive untuk pemulihan.")
+                                st.button("Hapus lampiran tersimpan", key=f"hapus_lampiran_autosave_{k}",
+                                          on_click=_hapus_lampiran_autosave, args=(k,))
+                            identitas_persisten = [str(x.get("sha256", "")) for x in autosave_files if x.get("sha256")]
+                            source_ready = (
+                                bool(autosave_files)
+                                and not file_gagal_autosave
+                                and len(autosave_files) >= len(daftar_file_sumber)
+                            )
+                            source_identity = "upload:" + "|".join(sorted(set(identitas_persisten)))
+
+                        if sumber_tugas != SUMBER_UPLOAD:
+                            st.session_state.pop(f"_autosave_files_{k}", None)
 
                         # Jika sumber diganti, dihapus, atau isinya berubah, pilihan mode dan konfigurasi lama
                         # direset agar tidak tertaut ke lampiran yang berbeda.
@@ -3870,6 +4105,50 @@ elif peran == "🔒 Pengajar / Tutor":
                             key=f"tg_{k}_{'pr' if untuk_pr else 'sesi'}"
                         )
 
+                        # Autosave pekerjaan yang belum masuk daftar draft ke Google Sheets.
+                        state_form = _ambil_widget_state_form(k)
+                        files_form = list(st.session_state.get(f"_autosave_files_{k}", []) or [])
+                        ada_pekerjaan = bool(
+                            judul_tugas.strip()
+                            or link_tugas.strip()
+                            or files_form
+                            or soal_dipilih
+                            or (sumber_tugas != SUMBER_BANK and source_ready and mode_pengerjaan is not None)
+                            or instruksi_tugas.strip()
+                            or any(
+                                ("_rubrik_" in nama and str(nilai or "").strip())
+                                or ("_kunci_" in nama and str(nilai or "").strip())
+                                or ("_kp_" in nama and str(nilai or "").strip())
+                                for nama, nilai in state_form.items()
+                            )
+                        )
+                        if ada_pekerjaan:
+                            payload_form = {
+                                "form_n": n_form,
+                                "widget_state": state_form,
+                                "source_identity": source_identity,
+                                "files": files_form
+                            }
+                            payload_json_form = json.dumps(
+                                _serialisasi_form_aman(payload_form), ensure_ascii=False, sort_keys=True
+                            )
+                            payload_hash = hashlib.sha256(payload_json_form.encode("utf-8")).hexdigest()
+                            hash_session_key = f"_nazma_form_autosave_hash_{recovery_key}"
+                            if st.session_state.get(hash_session_key) != payload_hash:
+                                try:
+                                    simpan_form_aktif_persisten(
+                                        id_siswa_form, selected_siswa, tutor_form, payload_form
+                                    )
+                                    st.session_state[hash_session_key] = payload_hash
+                                    st.session_state[recovery_key] = payload_form
+                                    st.caption("✓ Pekerjaan sementara tersimpan otomatis.")
+                                except Exception as exc:
+                                    st.error(f"Pekerjaan belum aman tersimpan. Periksa koneksi Google Sheets: {exc}")
+                            else:
+                                st.caption("✓ Pekerjaan tersimpan.")
+                        elif st.session_state.get(recovery_key):
+                            st.caption("Pekerjaan sebelumnya masih tersimpan sampai Ibu memilih mulai baru atau memindahkannya ke daftar draft.")
+
                         tambah_draft = st.button("Tambahkan ke daftar tugas", key=f"tambah_{k}")
 
                         if tambah_draft:
@@ -3889,8 +4168,10 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.error("Masukkan minimal satu link Drive / Flipbook.")
                             elif sumber_tugas == SUMBER_DRIVE and any(not l.lower().startswith(("http://", "https://")) for l in link_list):
                                 st.error("Setiap link harus diawali https://")
-                            elif sumber_tugas == SUMBER_UPLOAD and not daftar_file:
+                            elif sumber_tugas == SUMBER_UPLOAD and not daftar_file and not files_form:
                                 st.error("Pilih minimal satu file yang akan dilampirkan.")
+                            elif sumber_tugas == SUMBER_UPLOAD and len(files_form) < len(daftar_file):
+                                st.error("Sebagian lampiran belum berhasil disimpan ke Google Drive. Coba lagi sebelum membuat draft.")
                             elif any(len(f.getvalue()) > 20 * 1024 * 1024 for f in daftar_file):
                                 st.error("Ukuran tiap lampiran maksimal 20 MB. Kompres video/audio lalu unggah kembali.")
                             elif total_byte > 40 * 1024 * 1024:
@@ -3898,16 +4179,8 @@ elif peran == "🔒 Pengajar / Tutor":
                             elif sumber_tugas != SUMBER_BANK and mode_pengerjaan == TASK_MODE_ONLINE and masalah_konfigurasi:
                                 st.error("Konfigurasi lembar jawaban belum valid. Periksa kartu soal yang ditandai.")
                             else:
-                                # Lampiran diunggah saat masuk draft agar draft dapat dipulihkan setelah sesi terputus.
-                                files = []
-                                for f in daftar_file:
-                                    url_file = upload_lampiran_ke_drive(
-                                        f.getvalue(), f.name, f.type or "application/octet-stream"
-                                    )
-                                    files.append({
-                                        "name": f.name, "mime": f.type or "application/octet-stream",
-                                        "url": url_file, "uploaded": True
-                                    })
+                                # Lampiran sudah diamankan di Google Drive saat dipilih agar form aktif dapat dipulihkan.
+                                files = list(files_form) if sumber_tugas == SUMBER_UPLOAD else []
                                 st.session_state[draft_key].append({
                                     "Mapel": mapel_tugas, "Judul": judul_tugas.strip(),
                                     # Kategori PR disimpan di Jenis_Tugas: "PR Online" / "PR Offline"
@@ -3925,6 +4198,12 @@ elif peran == "🔒 Pengajar / Tutor":
                                     )
                                 except Exception as exc:
                                     st.warning(f"Draft tersimpan di sesi ini, tetapi sinkronisasi Google Sheets gagal: {exc}")
+                                try:
+                                    ubah_status_form_aktif(id_siswa_form, tutor_form, "Dipindahkan ke daftar draft")
+                                except Exception as exc:
+                                    st.warning(f"Tugas masuk daftar draft, tetapi status pekerjaan sementara belum diperbarui: {exc}")
+                                st.session_state.pop(f"_nazma_form_autosave_hash_{recovery_key}", None)
+                                st.session_state.pop(f"_autosave_files_{k}", None)
                                 st.session_state["form_n"] = n_form + 1  # kosongkan isian, siap menambah tugas berikutnya
                                 st.success("Masuk ke daftar draft. Anda bisa menambah tugas atau PR lain (mapel lain / jenis lain), lalu tekan Simpan & Kirim.")
                                 st.rerun()
