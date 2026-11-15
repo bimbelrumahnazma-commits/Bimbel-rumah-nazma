@@ -1819,7 +1819,10 @@ def _nilai_parse_jawaban(v):
 
 
 # =========================================================
-# TAHAP 7.36 — MODUL 8 RANCANGAN PENGEMBANGAN
+# TAHAP 7.38 — VALIDASI TIMER ONLINE & TENGGAT TANGGAL/JAM
+# Catatan: penghitungan mundur server-side dan riwayat percobaan masih tahap berikutnya.
+#
+# # TAHAP 7.36 — MODUL 8 RANCANGAN PENGEMBANGAN
 # Kartu soal, validasi, rubrik essay, persetujuan nilai,
 # pratinjau, draft persisten, template, laporan, dan pemulihan form aktif.
 # =========================================================
@@ -4096,14 +4099,24 @@ elif peran == "🔒 Pengajar / Tutor":
                         instruksi_tugas = st.text_area("Instruksi untuk siswa:", key=f"in_{k}")
                         timer_tugas = st.selectbox(
                             "Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=0 if untuk_pr else 2,
-                            format_func=lambda x: "Tanpa timer" if x == 0 else f"{x} menit",
+                            format_func=lambda x: "Tanpa timer (khusus upload)" if x == 0 else f"{x} menit",
                             key=f"tm_{k}_{'pr' if untuk_pr else 'sesi'}"
                         )
                         tenggat_tugas = st.date_input(
-                            "Tenggat PR:" if untuk_pr else "Tanggal tenggat:",
+                            "Tanggal tenggat:",
                             value=waktu_lokal().date() + (timedelta(days=3) if untuk_pr else timedelta(days=0)),
                             key=f"tg_{k}_{'pr' if untuk_pr else 'sesi'}"
                         )
+                        tenggat_jam = st.time_input(
+                            "Jam tenggat:", value=datetime.strptime("23:59", "%H:%M").time(),
+                            key=f"tgj_{k}_{'pr' if untuk_pr else 'sesi'}"
+                        )
+                        tenggat_datetime = datetime.combine(tenggat_tugas, tenggat_jam)
+                        mode_online_aktif = mode_pengerjaan == TASK_MODE_ONLINE
+                        if mode_online_aktif:
+                            st.caption("Tugas online wajib memiliki timer. Timer dimulai ketika siswa menekan tombol Mulai Mengerjakan.")
+                        else:
+                            st.caption("Tugas upload tidak memakai timer; batas pengumpulan tetap mengikuti tanggal dan jam tenggat.")
 
                         # Autosave pekerjaan yang belum masuk daftar draft ke Google Sheets.
                         state_form = _ambil_widget_state_form(k)
@@ -4160,6 +4173,10 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.error("Judul / topik tugas wajib diisi.")
                             elif untuk_pr and tenggat_tugas < waktu_lokal().date():
                                 st.error("Tenggat PR tidak boleh sebelum hari ini.")
+                            elif mode_pengerjaan == TASK_MODE_ONLINE and int(timer_tugas or 0) <= 0:
+                                st.error("Tugas dengan lembar jawaban online wajib memiliki timer lebih dari 0 menit.")
+                            elif tenggat_datetime <= waktu_lokal().replace(tzinfo=None):
+                                st.error("Tanggal dan jam tenggat harus lebih besar dari waktu sekarang.")
                             elif sumber_tugas == SUMBER_BANK and not soal_dipilih:
                                 st.error("Pilih minimal satu soal dari Bank Soal Master.")
                             elif sumber_tugas != SUMBER_BANK and mode_pengerjaan is None:
@@ -4186,7 +4203,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                     # Kategori PR disimpan di Jenis_Tugas: "PR Online" / "PR Offline"
                                     "Jenis": f"PR {jenis_tugas}" if untuk_pr else jenis_tugas,
                                     "Sumber": sumber_tugas, "Instruksi": instruksi_tugas.strip(), "Timer": timer_tugas,
-                                    "Tenggat": tenggat_tugas.strftime("%Y-%m-%d"),
+                                    "Tenggat": tenggat_datetime.strftime("%Y-%m-%d %H:%M:%S"),
                                     "Links": link_list, "Files": files, "Soal": soal_dipilih,
                                     "Mode_Pengerjaan": mode_pengerjaan
                                 })
@@ -4216,7 +4233,7 @@ elif peran == "🔒 Pengajar / Tutor":
                             with st.expander(f"{i}. {ikon} {item['Mapel']} — {item['Judul']} ({item['Jenis']})"):
                                 st.write(f"Sumber: {item['Sumber']}")
                                 st.write(f"Mode pengerjaan: {item.get('Mode_Pengerjaan', TASK_MODE_UPLOAD)}")
-                                st.write(f"Timer: {'Tanpa timer' if item['Timer'] == 0 else str(item['Timer']) + ' menit'} | Tenggat: {item['Tenggat']}")
+                                st.write(f"Timer: {'Tanpa timer (upload)' if item['Timer'] == 0 else str(item['Timer']) + ' menit'} | Tenggat: {item['Tenggat']}")
                                 st.write(f"Jumlah soal: {len(item['Soal'])}")
                                 for link in item.get("Links", []):
                                     st.write(f"Link: {link}")
@@ -4249,6 +4266,32 @@ elif peran == "🔒 Pengajar / Tutor":
                         with col_kirim:
                             if st.button(f"📤 Simpan & Kirim Semua ({len(daftar_draft)})", type="primary", key=f"kirim_semua_{selected_siswa}"):
                                 try:
+                                    # Validasi ulang seluruh draft tepat sebelum publikasi, termasuk draft lama yang dipulihkan.
+                                    masalah_publikasi = []
+                                    for nomor_item, item in enumerate(daftar_draft, 1):
+                                        mode_item = item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD)
+                                        if mode_item == TASK_MODE_ONLINE and int(item.get("Timer", 0) or 0) <= 0:
+                                            masalah_publikasi.append(
+                                                f"Tugas ke-{nomor_item} ({item.get('Judul', 'Tanpa judul')}): timer online harus lebih dari 0 menit."
+                                            )
+                                        try:
+                                            teks_tenggat = str(item.get("Tenggat", "")).strip()
+                                            if len(teks_tenggat) == 10:
+                                                dt_tenggat = datetime.strptime(teks_tenggat + " 23:59:00", "%Y-%m-%d %H:%M:%S")
+                                            else:
+                                                dt_tenggat = datetime.strptime(teks_tenggat[:19], "%Y-%m-%d %H:%M:%S")
+                                            if dt_tenggat <= waktu_lokal().replace(tzinfo=None):
+                                                masalah_publikasi.append(
+                                                    f"Tugas ke-{nomor_item} ({item.get('Judul', 'Tanpa judul')}): tenggat sudah lewat."
+                                                )
+                                        except (ValueError, TypeError):
+                                            masalah_publikasi.append(
+                                                f"Tugas ke-{nomor_item} ({item.get('Judul', 'Tanpa judul')}): tanggal/jam tenggat tidak valid."
+                                            )
+                                    if masalah_publikasi:
+                                        for pesan_masalah in masalah_publikasi:
+                                            st.error(pesan_masalah)
+                                        st.stop()
                                     ws_tugas = get_or_create_worksheet("Tugas_Sesi_Siswa_v2", TASK_HEADERS)
                                     if not pastikan_header_tugas(ws_tugas):
                                         st.error("Header Tugas_Sesi_Siswa_v2 tidak cocok. Data tidak ditulis agar tidak bergeser.")
