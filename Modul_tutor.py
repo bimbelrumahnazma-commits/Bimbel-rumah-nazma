@@ -1844,6 +1844,22 @@ PERSETUJUAN_NILAI_HEADERS = [
     "Nilai_Sementara", "Nilai_Akhir", "Status_Persetujuan",
     "Disetujui_Oleh", "Waktu_Persetujuan", "Catatan"
 ]
+HASIL_OFFLINE_HEADERS = [
+    "ID_Hasil", "ID_Tugas", "ID_Siswa", "Foto_Hasil_JSON",
+    "Catatan_Umum", "Tutor", "Waktu_Dinilai", "Status"
+]
+DETAIL_NILAI_OFFLINE_HEADERS = [
+    "ID_Detail", "ID_Hasil", "ID_Tugas", "ID_Siswa",
+    "Mapel", "Nilai", "Catatan_Mapel", "Tutor", "Waktu_Dinilai"
+]
+
+
+def siapkan_sheet_hasil_offline():
+    """Siapkan tabel hasil Offline tanpa menyentuh sheet penilaian lama."""
+    ws_hasil = _sheet_v2("DB_Hasil_Offline", HASIL_OFFLINE_HEADERS)
+    ws_detail = _sheet_v2("DB_Detail_Nilai_Offline", DETAIL_NILAI_OFFLINE_HEADERS)
+    return ws_hasil, ws_detail
+
 
 
 def _sheet_v2(nama, headers):
@@ -2573,20 +2589,43 @@ SUMBER_UPLOAD = "Upload dari perangkat"
 
 TASK_MODE_MATERI = "Materi saja"
 TASK_MODE_ONLINE = "Tugas online"
-TASK_MODE_UPLOAD = "Tugas upload"
+TASK_MODE_UPLOAD = "Tugas upload"  # kompatibilitas data lama
+TASK_MODE_OFFLINE = "Tugas offline"
 TASK_META_KEY = "_nazma_task_meta"
 
 
 def reset_mode_pengerjaan_widget(widget_key):
-    """Hapus pilihan mode lama ketika sumber soal berubah."""
+    """Hapus pilihan mode dan konfigurasi sumber ketika sumber soal berubah."""
     st.session_state.pop(f"mode_{widget_key}", None)
+    st.session_state.pop(f"mode_pengerjaan_{widget_key}", None)
 
 
-def bungkus_soal_dengan_mode(daftar_soal, mode):
-    """Simpan mode tugas sebagai metadata dalam Soal_JSON tanpa menambah kolom sheet."""
+def bungkus_soal_dengan_mode(daftar_soal, mode, daftar_mapel=None):
+    """Simpan mode dan daftar mapel sebagai metadata tanpa mengubah header sheet lama."""
     soal = [dict(x) for x in (daftar_soal or []) if isinstance(x, dict)]
-    meta = {TASK_META_KEY: {"mode": mode}}
+    mapel_aman = []
+    for nama in (daftar_mapel or []):
+        nama = str(nama or "").strip()
+        if nama and nama not in mapel_aman:
+            mapel_aman.append(nama)
+    meta = {TASK_META_KEY: {"mode": mode, "daftar_mapel": mapel_aman}}
     return [meta] + soal
+
+
+def daftar_mapel_tugas(t):
+    """Ambil daftar mapel dari metadata baru; fallback ke kolom Mapel lama."""
+    try:
+        data = json.loads(t.get("Soal_JSON", "") or "[]")
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            meta = data[0].get(TASK_META_KEY, {})
+            daftar = meta.get("daftar_mapel", []) if isinstance(meta, dict) else []
+            daftar = [str(x).strip() for x in daftar if str(x).strip()]
+            if daftar:
+                return daftar
+    except Exception:
+        pass
+    satu = str(t.get("Mapel", "") or "").strip()
+    return [satu] if satu else []
 
 
 def buka_soal_dan_mode(nilai_json, jenis_tugas=""):
@@ -2608,7 +2647,7 @@ def buka_soal_dan_mode(nilai_json, jenis_tugas=""):
             mode = TASK_MODE_ONLINE
         else:
             mode = TASK_MODE_UPLOAD
-    if mode not in (TASK_MODE_MATERI, TASK_MODE_ONLINE, TASK_MODE_UPLOAD):
+    if mode not in (TASK_MODE_MATERI, TASK_MODE_ONLINE, TASK_MODE_UPLOAD, TASK_MODE_OFFLINE):
         mode = TASK_MODE_UPLOAD
     return data, mode
 
@@ -2621,7 +2660,7 @@ def mode_tugas(t):
     # daftar soal tetap memakai alur upload lama agar data historis tidak rusak.
     if mode_sheet == TASK_MODE_UPLOAD and daftar_soal:
         return TASK_MODE_ONLINE
-    if mode_sheet in (TASK_MODE_MATERI, TASK_MODE_ONLINE, TASK_MODE_UPLOAD):
+    if mode_sheet in (TASK_MODE_MATERI, TASK_MODE_ONLINE, TASK_MODE_UPLOAD, TASK_MODE_OFFLINE):
         return mode_sheet
     return mode_json
 
@@ -2708,7 +2747,7 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
     siswa_id = st.session_state.get("siswa_id", "")
     kode, label = label_status(t, status_by_task, nilai_ids)
     terkunci = kode in ("dikirim", "dinilai")
-    ikon = "📌" if adalah_pr(t) else ("📖" if adalah_materi(t) else "📝")
+    ikon = "📌" if adalah_pr(t) else ("📖" if adalah_materi(t) else ("🗒️" if mode_tugas(t) == TASK_MODE_OFFLINE else "📝"))
     judul = t.get("Judul_Tugas") or t.get("Instruksi") or "Tugas"
     tenggat = str(t.get("Tenggat", "")).strip()
     tambahan = f" · tenggat {tenggat}" if tenggat and not adalah_materi(t) else ""
@@ -2723,7 +2762,8 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
     )
     kartu_terbuka = bool(st.session_state.get(expander_state_key, False) or sesi_tugas_ini_awal)
 
-    with st.expander(f"{ikon} {t.get('Mapel', 'Mapel')} · {judul} · {label}{tambahan}", expanded=kartu_terbuka):
+    label_mapel_tugas = ", ".join(daftar_mapel_tugas(t)) or t.get("Mapel", "Mapel")
+    with st.expander(f"{ikon} {label_mapel_tugas} · {judul} · {label}{tambahan}", expanded=kartu_terbuka):
         timer_txt = str(t.get("Timer_Menit", "")).strip()
         st.write(f"**Instruksi Tutor:** {t.get('Instruksi') or '-'}")
         st.write(f"**Diberikan:** {t.get('Tanggal') or '-'}")
@@ -2969,8 +3009,11 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                     except Exception as e:
                         st.error(f"Pengiriman jawaban/lampiran gagal: {e}")
 
+        elif mode_pengerjaan == TASK_MODE_OFFLINE:
+            st.info("Tugas ini dikerjakan di kertas. Setelah siswa selesai, Tutor yang akan mengunggah foto hasil pekerjaan dan memasukkan nilai per mata pelajaran.")
+            st.caption("Tidak perlu mengunggah foto dari akun siswa.")
         else:
-            # Mode upload: siswa mengerjakan di kertas lalu mengunggah hasilnya.
+            # Mode upload lama dipertahankan hanya untuk kompatibilitas tugas historis.
             if mode_pengerjaan == TASK_MODE_ONLINE and not daftar_soal:
                 st.error("Mode tugas terbaca sebagai online, tetapi daftar soal tidak ditemukan atau format Soal_JSON tidak valid. Hubungi tutor untuk memeriksa data tugas.")
             elif terkunci:
@@ -4044,6 +4087,29 @@ elif peran == "🔒 Pengajar / Tutor":
                         if sumber_tugas != SUMBER_UPLOAD:
                             st.session_state.pop(f"_autosave_files_{k}", None)
 
+                        # Mode pengerjaan dipilih terpisah dari format sumber materi.
+                        if source_ready:
+                            mode_pengerjaan = st.radio(
+                                "Cara siswa mengerjakan:",
+                                [TASK_MODE_ONLINE, TASK_MODE_OFFLINE],
+                                horizontal=True,
+                                key=f"mode_pengerjaan_{k}"
+                            )
+                        else:
+                            mode_pengerjaan = None
+
+                        daftar_mapel_tugas = [mapel_tugas]
+                        if mode_pengerjaan == TASK_MODE_OFFLINE:
+                            daftar_mapel_tugas = st.multiselect(
+                                "Mata pelajaran yang dinilai (boleh lebih dari satu):",
+                                options=MAPEL_OPTIONS,
+                                default=[mapel_tugas] if mapel_tugas in MAPEL_OPTIONS else [],
+                                key=f"mapel_offline_{k}"
+                            )
+                            if daftar_mapel_tugas:
+                                mapel_tugas = daftar_mapel_tugas[0]
+                            st.caption("Setiap mata pelajaran akan memiliki kolom nilai dan catatan tersendiri.")
+
                         # Jika sumber diganti, dihapus, atau isinya berubah, pilihan mode dan konfigurasi lama
                         # direset agar tidak tertaut ke lampiran yang berbeda.
                         identity_lama = st.session_state.get(source_identity_key)
@@ -4057,12 +4123,12 @@ elif peran == "🔒 Pengajar / Tutor":
                                     st.session_state.pop(widget_key, None)
                             st.session_state[source_identity_key] = source_identity
 
-                        # Semua sumber soal (Bank, Drive/Flipbook, PDF, JPG, PNG, dll.)
-                        # menggunakan lembar jawaban online. Format lampiran tidak menentukan
-                        # cara siswa menjawab; foto tulisan tangan diwajibkan khusus untuk esai.
-                        mode_pengerjaan = TASK_MODE_ONLINE if source_ready else None
-                        if sumber_tugas != SUMBER_BANK and source_ready:
+                        # Format sumber (Bank, Drive/Flipbook, PDF, JPG, PNG, dll.)
+                        # tidak menentukan mode pengerjaan. Tutor memilih Online atau Offline.
+                        if mode_pengerjaan == TASK_MODE_ONLINE and sumber_tugas != SUMBER_BANK and source_ready:
                             st.info("Siswa akan mengerjakan melalui lembar jawaban online. Jika ada soal esai/uraian, siswa wajib mengunggah foto tulisan tangan saat mengirim jawaban.")
+                        elif mode_pengerjaan == TASK_MODE_OFFLINE:
+                            st.info("Siswa mengerjakan di kertas. Foto hasil pekerjaan dan nilai akan dimasukkan oleh Tutor.")
 
                         # Konfigurasi custom memakai kartu per nomor, bukan tabel horizontal.
                         masalah_konfigurasi = []
@@ -4160,8 +4226,11 @@ elif peran == "🔒 Pengajar / Tutor":
                         mode_online_aktif = mode_pengerjaan == TASK_MODE_ONLINE
                         if mode_online_aktif:
                             st.caption("Tugas online wajib memiliki timer. Timer dimulai ketika siswa menekan tombol Mulai Mengerjakan.")
+                        elif mode_pengerjaan == TASK_MODE_OFFLINE:
+                            st.caption("Tugas Offline tidak memakai timer. Tutor mengunggah foto hasil pekerjaan dan memasukkan nilai per mapel.")
+                            timer_tugas = 0
                         else:
-                            st.caption("Tugas upload tidak memakai timer; batas pengumpulan tetap mengikuti tanggal dan jam tenggat.")
+                            st.caption("Mode lama tanpa timer dipertahankan untuk kompatibilitas data historis.")
 
                         # Autosave pekerjaan yang belum masuk daftar draft ke Google Sheets.
                         state_form = _ambil_widget_state_form(k)
@@ -4220,6 +4289,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.error("Tenggat PR tidak boleh sebelum hari ini.")
                             elif mode_pengerjaan == TASK_MODE_ONLINE and int(timer_tugas or 0) <= 0:
                                 st.error("Tugas dengan lembar jawaban online wajib memiliki timer lebih dari 0 menit.")
+                            elif mode_pengerjaan == TASK_MODE_OFFLINE and not daftar_mapel_tugas:
+                                st.error("Pilih minimal satu mata pelajaran untuk tugas Offline.")
                             elif tenggat_datetime <= waktu_lokal().replace(tzinfo=None):
                                 st.error("Tanggal dan jam tenggat harus lebih besar dari waktu sekarang.")
                             elif sumber_tugas == SUMBER_BANK and not soal_dipilih:
@@ -4250,7 +4321,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                     "Sumber": sumber_tugas, "Instruksi": instruksi_tugas.strip(), "Timer": timer_tugas,
                                     "Tenggat": tenggat_datetime.strftime("%Y-%m-%d %H:%M:%S"),
                                     "Links": link_list, "Files": files, "Soal": soal_dipilih,
-                                    "Mode_Pengerjaan": mode_pengerjaan
+                                    "Mode_Pengerjaan": mode_pengerjaan,
+                                    "Daftar_Mapel": list(daftar_mapel_tugas or [mapel_tugas])
                                 })
                                 try:
                                     simpan_draft_tugas_persisten(
@@ -4275,10 +4347,12 @@ elif peran == "🔒 Pengajar / Tutor":
                     if daftar_draft:
                         for i, item in enumerate(daftar_draft, 1):
                             ikon = "📌" if str(item["Jenis"]).startswith("PR") else "📝"
-                            with st.expander(f"{i}. {ikon} {item['Mapel']} — {item['Judul']} ({item['Jenis']})"):
+                            label_mapel_item = ", ".join(item.get("Daftar_Mapel", []) or [item.get("Mapel", "")])
+                            with st.expander(f"{i}. {ikon} {label_mapel_item} — {item['Judul']} ({item['Jenis']})"):
+                                st.write(f"Mata pelajaran: {label_mapel_item}")
                                 st.write(f"Sumber: {item['Sumber']}")
                                 st.write(f"Mode pengerjaan: {item.get('Mode_Pengerjaan', TASK_MODE_UPLOAD)}")
-                                st.write(f"Timer: {'Tanpa timer (upload)' if item['Timer'] == 0 else str(item['Timer']) + ' menit'} | Tenggat: {item['Tenggat']}")
+                                st.write(f"Timer: {'Tanpa timer (Offline/legacy)' if item['Timer'] == 0 else str(item['Timer']) + ' menit'} | Tenggat: {item['Tenggat']}")
                                 st.write(f"Jumlah soal: {len(item['Soal'])}")
                                 for link in item.get("Links", []):
                                     st.write(f"Link: {link}")
@@ -4366,7 +4440,10 @@ elif peran == "🔒 Pengajar / Tutor":
                                                 "TGS-" + uuid.uuid4().hex[:10].upper(), now_txt, selected_siswa,
                                                 item["Mapel"], item["Judul"], item["Jenis"], item["Sumber"], item["Instruksi"],
                                                 file_info, item["Timer"], item["Tenggat"],
-                                                json.dumps(bungkus_soal_dengan_mode(item["Soal"], item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD)), ensure_ascii=False),
+                                                json.dumps(bungkus_soal_dengan_mode(
+                                                    item["Soal"], item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD),
+                                                    item.get("Daftar_Mapel", [item.get("Mapel", "")])
+                                                ), ensure_ascii=False),
                                                 "Diberikan", st.session_state.tutor_nama,
                                                 item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD)
                                             ])
