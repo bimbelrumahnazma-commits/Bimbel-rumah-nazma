@@ -2615,10 +2615,15 @@ def buka_soal_dan_mode(nilai_json, jenis_tugas=""):
 
 def mode_tugas(t):
     mode_sheet = str(t.get("Mode_Pengerjaan", "") or "").strip()
+    daftar_soal, mode_json = buka_soal_dan_mode(t.get("Soal_JSON", ""), t.get("Jenis_Tugas", ""))
+    # Kompatibilitas: tugas lama yang tersimpan sebagai mode upload tetapi sudah
+    # memiliki daftar soal dialihkan ke lembar jawaban online. Baris lama tanpa
+    # daftar soal tetap memakai alur upload lama agar data historis tidak rusak.
+    if mode_sheet == TASK_MODE_UPLOAD and daftar_soal:
+        return TASK_MODE_ONLINE
     if mode_sheet in (TASK_MODE_MATERI, TASK_MODE_ONLINE, TASK_MODE_UPLOAD):
         return mode_sheet
-    _, mode = buka_soal_dan_mode(t.get("Soal_JSON", ""), t.get("Jenis_Tugas", ""))
-    return mode
+    return mode_json
 
 
 def adalah_pr(t):
@@ -2765,18 +2770,8 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                 tampilkan_nazma_focus_alert(task_id, siswa_id)
             st.markdown("#### 📝 Lembar Jawaban Online")
             file_jawaban = []
-            if not terkunci:
-                file_jawaban = st.file_uploader(
-                    "Lampirkan foto, PDF, audio, atau video jawaban (opsional):",
-                    type=["jpg", "jpeg", "png", "webp", "pdf", "mp4", "mov", "webm", "m4v",
-                          "mp3", "wav", "m4a", "ogg", "aac"],
-                    accept_multiple_files=True,
-                    key=f"lampiran_online_{task_id}"
-                )
-                if file_jawaban:
-                    st.caption("Maksimal 20 MB per file. Audio/video akan disimpan ke Google Drive saat jawaban dikirim.")
-            else:
-                lampiran_lama = baca_lampiran_jawaban(task_id, siswa_id)
+            lampiran_lama = baca_lampiran_jawaban(task_id, siswa_id) if terkunci else []
+            if terkunci:
                 for lamp in lampiran_lama:
                     st.markdown(f"[📎 {lamp.get('Nama_File', 'Lampiran jawaban')}]({lamp.get('URL_Drive', '')})")
             old_answer = {}
@@ -2902,6 +2897,28 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                     st.text_area(f"Jawaban nomor {i}:", value=str(old_answer.get(str(i), "")),
                                  key=qkey, on_change=_update_answer, disabled=terkunci)
 
+            # Satu area lampiran bersama untuk seluruh jawaban esai dalam tugas ini.
+            # Siswa mengetik jawaban pada lembar online dan melampirkan foto tulisan tangan.
+            ada_soal_esai = any(
+                any(kata in str(q.get("Bentuk_Soal", "")).lower() for kata in ("esai", "essay", "uraian"))
+                for q in daftar_soal
+            )
+            if ada_soal_esai:
+                st.markdown("#### 📷 Foto Jawaban Esai")
+                st.caption("Ketik jawaban esai pada kolom online. Setelah itu, unggah satu atau beberapa foto tulisan tangan yang memuat jawaban esai dalam tugas ini.")
+                if not terkunci:
+                    file_jawaban = st.file_uploader(
+                        "Unggah foto jawaban esai (wajib):",
+                        type=["jpg", "jpeg", "png", "webp"],
+                        accept_multiple_files=True,
+                        key=f"lampiran_online_{task_id}"
+                    ) or []
+                    if file_jawaban:
+                        st.caption(f"{len(file_jawaban)} foto dipilih. Maksimal 10 MB per foto dan 40 MB total.")
+                else:
+                    if not lampiran_lama:
+                        st.warning("Tidak ditemukan lampiran foto untuk pengumpulan ini.")
+
             if not terkunci:
                 status_draft = st.session_state.get("_draft_status_by_task", {}).get(task_id, "")
                 if status_draft == "Menunggu penyimpanan":
@@ -2924,6 +2941,9 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                     current_answers[str(i)] = "" if v is None else v
                 belum = [n for n, v in current_answers.items() if jawaban_kosong(v)]
                 boleh_kirim = not data_soal_tidak_lengkap
+                if ada_soal_esai and not file_jawaban:
+                    st.warning("Soal esai/uraian mewajibkan lampiran minimal satu foto tulisan tangan.")
+                    boleh_kirim = False
                 if data_soal_tidak_lengkap:
                     st.error("Tugas ini belum dapat dikirim karena ada data soal yang tidak lengkap. Tutor perlu memperbaikinya terlebih dahulu.")
                 if belum:
@@ -4037,27 +4057,12 @@ elif peran == "🔒 Pengajar / Tutor":
                                     st.session_state.pop(widget_key, None)
                             st.session_state[source_identity_key] = source_identity
 
-                        # Pilihan cara pengerjaan baru ditampilkan setelah sumber soal tersedia.
-                        if sumber_tugas != SUMBER_BANK:
-                            if source_ready:
-                                st.markdown("#### Cara siswa mengerjakan:")
-                                mode_pengerjaan = st.radio(
-                                    "Pilih cara pengerjaan:",
-                                    [TASK_MODE_ONLINE, TASK_MODE_UPLOAD],
-                                    index=None,
-                                    format_func=lambda x: (
-                                        "Terbitkan lembar jawaban online"
-                                        if x == TASK_MODE_ONLINE
-                                        else "Upload hasil tulisan tangan"
-                                    ),
-                                    horizontal=True,
-                                    key=mode_widget_key
-                                )
-                            else:
-                                mode_pengerjaan = None
-                                st.info("Unggah file atau masukkan link soal terlebih dahulu. Pilihan cara pengerjaan akan muncul setelah sumber tersedia.")
-                        else:
-                            mode_pengerjaan = TASK_MODE_ONLINE
+                        # Semua sumber soal (Bank, Drive/Flipbook, PDF, JPG, PNG, dll.)
+                        # menggunakan lembar jawaban online. Format lampiran tidak menentukan
+                        # cara siswa menjawab; foto tulisan tangan diwajibkan khusus untuk esai.
+                        mode_pengerjaan = TASK_MODE_ONLINE if source_ready else None
+                        if sumber_tugas != SUMBER_BANK and source_ready:
+                            st.info("Siswa akan mengerjakan melalui lembar jawaban online. Jika ada soal esai/uraian, siswa wajib mengunggah foto tulisan tangan saat mengirim jawaban.")
 
                         # Konfigurasi custom memakai kartu per nomor, bukan tabel horizontal.
                         masalah_konfigurasi = []
@@ -4066,7 +4071,8 @@ elif peran == "🔒 Pengajar / Tutor":
                             st.caption(
                                 "Atur tipe jawaban dan jumlah nomor. Karena sumber soal berasal dari lampiran/link, "
                                 "pertanyaan dan teks opsi tidak perlu diketik ulang. Untuk pilihan ganda, cukup gunakan "
-                                "label A, B, C, D. Essay memakai rubrik kata kunci untuk nilai sementara; "
+                                "label A, B, C, D. Jawaban esai diketik online dan wajib disertai foto tulisan tangan "
+                                "yang diunggah siswa saat pengumpulan. Essay memakai rubrik kata kunci untuk nilai sementara; "
                                 "nilai akhir tetap menunggu persetujuan tutor."
                             )
                             templates = ambil_template_soal(st.session_state.get("tutor_nama", ""))
