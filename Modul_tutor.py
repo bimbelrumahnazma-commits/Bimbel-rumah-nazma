@@ -242,9 +242,12 @@ def buat_paket_audit_sistem():
             rows = []
             if values:
                 data_headers = [str(x).strip() for x in values[0]]
-                for row in values[1:]:
+                for physical_row, row in enumerate(values[1:], start=2):
                     if any(str(v).strip() for v in row):
-                        rows.append({h: (row[i] if i < len(row) else "") for i, h in enumerate(data_headers) if h})
+                        record = {h: (row[i] if i < len(row) else "") for i, h in enumerate(data_headers) if h}
+                        # Nomor baris hanya dipakai untuk diagnosis internal; tidak menyalin data pribadi.
+                        record["__baris_sheet"] = physical_row
+                        rows.append(record)
             records[ws.title] = rows
             jumlah = len(rows)
         hasil["ringkasan_sheet"].append({
@@ -267,8 +270,37 @@ def buat_paket_audit_sistem():
     id_isi = [x for x in id_siswa if x]
     duplikat_id = len(id_isi) - len(set(id_isi))
     kosong_id = sum(1 for x in id_siswa if not x)
+    # Diagnostik duplikasi: tanpa ID asli, nama, PIN, atau kontak.
+    from collections import defaultdict
+    grup_id = defaultdict(list)
+    for rec in siswa:
+        sid = str(rec.get("ID_SISWA") or rec.get("ID_Siswa") or "").strip()
+        if sid:
+            grup_id[sid].append(rec)
+    grup_duplikat = [items for items in grup_id.values() if len(items) > 1]
+    diagnostik_duplikat = []
+    kolom_pembanding_aman = ["Jenjang", "Kelas", "Mapel_Diambil", "Status"]
+    for nomor_grup, items in enumerate(sorted(grup_duplikat, key=lambda x: min(int(z.get("__baris_sheet", 0)) for z in x)), start=1):
+        konflik = {}
+        for kolom in kolom_pembanding_aman:
+            nilai_unik = {str(z.get(kolom, "")).strip().casefold() for z in items}
+            if len(nilai_unik) > 1:
+                konflik[kolom] = len(nilai_unik)
+        diagnostik_duplikat.append({
+            "kelompok": f"DUP-{nomor_grup:04d}",
+            "jumlah_baris": len(items),
+            "nomor_baris_sheet": sorted(int(z.get("__baris_sheet", 0)) for z in items),
+            "kolom_nonpribadi_berbeda": konflik,
+        })
+    hasil["diagnostik_duplikasi_id"] = {
+        "jumlah_id_unik": len(grup_id),
+        "jumlah_kelompok_duplikat": len(grup_duplikat),
+        "jumlah_kemunculan_berulang": duplikat_id,
+        "kelompok": diagnostik_duplikat,
+        "catatan": "ID asli, nama, PIN, nomor telepon, dan data pribadi tidak disertakan. Cocokkan nomor baris di Data_Siswa secara langsung.",
+    }
     cek("Identitas siswa", "PERLU_PERHATIAN" if duplikat_id or kosong_id else "OK", len(siswa),
-        f"ID kosong: {kosong_id}; ID duplikat: {duplikat_id}. Nama siswa tidak disertakan.")
+        f"ID kosong: {kosong_id}; kemunculan ID berulang di luar pertama: {duplikat_id}; ID unik: {len(grup_id)}. Nama siswa tidak disertakan.")
 
     bank = records.get("Bank_Soal_Master", [])
     bank_header = set(headers_by_sheet.get("Bank_Soal_Master", []))
@@ -5267,6 +5299,15 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                 st.metric("Pemeriksaan", paket_audit.get("total_pemeriksaan", 0))
                 st.markdown("**Ringkasan pemeriksaan**")
                 st.dataframe(pd.DataFrame(paket_audit.get("pemeriksaan", [])), use_container_width=True, hide_index=True)
+                diagnostik = paket_audit.get("diagnostik_duplikasi_id", {})
+                if diagnostik:
+                    st.markdown("**Pemeriksaan duplikasi ID_SISWA (tanpa identitas pribadi)**")
+                    st.caption(
+                        f"ID unik: {diagnostik.get('jumlah_id_unik', 0)} · "
+                        f"Kelompok duplikat: {diagnostik.get('jumlah_kelompok_duplikat', 0)} · "
+                        f"Kemunculan berulang: {diagnostik.get('jumlah_kemunculan_berulang', 0)}"
+                    )
+                    st.dataframe(pd.DataFrame(diagnostik.get("kelompok", [])), use_container_width=True, hide_index=True)
                 st.markdown("**Struktur worksheet**")
                 struktur_ringkas = [{
                     "Nama Sheet": x.get("nama_sheet"),
@@ -5286,6 +5327,12 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     "⬇️ Unduh Ringkasan Audit (CSV)", data=csv_audit,
                     file_name="Ringkasan_Audit_Bimbel_Nazma.csv", mime="text/csv",
                     key="download_audit_csv"
+                )
+                csv_duplikat = pd.DataFrame(diagnostik.get("kelompok", [])).to_csv(index=False).encode("utf-8-sig")
+                st.download_button(
+                    "⬇️ Unduh Diagnostik Duplikasi ID (CSV)", data=csv_duplikat,
+                    file_name="Diagnostik_Duplikasi_ID_Siswa.csv", mime="text/csv",
+                    key="download_audit_duplikat_csv"
                 )
 
         with tab6:
