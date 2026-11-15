@@ -1359,244 +1359,46 @@ def get_active_task_worksheet():
         )
         ws.append_row(ACTIVE_TASK_HEADERS)
         _worksheet_header_cached.clear()
-    if not st.session_state.get("_sesi_header_ok"):
-        if [str(x).strip() for x in ws.row_values(1)] != ACTIVE_TASK_HEADERS:
-            raise ValueError("Header Status_Sesi_Tugas tidak sesuai.")
-        st.session_state["_sesi_header_ok"] = True
+    if [str(x).strip() for x in ws.row_values(1)] != ACTIVE_TASK_HEADERS:
+        raise ValueError("Header Status_Sesi_Tugas tidak sesuai.")
     return ws
 
 
-SESI_STATUS_AKTIF = "aktif"
-_SESI_MEMO_KEY = "_memo_sesi_aktif_siswa"
-_SESI_MEMO_TTL = 20  # detik; hemat kuota Google Sheets. Tulisan milik sendiri (Mulai/Akhiri) selalu menghapus memo.
-
-
-def _sesi_hapus_memo():
-    st.session_state.pop(_SESI_MEMO_KEY, None)
-
-
-def _sesi_baris_aktif(rows, sid, tid=None):
-    hasil = []
-    for r in rows:
-        if str(r.get("ID_Siswa", "")).strip() != sid:
-            continue
-        if str(r.get("Status", "")).strip().lower() != SESI_STATUS_AKTIF:
-            continue
-        if tid is not None and str(r.get("ID_Tugas", "")).strip() != tid:
-            continue
-        hasil.append(r)
-    return hasil
-
-
-def baca_sesi_aktif_siswa(siswa_id, paksa=False):
-    """Sesi aktif siswa, dibaca LANGSUNG dari Google Sheets (bukan cache 180 detik).
-    Jika memakai cache, tombol Mulai muncul lagi setelah ditekan dan sesi bisa tercatat ganda.
-    Memo 20 detik menghindari pembacaan berulang di setiap klik; Mulai/Akhiri selalu menghapus memo,
-    jadi perubahan milik sendiri langsung terlihat. Batas waktu dihitung dari Waktu_Mulai, bukan dari memo."""
+def baca_sesi_aktif_siswa(siswa_id):
+    rows = baca_records_aman(get_active_task_worksheet())
     sid = str(siswa_id or "").strip()
-    if not sid:
-        return None
-    memo = st.session_state.get(_SESI_MEMO_KEY)
-    if (not paksa and memo and memo.get("sid") == sid
-            and time.time() - float(memo.get("t", 0)) < _SESI_MEMO_TTL):
-        return memo.get("row")
-    ws = get_active_task_worksheet()
-    rows = baca_records_aman(ws, refresh=True)
-    aktif = _sesi_baris_aktif(rows, sid)
-    hasil = aktif[-1] if aktif else None
-    st.session_state[_SESI_MEMO_KEY] = {"sid": sid, "t": time.time(), "row": hasil}
-    return hasil
-
-
-def daftar_sesi_siswa(siswa_id):
-    """Seluruh riwayat sesi seorang siswa (pembacaan langsung), untuk pemantauan tutor."""
-    sid = str(siswa_id or "").strip()
-    rows = baca_records_aman(get_active_task_worksheet(), refresh=True)
-    return [r for r in rows if str(r.get("ID_Siswa", "")).strip() == sid]
+    aktif = [r for r in rows if str(r.get("ID_Siswa", "")).strip() == sid
+             and str(r.get("Status", "")).strip().lower() == "aktif"]
+    return aktif[-1] if aktif else None
 
 
 def mulai_sesi_online(siswa_id, task_id):
     """Mencatat sesi mulai di server. Satu siswa hanya boleh punya satu sesi aktif."""
     ws = get_active_task_worksheet()
-    sid, tid = str(siswa_id).strip(), str(task_id).strip()
-    rows = baca_records_aman(ws, refresh=True)
-    aktif = _sesi_baris_aktif(rows, sid)
-    if any(str(r.get("ID_Tugas", "")).strip() != tid for r in aktif):
+    aktif = baca_sesi_aktif_siswa(siswa_id)
+    if aktif and str(aktif.get("ID_Tugas", "")).strip() != str(task_id).strip():
         return False, "Selesaikan tugas online yang sedang aktif terlebih dahulu."
     if aktif:
-        _sesi_hapus_memo()
         return True, "Sesi tugas ini sudah aktif."
     ws.append_row([
-        sid, tid, waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"), "Aktif", ""
+        str(siswa_id).strip(), str(task_id).strip(),
+        waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"), "Aktif", ""
     ], value_input_option="RAW")
-    _sesi_hapus_memo()
     return True, "Sesi pengerjaan dimulai."
 
 
-def akhiri_sesi_online(siswa_id, task_id, status_akhir="Selesai"):
-    """Tutup semua baris sesi aktif untuk pasangan siswa-tugas (termasuk duplikat lama).
-    status_akhir: Selesai | Waktu Habis | Direset Tutor."""
+def akhiri_sesi_online(siswa_id, task_id):
     ws = get_active_task_worksheet()
-    rows = baca_records_aman(ws, refresh=True)
+    rows = baca_records_aman(ws)
     sid, tid = str(siswa_id).strip(), str(task_id).strip()
-    target = [int(r["_baris"]) for r in _sesi_baris_aktif(rows, sid, tid)]
-    if not target:
-        _sesi_hapus_memo()
-        return False
-    sekarang = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
-    pembaruan = [{"range": f"D{b}:E{b}", "values": [[status_akhir, sekarang]]} for b in target]
-    _panggil_sheets_dengan_retry_429(ws.batch_update, pembaruan, value_input_option="RAW")
-    _sesi_hapus_memo()
-    return True
-
-
-# ---------------------------------------------------------
-# TAHAP 7.43 — TIMER SERVER-SIDE
-# Batas waktu = Waktu_Mulai (server) + Timer_Menit. Tidak bergantung pada browser siswa.
-# ---------------------------------------------------------
-def _parse_waktu_sesi(teks):
-    try:
-        return datetime.strptime(str(teks or "").strip()[:19], "%Y-%m-%d %H:%M:%S")
-    except (ValueError, TypeError):
-        return None
-
-
-def timer_menit_tugas(t):
-    try:
-        return max(0, int(float(str((t or {}).get("Timer_Menit", 0) or 0).replace(",", "."))))
-    except (ValueError, TypeError):
-        return 0
-
-
-def hitung_batas_sesi(sesi, t):
-    """Kembalikan (batas_datetime, sisa_detik). Keduanya None bila tugas tanpa timer atau waktu mulai tak terbaca."""
-    menit = timer_menit_tugas(t)
-    mulai = _parse_waktu_sesi((sesi or {}).get("Waktu_Mulai"))
-    if not menit or not mulai:
-        return None, None
-    batas = mulai + timedelta(minutes=menit)
-    sisa = int((batas - waktu_lokal().replace(tzinfo=None)).total_seconds())
-    return batas, sisa
-
-
-def batas_ke_epoch(batas):
-    return batas.replace(tzinfo=ZoneInfo("Asia/Jakarta")).timestamp()
-
-
-def teks_catatan_sesi(status):
-    s = str(status or "").strip().lower()
-    return {
-        "waktu habis": "⏰ Dikirim otomatis (waktu habis)",
-        "aktif": "⏱ Sedang dikerjakan",
-        "direset tutor": "🔄 Sesi direset tutor",
-    }.get(s, "")
-
-
-def baca_draft_tersimpan(task_id, siswa_id):
-    """Jawaban draft yang sudah ada di Google Sheets untuk satu tugas (pembacaan langsung)."""
-    hasil = {}
-    tid, sid = str(task_id).strip(), str(siswa_id).strip()
-    try:
-        rows = baca_records_aman(get_answers_worksheet(), refresh=True)
-    except Exception:
-        return hasil
-    for r in rows:
-        if str(r.get("ID_Penugasan", "")).strip() == tid and str(r.get("ID_Siswa", "")).strip() == sid:
-            nomor = str(r.get("Nomor_Soal", "")).strip()
-            if nomor:
-                hasil[nomor] = _nilai_parse_jawaban(r.get("Jawaban", ""))
-    return hasil
-
-
-def kirim_otomatis_waktu_habis(siswa_id, task_id, jumlah_soal):
-    """Waktu habis: kirim jawaban yang ada lalu tutup sesi. Aman dipanggil berulang.
-    Prioritas isi jawaban: layar siswa > antrean draft > draft di Sheets > kosong."""
-    tid, sid = str(task_id).strip(), str(siswa_id).strip()
-    jawaban = baca_draft_tersimpan(tid, sid)
-    pending = (st.session_state.get("_draft_pending_by_task", {}) or {}).get(tid, {}) or {}
-    for nomor, nilai in pending.items():
-        jawaban[str(nomor)] = nilai
-    for i in range(1, int(jumlah_soal or 0) + 1):
-        kunci = f"student_{tid}_{i}"
-        if kunci in st.session_state:
-            v = st.session_state.get(kunci)
-            jawaban[str(i)] = "" if v is None else v
-        else:
-            jawaban.setdefault(str(i), "")
-
-    file_layar = st.session_state.get(f"lampiran_online_{tid}") or []
-    if file_layar:
-        try:
-            simpan_lampiran_jawaban(tid, sid, file_layar)
-        except Exception:
-            pass  # lampiran gagal tidak boleh menggagalkan pengiriman otomatis
-
-    # Bangun ulang indeks baris jawaban dari data terbaru agar tidak menggandakan baris draft.
-    st.session_state.pop("_indeks_baris_jawaban_siswa", None)
-    st.session_state.pop("_tugas_jawaban_terkunci", None)
-    try:
-        _baca_values_cache.clear()
-    except Exception:
-        pass
-
-    terkirim = simpan_pengiriman_jawaban(tid, sid, jawaban)
-    akhiri_sesi_online(sid, tid, status_akhir="Waktu Habis")
-    st.session_state.get("_draft_pending_by_task", {}).pop(tid, None)
-    st.session_state.setdefault("_draft_status_by_task", {})[tid] = "Terkirim"
-    st.session_state["_info_waktu_habis"] = tid
-    st.session_state[f"_buka_kartu_tugas_{tid}"] = True
-    return terkirim
-
-
-if hasattr(st, "fragment"):
-    @st.fragment(run_every="5s")
-    def _pantau_batas_waktu(siswa_id, task_id, batas_epoch, jumlah_soal):
-        """Tidak membaca Google Sheets: hanya membandingkan jam server dengan batas tetap.
-        Begitu batas lewat, kirim otomatis lalu muat ulang halaman."""
-        if time.time() < float(batas_epoch):
-            return
-        try:
-            kirim_otomatis_waktu_habis(siswa_id, task_id, jumlah_soal)
-        except Exception as exc:
-            st.error(f"Waktu habis, tetapi pengiriman otomatis gagal: {exc}. Tekan Kirim Jawaban sekarang.")
-            return
-        try:
-            st.rerun(scope="app")
-        except TypeError:
-            st.rerun()
-else:
-    def _pantau_batas_waktu(siswa_id, task_id, batas_epoch, jumlah_soal):
-        # Streamlit lama: pengecekan batas waktu tetap berjalan pada setiap interaksi siswa.
-        return
-
-
-def tampilkan_hitung_mundur(sisa_detik):
-    sisa = max(0, int(sisa_detik))
-    html = r"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:transparent}
-#box{display:flex;align-items:center;justify-content:space-between;gap:10px;border:2px solid #1d4ed8;border-radius:12px;background:#eff6ff;color:#1e3a8a;padding:10px 14px}
-#box.hampir{border-color:#d97706;background:#fffbeb;color:#92400e}
-#box.kritis{border-color:#b91c1c;background:#fef2f2;color:#991b1b}
-#box.habis{border-color:#7f1d1d;background:#fee2e2;color:#7f1d1d}
-#lbl{font-size:13px;font-weight:700}#t{font-size:28px;font-weight:900;font-variant-numeric:tabular-nums}
-</style></head><body>
-<div id="box" role="timer" aria-live="off"><span id="lbl">⏱ Sisa waktu mengerjakan</span><span id="t">--:--</span></div>
-<script>
-(function(){
- const end=Date.now()+__SISA__*1000,t=document.getElementById('t'),box=document.getElementById('box'),lbl=document.getElementById('lbl');
- function p(n){return String(n).padStart(2,'0')}
- function tick(){
-  const s=Math.max(0,Math.round((end-Date.now())/1000));
-  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),d=s%60;
-  t.textContent=(h>0?p(h)+':':'')+p(m)+':'+p(d);
-  box.className=s===0?'habis':(s<=60?'kritis':(s<=300?'hampir':''));
-  if(s===0){lbl.textContent='⏰ Waktu habis. Jawaban dikirim otomatis...';}
- }
- tick();setInterval(tick,1000);
-})();
-</script></body></html>""".replace("__SISA__", str(sisa))
-    components.html(html, height=78, scrolling=False)
+    for row in reversed(rows):
+        if (str(row.get("ID_Siswa", "")).strip() == sid
+                and str(row.get("ID_Tugas", "")).strip() == tid
+                and str(row.get("Status", "")).strip().lower() == "aktif"):
+            ws.update_cell(int(row["_baris"]), 4, "Selesai")
+            ws.update_cell(int(row["_baris"]), 5, waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"))
+            return True
+    return False
 
 
 def get_student_tasks():
@@ -2018,8 +1820,7 @@ def _nilai_parse_jawaban(v):
 
 # =========================================================
 # TAHAP 7.38 — VALIDASI TIMER ONLINE & TENGGAT TANGGAL/JAM
-# Tahap 7.43: penghitungan mundur server-side, kirim otomatis saat waktu habis, kedaluwarsa sesi,
-# dan reset sesi oleh tutor sudah ditambahkan. Riwayat percobaan masih tahap berikutnya.
+# Catatan: penghitungan mundur server-side dan riwayat percobaan masih tahap berikutnya.
 #
 # # TAHAP 7.36 — MODUL 8 RANCANGAN PENGEMBANGAN
 # Kartu soal, validasi, rubrik essay, persetujuan nilai,
@@ -2962,28 +2763,7 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
     kartu_terbuka = bool(st.session_state.get(expander_state_key, False) or sesi_tugas_ini_awal)
 
     label_mapel_tugas = ", ".join(daftar_mapel_tugas(t)) or t.get("Mapel", "Mapel")
-
-    # Mode dan soal dibaca lebih awal: dipakai untuk penanda judul dan untuk menahan lampiran sebelum Mulai.
-    soal_json = str(t.get("Soal_JSON", "") or "")
-    daftar_soal, _mode_json_lama = buka_soal_dan_mode(soal_json, t.get("Jenis_Tugas", ""))
-    mode_pengerjaan = mode_tugas(t)
-    online_bertimer = bool(
-        mode_pengerjaan == TASK_MODE_ONLINE and daftar_soal and timer_menit_tugas(t) > 0
-    )
-    lampiran_ditahan = bool(online_bertimer and not terkunci and not sesi_tugas_ini_awal)
-    penanda_mulai = ""
-    if online_bertimer and not terkunci:
-        if sesi_tugas_ini_awal:
-            penanda_mulai = " · ⏱ SEDANG BERJALAN"
-        elif sesi_awal:
-            penanda_mulai = " · 🔒 menunggu tugas lain selesai"
-        else:
-            penanda_mulai = " · ▶️ ada tombol Mulai di dalam"
-
-    with st.expander(f"{ikon} {label_mapel_tugas} · {judul} · {label}{tambahan}{penanda_mulai}", expanded=kartu_terbuka):
-        if st.session_state.get("_info_waktu_habis") == task_id:
-            st.session_state.pop("_info_waktu_habis", None)
-            st.warning("⏰ Waktu mengerjakan habis. Jawaban yang sudah kamu isi dikirim otomatis dan akan diperiksa Tutor.")
+    with st.expander(f"{ikon} {label_mapel_tugas} · {judul} · {label}{tambahan}", expanded=kartu_terbuka):
         timer_txt = str(t.get("Timer_Menit", "")).strip()
         st.write(f"**Instruksi Tutor:** {t.get('Instruksi') or '-'}")
         st.write(f"**Diberikan:** {t.get('Tanggal') or '-'}")
@@ -2993,11 +2773,12 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
             st.write(f"**Durasi:** {'Tanpa timer' if timer_txt in ('', '0') else timer_txt + ' menit'}")
 
         if t.get("File_Offline"):
-            if lampiran_ditahan:
-                st.info("📎 Soal / lampiran tampil setelah kamu menekan Mulai Mengerjakan, supaya waktu pengerjaan adil untuk semua siswa.")
-            else:
-                st.markdown("### 📎 Soal / Lampiran Tugas")
-                tampilkan_materi(t.get("File_Offline"))
+            st.markdown("### 📎 Soal / Lampiran Tugas")
+            tampilkan_materi(t.get("File_Offline"))
+
+        soal_json = str(t.get("Soal_JSON", "") or "")
+        daftar_soal, _mode_json_lama = buka_soal_dan_mode(soal_json, t.get("Jenis_Tugas", ""))
+        mode_pengerjaan = mode_tugas(t)
 
         if mode_pengerjaan == TASK_MODE_MATERI:
             sesi_aktif_materi = baca_sesi_aktif_siswa(siswa_id)
@@ -3015,18 +2796,9 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                 st.warning("Tugas ini terkunci karena kamu sedang mengerjakan tugas online lain. Kumpulkan tugas yang aktif terlebih dahulu.")
                 return
             elif not sesi_ini_aktif:
-                menit_timer = timer_menit_tugas(t)
-                st.info(
-                    f"Waktu mengerjakan {menit_timer} menit. Timer mulai dihitung saat kamu menekan Mulai Mengerjakan. "
-                    "Saat waktu habis, jawabanmu dikirim otomatis. Selama tugas ini berjalan, tugas online lain terkunci."
-                    if menit_timer else
-                    "Tekan Mulai Mengerjakan jika sudah siap. Setelah dimulai, tugas online lain akan terkunci sampai jawaban dikumpulkan."
-                )
+                st.info("Tekan Mulai Mengerjakan jika sudah siap. Setelah dimulai, tugas online lain akan terkunci sampai jawaban dikumpulkan.")
                 if st.button("▶️ Mulai Mengerjakan", key=f"mulai_online_{task_id}", type="primary"):
-                    try:
-                        ok_mulai, pesan_mulai = mulai_sesi_online(siswa_id, task_id)
-                    except Exception as exc_mulai:
-                        ok_mulai, pesan_mulai = False, f"Sesi belum dapat dimulai: {exc_mulai}"
+                    ok_mulai, pesan_mulai = mulai_sesi_online(siswa_id, task_id)
                     if ok_mulai:
                         st.session_state[expander_state_key] = True
                         st.success(pesan_mulai)
@@ -3035,10 +2807,6 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                         st.error(pesan_mulai)
                 return
             if not terkunci and sesi_ini_aktif:
-                batas_sesi, sisa_sesi = hitung_batas_sesi(sesi_aktif, t)
-                if sisa_sesi is not None:
-                    tampilkan_hitung_mundur(sisa_sesi)
-                    _pantau_batas_waktu(siswa_id, task_id, batas_ke_epoch(batas_sesi), len(daftar_soal))
                 tampilkan_nazma_focus_alert(task_id, siswa_id)
             st.markdown("#### 📝 Lembar Jawaban Online")
             file_jawaban = []
@@ -3243,11 +3011,11 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
 
         elif mode_pengerjaan == TASK_MODE_OFFLINE:
             st.info("Tugas ini dikerjakan di kertas. Setelah siswa selesai, Tutor yang akan mengunggah foto hasil pekerjaan dan memasukkan nilai per mata pelajaran.")
-            st.caption("Tidak perlu mengunggah foto dari akun siswa. Tugas offline tidak memakai tombol Mulai maupun timer.")
+            st.caption("Tidak perlu mengunggah foto dari akun siswa.")
         else:
             # Mode upload lama dipertahankan hanya untuk kompatibilitas tugas historis.
             if mode_pengerjaan == TASK_MODE_ONLINE and not daftar_soal:
-                st.error("Tombol Mulai belum dapat ditampilkan: tugas ini bermode online, tetapi daftar soal tidak ditemukan atau format Soal_JSON tidak valid. Hubungi tutor untuk memeriksa data tugas.")
+                st.error("Mode tugas terbaca sebagai online, tetapi daftar soal tidak ditemukan atau format Soal_JSON tidak valid. Hubungi tutor untuk memeriksa data tugas.")
             elif terkunci:
                 st.info("Sudah ditandai selesai. Tutor akan memeriksa hasilnya." if kode == "dikirim"
                         else "Sudah dinilai oleh Tutor.")
@@ -3422,22 +3190,6 @@ if peran == "🎓 Siswa":
         except Exception as e:
             tugas_anak = []
             st.error(f"Gagal membaca daftar tugas: {e}")
-
-        # Sesi yang batas waktunya sudah lewat ditutup dan dikirim otomatis, termasuk jika siswa
-        # menutup aplikasi sebelum waktu habis. Tanpa ini sesi aktif mengunci semua tugas selamanya.
-        try:
-            _sid_cek = str(st.session_state.get("siswa_id", "")).strip()
-            _sesi_cek = baca_sesi_aktif_siswa(_sid_cek) if _sid_cek else None
-            if _sesi_cek:
-                _tid_cek = str(_sesi_cek.get("ID_Tugas", "")).strip()
-                _tugas_cek = next((x for x in tugas_anak if str(x.get("ID_Tugas", "")).strip() == _tid_cek), None)
-                if _tugas_cek:
-                    _batas_cek, _sisa_cek = hitung_batas_sesi(_sesi_cek, _tugas_cek)
-                    if _sisa_cek is not None and _sisa_cek <= 0:
-                        _soal_cek, _ = buka_soal_dan_mode(_tugas_cek.get("Soal_JSON", ""), _tugas_cek.get("Jenis_Tugas", ""))
-                        kirim_otomatis_waktu_habis(_sid_cek, _tid_cek, len(_soal_cek))
-        except Exception as exc_cek:
-            st.warning(f"Pengecekan batas waktu tugas belum berhasil: {exc_cek}")
 
         try:
             jawaban_ws = get_answers_worksheet()
@@ -4637,10 +4389,6 @@ elif peran == "🔒 Pengajar / Tutor":
                                     masalah_publikasi = []
                                     for nomor_item, item in enumerate(daftar_draft, 1):
                                         mode_item = item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD)
-                                        if mode_item == TASK_MODE_ONLINE and not item.get("Soal"):
-                                            masalah_publikasi.append(
-                                                f"Tugas ke-{nomor_item} ({item.get('Judul', 'Tanpa judul')}): lembar jawaban online belum memiliki daftar soal, sehingga tombol Mulai tidak akan muncul."
-                                            )
                                         if mode_item == TASK_MODE_ONLINE and int(item.get("Timer", 0) or 0) <= 0:
                                             masalah_publikasi.append(
                                                 f"Tugas ke-{nomor_item} ({item.get('Judul', 'Tanpa judul')}): timer online harus lebih dari 0 menit."
@@ -4824,14 +4572,6 @@ elif peran == "🔒 Pengajar / Tutor":
                         except Exception:
                             nilai_pantau = set()
 
-                        try:
-                            sesi_pantau = daftar_sesi_siswa(sid_pantau)
-                        except Exception:
-                            sesi_pantau = []
-                        status_sesi_by_task = {}
-                        for s_row in sesi_pantau:
-                            status_sesi_by_task[str(s_row.get("ID_Tugas", "")).strip()] = str(s_row.get("Status", "")).strip()
-
                         saring = st.radio("Tampilkan:", ["Semua", "PR", "Tugas sesi"], horizontal=True, key="pantau_saring")
                         baris = []
                         for t in reversed(semua_tugas):
@@ -4848,36 +4588,11 @@ elif peran == "🔒 Pengajar / Tutor":
                                 "Mapel": t.get("Mapel"), "Judul": t.get("Judul_Tugas"),
                                 "Jenis": t.get("Jenis_Tugas"), "Tenggat": t.get("Tenggat") or "-",
                                 "Diberikan": str(t.get("Tanggal", ""))[:10], "Status": label,
-                                "Catatan Waktu": teks_catatan_sesi(status_sesi_by_task.get(str(t.get("ID_Tugas", "")).strip(), "")),
                             })
                         if baris:
                             st.dataframe(pd.DataFrame(baris), use_container_width=True, hide_index=True)
                         else:
                             st.info("Belum ada penugasan untuk siswa ini.")
-
-                        sesi_aktif_pantau = [r for r in sesi_pantau if str(r.get("Status", "")).strip().lower() == "aktif"]
-                        if sesi_aktif_pantau:
-                            with st.expander(f"⏱ Sesi tugas online sedang berjalan ({len(sesi_aktif_pantau)})", expanded=True):
-                                st.caption("Reset hanya menutup sesi. Jawaban draft tetap ada; siswa bisa menekan Mulai lagi dan timer dihitung dari awal.")
-                                for s_row in sesi_aktif_pantau:
-                                    tid_s = str(s_row.get("ID_Tugas", "")).strip()
-                                    t_s = next((x for x in semua_tugas if str(x.get("ID_Tugas", "")).strip() == tid_s), {})
-                                    _b_s, sisa_s = hitung_batas_sesi(s_row, t_s)
-                                    if sisa_s is None:
-                                        ket_s = "tanpa timer"
-                                    elif sisa_s > 0:
-                                        ket_s = f"sisa {sisa_s // 60} menit {sisa_s % 60} detik"
-                                    else:
-                                        ket_s = "waktu sudah habis (akan dikirim otomatis saat siswa membuka aplikasi)"
-                                    st.write(f"**{t_s.get('Judul_Tugas') or tid_s}** · mulai {s_row.get('Waktu_Mulai', '-')} · {ket_s}")
-                                    yakin_reset = st.checkbox("Saya yakin ingin mengakhiri sesi ini.", key=f"reset_yakin_{sid_pantau}_{tid_s}")
-                                    if st.button("🔄 Akhiri / reset sesi", key=f"reset_sesi_{sid_pantau}_{tid_s}", disabled=not yakin_reset):
-                                        try:
-                                            akhiri_sesi_online(sid_pantau, tid_s, status_akhir="Direset Tutor")
-                                            st.success("Sesi diakhiri.")
-                                            st.rerun()
-                                        except Exception as exc_reset:
-                                            st.error(f"Sesi belum dapat diakhiri: {exc_reset}")
 
                         # Batalkan tugas yang salah kirim (hanya yang belum dikerjakan)
                         bisa_batal = [t for t in semua_tugas
@@ -5047,44 +4762,49 @@ elif peran == "🔒 Pengajar / Tutor":
                             nilai = st.number_input("Nilai akhir (0–100):", min_value=0, max_value=100, value=nilai_awal)
                             catatan = st.text_area("Catatan tutor:")
                             persetujuan = st.checkbox("Saya sudah memeriksa hasil dan menyetujui penerbitan nilai akhir.")
-                            simpan_nilai = st.form_submit_button("Setujui dan Terbitkan Nilai", disabled=not persetujuan)
+                            # Tombol harus selalu aktif: nilai checkbox di dalam st.form
+                            # baru dikirim ke server saat form disubmit.
+                            simpan_nilai = st.form_submit_button("Setujui dan Terbitkan Nilai")
                             if simpan_nilai:
-                                ws_nilai = get_or_create_worksheet(
-                                    "DB_Nilai_Tugas",
-                                    [
-                                        "ID_Nilai", "ID_Jawaban", "ID_Tugas",
-                                        "Nama_Siswa", "Nilai", "Catatan",
-                                        "Tutor", "Waktu_Penilaian"
+                                if not persetujuan:
+                                    st.warning("Centang persetujuan tutor terlebih dahulu sebelum menerbitkan nilai.")
+                                else:
+                                    ws_nilai = get_or_create_worksheet(
+                                        "DB_Nilai_Tugas",
+                                        [
+                                            "ID_Nilai", "ID_Jawaban", "ID_Tugas",
+                                            "Nama_Siswa", "Nilai", "Catatan",
+                                            "Tutor", "Waktu_Penilaian"
+                                        ]
+                                    )
+                                    ws_nilai.append_row([
+                                        "NIL-" + uuid.uuid4().hex[:10].upper(),
+                                        item.get("ID_Jawaban"),
+                                        item.get("ID_Tugas"),
+                                        item.get("Nama_Siswa"),
+                                        nilai,
+                                        catatan,
+                                        st.session_state.tutor_nama,
+                                        waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+                                    ])
+                                    # Catat persetujuan terpisah; DB_Nilai_Tugas hanya berisi nilai yang sudah diterbitkan.
+                                    catat_persetujuan_nilai(
+                                        item.get("ID_Jawaban"), item.get("ID_Tugas"),
+                                        item.get("ID_Siswa"), hasil_sementara.get("nilai_sementara"),
+                                        nilai, st.session_state.tutor_nama, catatan
+                                    )
+                                    # Tandai seluruh baris soal pada penugasan/siswa sebagai sudah dinilai.
+                                    all_rows = baca_records_aman(ws_jawaban)
+                                    pembaruan = [
+                                        {"range": f"F{row['_baris']}", "values": [["Sudah Dinilai"]]}
+                                        for row in all_rows
+                                        if str(row.get("ID_Penugasan", "")) == str(item.get("ID_Tugas", ""))
+                                        and str(row.get("ID_Siswa", "")) == str(item.get("ID_Siswa", ""))
                                     ]
-                                )
-                                ws_nilai.append_row([
-                                    "NIL-" + uuid.uuid4().hex[:10].upper(),
-                                    item.get("ID_Jawaban"),
-                                    item.get("ID_Tugas"),
-                                    item.get("Nama_Siswa"),
-                                    nilai,
-                                    catatan,
-                                    st.session_state.tutor_nama,
-                                    waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
-                                ])
-                                # Catat persetujuan terpisah; DB_Nilai_Tugas hanya berisi nilai yang sudah diterbitkan.
-                                catat_persetujuan_nilai(
-                                    item.get("ID_Jawaban"), item.get("ID_Tugas"),
-                                    item.get("ID_Siswa"), hasil_sementara.get("nilai_sementara"),
-                                    nilai, st.session_state.tutor_nama, catatan
-                                )
-                                # Tandai seluruh baris soal pada penugasan/siswa sebagai sudah dinilai.
-                                all_rows = baca_records_aman(ws_jawaban)
-                                pembaruan = [
-                                    {"range": f"F{row['_baris']}", "values": [["Sudah Dinilai"]]}
-                                    for row in all_rows
-                                    if str(row.get("ID_Penugasan", "")) == str(item.get("ID_Tugas", ""))
-                                    and str(row.get("ID_Siswa", "")) == str(item.get("ID_Siswa", ""))
-                                ]
-                                if pembaruan:
-                                    ws_jawaban.batch_update(pembaruan, value_input_option="RAW")
-                                st.success("Nilai akhir disetujui dan diterbitkan. Nilai sementara tidak pernah ditampilkan kepada siswa.")
-                                st.rerun()
+                                    if pembaruan:
+                                        ws_jawaban.batch_update(pembaruan, value_input_option="RAW")
+                                    st.success("Nilai akhir disetujui dan diterbitkan. Nilai sementara tidak pernah ditampilkan kepada siswa.")
+                                    st.rerun()
 
                     else:
                         st.info("Tidak ada jawaban yang menunggu pemeriksaan.")
