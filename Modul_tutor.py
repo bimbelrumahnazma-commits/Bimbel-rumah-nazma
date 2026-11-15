@@ -48,7 +48,7 @@ MAPEL_OPTIONS = [
 # KONFIGURASI HALAMAN
 # =========================================================
 st.set_page_config(
-    page_title="Portal Bimbel Rumah Nazma - Tahap 7.37",
+    page_title="Portal Bimbel Rumah Nazma - Tahap 7.45",
     layout="wide",
     page_icon="🎓",
     initial_sidebar_state="expanded"
@@ -167,6 +167,109 @@ def _worksheet_header_cached(spreadsheet_id, worksheet_title):
 # Dengan begitu, halaman login dapat dirender lebih dahulu tanpa menunggu Google.
 client = None
 sheet = None
+
+
+def buat_paket_audit_sistem():
+    """Menyusun audit baca-saja; tidak menulis atau mengubah Google Sheets."""
+    book = init_spreadsheet()
+    hasil = {
+        "nama_aplikasi": "Portal Bimbel Rumah Nazma",
+        "waktu_audit": waktu_lokal().strftime("%Y-%m-%d %H:%M:%S WIB"),
+        "mode": "READ_ONLY",
+        "ringkasan_sheet": [],
+        "pemeriksaan": [],
+        "catatan_privasi": "Tidak memuat PIN, hash PIN, nomor telepon, nama siswa, jawaban, atau catatan pribadi.",
+    }
+    sheet_map = {}
+    for ws in book.worksheets():
+        try:
+            headers = [str(x).strip() for x in ws.row_values(1)]
+            hasil["ringkasan_sheet"].append({
+                "nama_sheet": ws.title,
+                "jumlah_baris_terisi": None,
+                "jumlah_kolom_header": len(headers),
+                "header": headers,
+                "status_baca": "OK",
+            })
+            sheet_map[ws.title] = ws
+        except Exception as exc:
+            hasil["ringkasan_sheet"].append({
+                "nama_sheet": ws.title, "jumlah_baris_terisi": None,
+                "jumlah_kolom_header": None, "header": [],
+                "status_baca": "GAGAL: " + str(exc)[:180],
+            })
+
+    # Baca hanya tabel operasional yang diperlukan untuk pemeriksaan ringkas.
+    target = [
+        "Data_Siswa", "Akun_Pengguna", "Bank_Soal_Master",
+        "Tugas_Sesi_Siswa_v2", "DB_Jawaban_Siswa", "DB_Nilai_Tugas",
+        "Relasi_Orangtua_Siswa", "Relasi_Tutor_Siswa",
+        "Status_Sesi_Tugas", "Riwayat_Latihan",
+    ]
+    records = {}
+    for nama in target:
+        ws = sheet_map.get(nama)
+        if not ws:
+            hasil["pemeriksaan"].append({"area": nama, "status": "SHEET_TIDAK_ADA", "jumlah": None, "temuan": "Worksheet tidak ditemukan."})
+            continue
+        try:
+            values = ws.get_all_values()
+            headers = [str(x).strip() for x in values[0]] if values else []
+            rows = []
+            for row in values[1:]:
+                if any(str(v).strip() for v in row):
+                    rows.append({h: (row[i] if i < len(row) else "") for i, h in enumerate(headers) if h})
+            records[nama] = rows
+            # Jumlah data yang benar-benar terisi menggantikan perkiraan kapasitas grid.
+            for item in hasil["ringkasan_sheet"]:
+                if item["nama_sheet"] == nama:
+                    item["jumlah_baris_terisi"] = len(rows)
+                    break
+        except Exception as exc:
+            hasil["pemeriksaan"].append({"area": nama, "status": "GAGAL_BACA", "jumlah": None, "temuan": str(exc)[:220]})
+
+    def cek(area, status, jumlah, temuan):
+        hasil["pemeriksaan"].append({"area": area, "status": status, "jumlah": jumlah, "temuan": temuan})
+
+    siswa = records.get("Data_Siswa", [])
+    id_siswa = [str(r.get("ID_SISWA") or r.get("ID_Siswa") or "").strip() for r in siswa]
+    id_isi = [x for x in id_siswa if x]
+    duplikat_id = len(id_isi) - len(set(id_isi))
+    kosong_id = sum(1 for x in id_siswa if not x)
+    cek("Identitas siswa", "PERLU_PERHATIAN" if duplikat_id or kosong_id else "OK", len(siswa),
+        f"ID kosong: {kosong_id}; ID duplikat: {duplikat_id}. Nama siswa tidak disertakan.")
+
+    bank = records.get("Bank_Soal_Master", [])
+    bank_header = set(sheet_map["Bank_Soal_Master"].row_values(1)) if "Bank_Soal_Master" in sheet_map else set()
+    kolom_bank = [c for c in ("Kode_Soal", "Jenjang", "Kelas", "Mapel", "Bentuk_Soal", "Teks_Soal", "Kunci_Jawaban", "Status") if c not in bank_header]
+    tanpa_kunci = sum(1 for r in bank if str(r.get("Kunci_Jawaban", "")).strip() == "")
+    tanpa_bobot = sum(1 for r in bank if "Bobot" in bank_header and str(r.get("Bobot", "")).strip() == "")
+    cek("Bank soal", "PERLU_PERHATIAN" if kolom_bank or tanpa_kunci else "OK", len(bank),
+        f"Header wajib tidak ada: {', '.join(kolom_bank) or '-'}; soal tanpa kunci: {tanpa_kunci}; bobot kosong: {tanpa_bobot}.")
+
+    tugas = records.get("Tugas_Sesi_Siswa_v2", [])
+    cek("Tugas", "OK", len(tugas), "Jumlah baris tugas terbaca; isi tugas tidak diekspor.")
+    jawaban = records.get("DB_Jawaban_Siswa", [])
+    cek("Jawaban siswa", "OK", len(jawaban), "Jumlah baris jawaban terbaca; teks jawaban tidak diekspor.")
+    nilai = records.get("DB_Nilai_Tugas", [])
+    cek("Nilai tugas", "OK", len(nilai), "Jumlah baris nilai terbaca; nilai individual tidak diekspor.")
+
+    sesi = records.get("Status_Sesi_Tugas", [])
+    sesi_aktif = sum(1 for r in sesi if str(r.get("Status", "")).strip().casefold() == "aktif")
+    cek("Timer/sesi aktif", "PERLU_PERHATIAN" if sesi_aktif else "OK", sesi_aktif,
+        "Jumlah sesi berstatus Aktif saat audit; tidak memuat ID siswa/tugas.")
+
+    relasi_ortu = records.get("Relasi_Orangtua_Siswa", [])
+    cek("Relasi orang tua", "OK", len(relasi_ortu), "Jumlah relasi terbaca; identitas relasi tidak diekspor.")
+    relasi_tutor = records.get("Relasi_Tutor_Siswa", [])
+    cek("Relasi tutor", "OK", len(relasi_tutor), "Jumlah relasi terbaca; identitas relasi tidak diekspor.")
+
+    akun = records.get("Akun_Pengguna", [])
+    cek("Akun pengguna", "OK", len(akun), "Hanya jumlah akun; username, PIN, hash, dan level akun tidak diekspor.")
+
+    hasil["total_sheet"] = len(hasil["ringkasan_sheet"])
+    hasil["total_pemeriksaan"] = len(hasil["pemeriksaan"])
+    return hasil
 
 
 def pastikan_koneksi():
@@ -5105,10 +5208,57 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.session_state.owner_logged_in = False
             st.rerun()
         st.success("Akses diizinkan.")
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
             "🎁 Undian Hadiah", "👥 Kelola Status Akun", "📚 Arsip Bank Soal",
-            "🔑 Reset PIN", "🔐 Keamanan Owner", "➕ Tambah Siswa"
+            "🔑 Reset PIN", "🔐 Keamanan Owner", "➕ Tambah Siswa",
+            "🧪 Audit Data Sistem"
         ])
+
+        with tab7:
+            st.header("🧪 Audit Data Sistem")
+            st.caption(
+                "Pemeriksaan baca-saja untuk membantu menelusuri masalah aplikasi. "
+                "Audit tidak mengubah Google Sheets dan tidak mengekspor data pribadi siswa."
+            )
+            st.warning(
+                "Saat dijalankan, sistem membaca header seluruh worksheet dan isi ringkas "
+                "sejumlah tabel operasional. Hindari menjalankan audit berulang kali dalam waktu singkat."
+            )
+            if st.button("Jalankan Audit dan Siapkan Paket", key="btn_jalankan_audit_sistem"):
+                try:
+                    with st.spinner("Memeriksa struktur dan konsistensi data..."):
+                        paket_audit = buat_paket_audit_sistem()
+                    st.session_state["paket_audit_sistem"] = paket_audit
+                    st.success("Paket audit berhasil dibuat. Tidak ada data yang diubah.")
+                except Exception as exc:
+                    st.error(f"Audit belum selesai: {exc}")
+
+            paket_audit = st.session_state.get("paket_audit_sistem")
+            if paket_audit:
+                st.metric("Worksheet terdeteksi", paket_audit.get("total_sheet", 0))
+                st.metric("Pemeriksaan", paket_audit.get("total_pemeriksaan", 0))
+                st.markdown("**Ringkasan pemeriksaan**")
+                st.dataframe(pd.DataFrame(paket_audit.get("pemeriksaan", [])), use_container_width=True, hide_index=True)
+                st.markdown("**Struktur worksheet**")
+                struktur_ringkas = [{
+                    "Nama Sheet": x.get("nama_sheet"),
+                    "Baris Data": x.get("jumlah_baris_terisi"),
+                    "Jumlah Header": x.get("jumlah_kolom_header"),
+                    "Status Baca": x.get("status_baca"),
+                } for x in paket_audit.get("ringkasan_sheet", [])]
+                st.dataframe(pd.DataFrame(struktur_ringkas), use_container_width=True, hide_index=True)
+                json_audit = json.dumps(paket_audit, ensure_ascii=False, indent=2)
+                csv_audit = pd.DataFrame(paket_audit.get("pemeriksaan", [])).to_csv(index=False).encode("utf-8-sig")
+                st.download_button(
+                    "⬇️ Unduh Paket Audit (JSON)", data=json_audit.encode("utf-8"),
+                    file_name="Audit_Bimbel_Rumah_Nazma.json", mime="application/json",
+                    key="download_audit_json"
+                )
+                st.download_button(
+                    "⬇️ Unduh Ringkasan Audit (CSV)", data=csv_audit,
+                    file_name="Ringkasan_Audit_Bimbel_Nazma.csv", mime="text/csv",
+                    key="download_audit_csv"
+                )
 
         with tab6:
             st.header("➕ Pendaftaran Siswa Baru")
