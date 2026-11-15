@@ -2790,6 +2790,10 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
             if terkunci:
                 st.info("Jawaban sudah dikirim, jadi tidak bisa diubah lagi.")
 
+            # Untuk tugas yang sumber soalnya berupa PDF/link/lampiran, aplikasi hanya
+            # menyediakan lembar jawaban. Pertanyaan dan teks opsi tetap berada di sumber.
+            sumber_tugas = str(t.get("Sumber", "") or "").strip()
+            soal_dari_lampiran = sumber_tugas in (SUMBER_UPLOAD, SUMBER_DRIVE)
             data_soal_tidak_lengkap = False
             for i, soal in enumerate(daftar_soal, 1):
                 qkey = f"student_{task_id}_{i}"
@@ -2800,17 +2804,22 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                 teks_tampil = str(soal.get("Teks_Soal", "") or "").strip()
                 if teks_tampil:
                     st.markdown(f"**{i}. {teks_tampil}**")
+                elif soal_dari_lampiran:
+                    st.markdown(f"**{i}. Lihat soal nomor {i} pada lampiran di atas.**")
                 else:
                     data_soal_tidak_lengkap = True
                     st.warning(f"Soal nomor {i} belum memiliki teks pertanyaan. Tutor perlu memperbaiki soal ini.")
                     st.markdown(f"**{i}. Teks pertanyaan belum tersedia.**")
-                if "pilihan ganda" in bentuk:
+                if "pilihan ganda" in bentuk and not soal_dari_lampiran:
                     opsi_hanya_label = bool(opsi) and all(
                         re.fullmatch(r"[A-Da-d][.)]?", str(x).strip()) for x in opsi
                     )
                     if len(opsi) < 2 or opsi_hanya_label:
                         data_soal_tidak_lengkap = True
                         st.warning(f"Pilihan jawaban nomor {i} belum lengkap. Hubungi tutor.")
+                if "pilihan ganda" in bentuk and soal_dari_lampiran and len(opsi) < 2:
+                    data_soal_tidak_lengkap = True
+                    st.warning(f"Label pilihan jawaban nomor {i} belum lengkap. Tutor perlu melengkapi A/B/C/D.")
                 if soal.get("Url_Gambar"):
                     st.image(img_url(soal["Url_Gambar"]), use_container_width=True)
                 tampilkan_media_soal(soal)
@@ -4055,7 +4064,9 @@ elif peran == "🔒 Pengajar / Tutor":
                         if sumber_tugas != SUMBER_BANK and source_ready and mode_pengerjaan == TASK_MODE_ONLINE:
                             st.markdown("#### ⚙️ Konfigurasi lembar jawaban")
                             st.caption(
-                                "Atur tipe jawaban setiap nomor. Essay memakai rubrik kata kunci untuk nilai sementara; "
+                                "Atur tipe jawaban dan jumlah nomor. Karena sumber soal berasal dari lampiran/link, "
+                                "pertanyaan dan teks opsi tidak perlu diketik ulang. Untuk pilihan ganda, cukup gunakan "
+                                "label A, B, C, D. Essay memakai rubrik kata kunci untuk nilai sementara; "
                                 "nilai akhir tetap menunggu persetujuan tutor."
                             )
                             templates = ambil_template_soal(st.session_state.get("tutor_nama", ""))
