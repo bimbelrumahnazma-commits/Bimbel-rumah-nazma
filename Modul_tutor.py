@@ -48,7 +48,7 @@ MAPEL_OPTIONS = [
 # KONFIGURASI HALAMAN
 # =========================================================
 st.set_page_config(
-    page_title="Portal Bimbel Rumah Nazma - Tahap 7.45",
+    page_title="Portal Bimbel Rumah Nazma - Tahap 7.46",
     layout="wide",
     page_icon="🎓",
     initial_sidebar_state="expanded"
@@ -170,7 +170,7 @@ sheet = None
 
 
 def buat_paket_audit_sistem():
-    """Menyusun audit baca-saja; tidak menulis atau mengubah Google Sheets."""
+    """Audit baca-saja dengan Google Sheets values_batch_get untuk mengurangi API calls."""
     book = init_spreadsheet()
     hasil = {
         "nama_aplikasi": "Portal Bimbel Rumah Nazma",
@@ -179,57 +179,88 @@ def buat_paket_audit_sistem():
         "ringkasan_sheet": [],
         "pemeriksaan": [],
         "catatan_privasi": "Tidak memuat PIN, hash PIN, nomor telepon, nama siswa, jawaban, atau catatan pribadi.",
+        "metode_baca": "Google Sheets batch_get",
     }
-    sheet_map = {}
-    for ws in book.worksheets():
-        try:
-            headers = [str(x).strip() for x in ws.row_values(1)]
-            hasil["ringkasan_sheet"].append({
-                "nama_sheet": ws.title,
-                "jumlah_baris_terisi": None,
-                "jumlah_kolom_header": len(headers),
-                "header": headers,
-                "status_baca": "OK",
-            })
-            sheet_map[ws.title] = ws
-        except Exception as exc:
-            hasil["ringkasan_sheet"].append({
-                "nama_sheet": ws.title, "jumlah_baris_terisi": None,
-                "jumlah_kolom_header": None, "header": [],
-                "status_baca": "GAGAL: " + str(exc)[:180],
-            })
 
-    # Baca hanya tabel operasional yang diperlukan untuk pemeriksaan ringkas.
     target = [
         "Data_Siswa", "Akun_Pengguna", "Bank_Soal_Master",
         "Tugas_Sesi_Siswa_v2", "DB_Jawaban_Siswa", "DB_Nilai_Tugas",
         "Relasi_Orangtua_Siswa", "Relasi_Tutor_Siswa",
         "Status_Sesi_Tugas", "Riwayat_Latihan",
     ]
-    records = {}
+    worksheets = book.worksheets()  # satu permintaan metadata untuk daftar worksheet
+    sheet_map = {ws.title: ws for ws in worksheets}
+
+    def quote_title(title):
+        return "'" + str(title).replace("'", "''") + "'"
+
+    # Satu batch request mengambil header semua sheet dan isi tabel target.
+    ranges = []
+    range_keys = []
+    for ws in worksheets:
+        ranges.append(f"{quote_title(ws.title)}!1:1")
+        range_keys.append((ws.title, "header"))
     for nama in target:
-        ws = sheet_map.get(nama)
-        if not ws:
-            hasil["pemeriksaan"].append({"area": nama, "status": "SHEET_TIDAK_ADA", "jumlah": None, "temuan": "Worksheet tidak ditemukan."})
-            continue
-        try:
-            values = ws.get_all_values()
-            headers = [str(x).strip() for x in values[0]] if values else []
+        if nama in sheet_map:
+            ranges.append(f"{quote_title(nama)}!A:ZZ")
+            range_keys.append((nama, "data"))
+
+    hasil_batch = {}
+    try:
+        response = book.values_batch_get(ranges, params={"value_render_option": "FORMATTED_VALUE"})
+        value_ranges = response.get("valueRanges", [])
+        for i, key in enumerate(range_keys):
+            values = value_ranges[i].get("values", []) if i < len(value_ranges) else []
+            hasil_batch[key] = values
+    except Exception as exc:
+        pesan = str(exc)
+        hasil["error_batch"] = pesan[:300]
+        for ws in worksheets:
+            hasil["ringkasan_sheet"].append({
+                "nama_sheet": ws.title, "jumlah_baris_terisi": None,
+                "jumlah_kolom_header": None, "header": [],
+                "status_baca": "GAGAL_BATCH: " + pesan[:180],
+            })
+        hasil["total_sheet"] = len(hasil["ringkasan_sheet"])
+        hasil["total_pemeriksaan"] = 1
+        hasil["pemeriksaan"].append({
+            "area": "Pembacaan Google Sheets", "status": "GAGAL_BACA",
+            "jumlah": None, "temuan": "Permintaan batch gagal. Tunggu kuota pulih sebelum mencoba lagi."
+        })
+        return hasil
+
+    headers_by_sheet = {}
+    records = {}
+    for ws in worksheets:
+        header_values = hasil_batch.get((ws.title, "header"), [])
+        headers = [str(x).strip() for x in header_values[0]] if header_values else []
+        headers_by_sheet[ws.title] = headers
+        jumlah = None
+        status_baca = "OK"
+        if ws.title in target:
+            values = hasil_batch.get((ws.title, "data"), [])
             rows = []
-            for row in values[1:]:
-                if any(str(v).strip() for v in row):
-                    rows.append({h: (row[i] if i < len(row) else "") for i, h in enumerate(headers) if h})
-            records[nama] = rows
-            # Jumlah data yang benar-benar terisi menggantikan perkiraan kapasitas grid.
-            for item in hasil["ringkasan_sheet"]:
-                if item["nama_sheet"] == nama:
-                    item["jumlah_baris_terisi"] = len(rows)
-                    break
-        except Exception as exc:
-            hasil["pemeriksaan"].append({"area": nama, "status": "GAGAL_BACA", "jumlah": None, "temuan": str(exc)[:220]})
+            if values:
+                data_headers = [str(x).strip() for x in values[0]]
+                for row in values[1:]:
+                    if any(str(v).strip() for v in row):
+                        rows.append({h: (row[i] if i < len(row) else "") for i, h in enumerate(data_headers) if h})
+            records[ws.title] = rows
+            jumlah = len(rows)
+        hasil["ringkasan_sheet"].append({
+            "nama_sheet": ws.title,
+            "jumlah_baris_terisi": jumlah,
+            "jumlah_kolom_header": len(headers),
+            "header": headers,
+            "status_baca": status_baca,
+        })
 
     def cek(area, status, jumlah, temuan):
         hasil["pemeriksaan"].append({"area": area, "status": status, "jumlah": jumlah, "temuan": temuan})
+
+    for nama in target:
+        if nama not in sheet_map:
+            cek(nama, "SHEET_TIDAK_ADA", None, "Worksheet tidak ditemukan.")
 
     siswa = records.get("Data_Siswa", [])
     id_siswa = [str(r.get("ID_SISWA") or r.get("ID_Siswa") or "").strip() for r in siswa]
@@ -240,7 +271,7 @@ def buat_paket_audit_sistem():
         f"ID kosong: {kosong_id}; ID duplikat: {duplikat_id}. Nama siswa tidak disertakan.")
 
     bank = records.get("Bank_Soal_Master", [])
-    bank_header = set(sheet_map["Bank_Soal_Master"].row_values(1)) if "Bank_Soal_Master" in sheet_map else set()
+    bank_header = set(headers_by_sheet.get("Bank_Soal_Master", []))
     kolom_bank = [c for c in ("Kode_Soal", "Jenjang", "Kelas", "Mapel", "Bentuk_Soal", "Teks_Soal", "Kunci_Jawaban", "Status") if c not in bank_header]
     tanpa_kunci = sum(1 for r in bank if str(r.get("Kunci_Jawaban", "")).strip() == "")
     tanpa_bobot = sum(1 for r in bank if "Bobot" in bank_header and str(r.get("Bobot", "")).strip() == "")
@@ -253,17 +284,14 @@ def buat_paket_audit_sistem():
     cek("Jawaban siswa", "OK", len(jawaban), "Jumlah baris jawaban terbaca; teks jawaban tidak diekspor.")
     nilai = records.get("DB_Nilai_Tugas", [])
     cek("Nilai tugas", "OK", len(nilai), "Jumlah baris nilai terbaca; nilai individual tidak diekspor.")
-
     sesi = records.get("Status_Sesi_Tugas", [])
     sesi_aktif = sum(1 for r in sesi if str(r.get("Status", "")).strip().casefold() == "aktif")
     cek("Timer/sesi aktif", "PERLU_PERHATIAN" if sesi_aktif else "OK", sesi_aktif,
         "Jumlah sesi berstatus Aktif saat audit; tidak memuat ID siswa/tugas.")
-
     relasi_ortu = records.get("Relasi_Orangtua_Siswa", [])
     cek("Relasi orang tua", "OK", len(relasi_ortu), "Jumlah relasi terbaca; identitas relasi tidak diekspor.")
     relasi_tutor = records.get("Relasi_Tutor_Siswa", [])
     cek("Relasi tutor", "OK", len(relasi_tutor), "Jumlah relasi terbaca; identitas relasi tidak diekspor.")
-
     akun = records.get("Akun_Pengguna", [])
     cek("Akun pengguna", "OK", len(akun), "Hanya jumlah akun; username, PIN, hash, dan level akun tidak diekspor.")
 
