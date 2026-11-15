@@ -1365,11 +1365,57 @@ def get_active_task_worksheet():
 
 
 def baca_sesi_aktif_siswa(siswa_id):
-    rows = baca_records_aman(get_active_task_worksheet())
+    """Membaca status sesi langsung dari Sheets agar tidak memakai cache lama."""
+    rows = baca_records_aman(get_active_task_worksheet(), refresh=True)
     sid = str(siswa_id or "").strip()
     aktif = [r for r in rows if str(r.get("ID_Siswa", "")).strip() == sid
              and str(r.get("Status", "")).strip().lower() == "aktif"]
     return aktif[-1] if aktif else None
+
+
+def hitung_sisa_waktu_sesi(sesi, timer_menit, sekarang=None):
+    """Menghitung sisa detik dari waktu server; None berarti tanpa timer/tidak valid."""
+    try:
+        durasi = int(float(str(timer_menit or "0").strip().replace(",", ".")))
+        if durasi <= 0:
+            return None
+        mulai_txt = str((sesi or {}).get("Waktu_Mulai", "")).strip()
+        mulai = datetime.strptime(mulai_txt, "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=ZoneInfo("Asia/Jakarta")
+        )
+        now = sekarang or waktu_lokal()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=ZoneInfo("Asia/Jakarta"))
+        elapsed = (now - mulai).total_seconds()
+        return max(0, int(durasi * 60 - elapsed + 0.999))
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("Waktu mulai atau durasi timer tidak valid. Hubungi Tutor.")
+
+
+def validasi_waktu_pengiriman(task_id, siswa_id):
+    """Pemeriksaan otoritatif sebelum pengiriman; tidak mengandalkan jam browser."""
+    try:
+        ws_tugas = get_worksheet("Tugas_Sesi_Siswa_v2")
+        tugas = baca_records_aman(ws_tugas, refresh=True)
+    except gspread.WorksheetNotFound:
+        tugas = get_student_tasks()
+    task = next((r for r in tugas if str(r.get("ID_Tugas", "")).strip() == str(task_id).strip()), None)
+    if not task:
+        raise ValueError("Data tugas tidak ditemukan. Jawaban belum dikirim.")
+    timer = str(task.get("Timer_Menit", "0") or "0").strip()
+    try:
+        durasi = float(timer.replace(",", "."))
+    except (TypeError, ValueError):
+        raise ValueError("Pengaturan timer tugas tidak valid. Hubungi Tutor.")
+    if durasi <= 0:
+        return True
+    sesi = baca_sesi_aktif_siswa(siswa_id)
+    if not sesi or str(sesi.get("ID_Tugas", "")).strip() != str(task_id).strip():
+        raise ValueError("Sesi pengerjaan tidak aktif. Muat ulang tugas dan hubungi Tutor bila masalah berlanjut.")
+    sisa = hitung_sisa_waktu_sesi(sesi, durasi)
+    if sisa <= 0:
+        raise ValueError("Waktu pengerjaan sudah habis. Jawaban tidak dapat dikirim melalui sesi ini. Hubungi Tutor untuk pemeriksaan jawaban draft.")
+    return True
 
 
 def mulai_sesi_online(siswa_id, task_id):
@@ -1384,6 +1430,7 @@ def mulai_sesi_online(siswa_id, task_id):
         str(siswa_id).strip(), str(task_id).strip(),
         waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"), "Aktif", ""
     ], value_input_option="RAW")
+    _baca_values_cache.clear()
     return True, "Sesi pengerjaan dimulai."
 
 
@@ -1397,6 +1444,7 @@ def akhiri_sesi_online(siswa_id, task_id):
                 and str(row.get("Status", "")).strip().lower() == "aktif"):
             ws.update_cell(int(row["_baris"]), 4, "Selesai")
             ws.update_cell(int(row["_baris"]), 5, waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"))
+            _baca_values_cache.clear()
             return True
     return False
 
@@ -1784,6 +1832,8 @@ def simpan_jawaban_per_soal(task_id, student_id, answers, submitted=False):
 
 
 def simpan_pengiriman_jawaban(task_id, student_id, answers):
+    # Pemeriksaan dilakukan di fungsi penyimpanan juga, bukan hanya pada tombol UI.
+    validasi_waktu_pengiriman(task_id, student_id)
     return simpan_jawaban_per_soal(task_id, student_id, answers, submitted=True)
 
 
@@ -1800,7 +1850,7 @@ def jawaban_kosong(v):
 def _nilai_normalisasi(v):
     """Normalisasi jawaban untuk pencocokan kunci tanpa membedakan kapital/spasi."""
     if isinstance(v, str):
-        return re.sub(r"\\s+", " ", v.strip()).casefold()
+        return re.sub(r"\s+", " ", v.strip()).casefold()
     return v
 
 
@@ -2995,7 +3045,8 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                     boleh_kirim = boleh_kirim and konfirmasi_kosong
                 if st.button("📤 Kirim Jawaban", key=f"submit_{task_id}", disabled=(not boleh_kirim)):
                     try:
-                        # Upload file lebih dulu; tabel jawaban online yang lama tidak diubah.
+                        # Validasi timer dilakukan sebelum unggah lampiran maupun simpan jawaban.
+                        validasi_waktu_pengiriman(task_id, siswa_id)
                         if file_jawaban:
                             simpan_lampiran_jawaban(task_id, siswa_id, file_jawaban)
                         ok = simpan_pengiriman_jawaban(task_id, siswa_id, current_answers)
