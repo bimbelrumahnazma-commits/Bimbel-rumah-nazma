@@ -1555,8 +1555,69 @@ def hitung_sisa_waktu_sesi(sesi, timer_menit, sekarang=None):
         raise ValueError("Waktu mulai atau durasi timer tidak valid. Hubungi Tutor.")
 
 
+def tampilkan_timer_sisa(sisa_detik, task_id):
+    """Hitung mundur visual di browser; keputusan simpan/kirim tetap divalidasi server."""
+    detik = max(0, int(sisa_detik))
+    html = f"""
+    <div id="nazma-timer-{task_id}" style="padding:10px 14px;border:1px solid #d6a84f;border-radius:10px;background:#fff8e8;color:#6b4b00;font-weight:600;font-size:16px;">
+      ⏱️ Sisa waktu: <span class="waktu">{detik//60:02d}:{detik%60:02d}</span>
+      <span class="pesan" style="font-weight:400;"></span>
+    </div>
+    <script>
+    (function(){{
+      const box=document.getElementById("nazma-timer-{task_id}");
+      if(!box) return;
+      let s={detik};
+      const tick=()=>{{
+        const m=Math.floor(s/60), d=s%60;
+        box.querySelector(".waktu").textContent=String(m).padStart(2,"0")+":"+String(d).padStart(2,"0");
+        if(s<=0){{
+          box.querySelector(".pesan").textContent=" — Waktu habis. Lembar jawaban terkunci oleh server.";
+          clearInterval(timer);
+          return;
+        }}
+        s--;
+      }};
+      tick();
+      const timer=setInterval(tick,1000);
+    }})();
+    </script>
+    """
+    components.html(html, height=62, scrolling=False)
+
+
+def _parse_tenggat_server(nilai):
+    """Parse tenggat tugas ke waktu Asia/Jakarta; tanggal tanpa jam berlaku sampai akhir hari."""
+    teks = str(nilai or "").strip()
+    if not teks:
+        return None
+    kandidat = teks.replace(" WIB", "").replace(" wib", "").strip()
+    try:
+        dt = datetime.fromisoformat(kandidat.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo("Asia/Jakarta"))
+        else:
+            dt = dt.astimezone(ZoneInfo("Asia/Jakarta"))
+        return dt
+    except (TypeError, ValueError):
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M", "%d-%m-%Y %H:%M"):
+        try:
+            return datetime.strptime(kandidat, fmt).replace(tzinfo=ZoneInfo("Asia/Jakarta"))
+        except ValueError:
+            continue
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(kandidat, fmt).replace(
+                hour=23, minute=59, second=59, tzinfo=ZoneInfo("Asia/Jakarta")
+            )
+        except ValueError:
+            continue
+    raise ValueError("Format tenggat tugas tidak dikenali. Hubungi Tutor untuk memperbaiki tenggat.")
+
+
 def validasi_waktu_pengiriman(task_id, siswa_id):
-    """Pemeriksaan otoritatif sebelum pengiriman; tidak mengandalkan jam browser."""
+    """Pemeriksaan otoritatif server untuk tenggat dan timer sebelum draft/pengiriman."""
     try:
         ws_tugas = get_worksheet("Tugas_Sesi_Siswa_v2")
         tugas = baca_records_aman(ws_tugas, refresh=True)
@@ -1564,7 +1625,14 @@ def validasi_waktu_pengiriman(task_id, siswa_id):
         tugas = get_student_tasks()
     task = next((r for r in tugas if str(r.get("ID_Tugas", "")).strip() == str(task_id).strip()), None)
     if not task:
-        raise ValueError("Data tugas tidak ditemukan. Jawaban belum dikirim.")
+        raise ValueError("Data tugas tidak ditemukan. Jawaban belum disimpan/dikirim.")
+    if mode_tugas(task) != TASK_MODE_ONLINE:
+        return True
+    sekarang = waktu_lokal()
+    tenggat = _parse_tenggat_server(task.get("Tenggat"))
+    if tenggat and sekarang > tenggat:
+        raise ValueError("Tenggat tugas sudah tercapai. Lembar jawaban dikunci dan perubahan tidak dapat disimpan.")
+
     timer = str(task.get("Timer_Menit", "0") or "0").strip()
     try:
         durasi = float(timer.replace(",", "."))
@@ -1575,14 +1643,27 @@ def validasi_waktu_pengiriman(task_id, siswa_id):
     sesi = baca_sesi_aktif_siswa(siswa_id)
     if not sesi or str(sesi.get("ID_Tugas", "")).strip() != str(task_id).strip():
         raise ValueError("Sesi pengerjaan tidak aktif. Muat ulang tugas dan hubungi Tutor bila masalah berlanjut.")
-    sisa = hitung_sisa_waktu_sesi(sesi, durasi)
+    sisa = hitung_sisa_waktu_sesi(sesi, durasi, sekarang=sekarang)
     if sisa <= 0:
-        raise ValueError("Waktu pengerjaan sudah habis. Jawaban tidak dapat dikirim melalui sesi ini. Hubungi Tutor untuk pemeriksaan jawaban draft.")
+        raise ValueError("Waktu pengerjaan sudah habis. Jawaban tidak dapat disimpan/dikirim melalui sesi ini. Hubungi Tutor untuk pemeriksaan draft terakhir.")
     return True
 
 
 def mulai_sesi_online(siswa_id, task_id):
     """Mencatat sesi mulai di server. Satu siswa hanya boleh punya satu sesi aktif."""
+    # Jangan izinkan sesi baru dimulai setelah tenggat tugas online lewat.
+    try:
+        tugas_rows = baca_records_aman(get_worksheet("Tugas_Sesi_Siswa_v2"), refresh=True)
+    except gspread.WorksheetNotFound:
+        tugas_rows = get_student_tasks()
+    tugas = next((r for r in tugas_rows
+                  if str(r.get("ID_Tugas", "")).strip() == str(task_id).strip()), None)
+    if not tugas:
+        return False, "Data tugas tidak ditemukan. Hubungi Tutor."
+    if mode_tugas(tugas) == TASK_MODE_ONLINE:
+        tenggat = _parse_tenggat_server(tugas.get("Tenggat"))
+        if tenggat and waktu_lokal() > tenggat:
+            return False, "Tenggat tugas sudah lewat. Hubungi Tutor."
     ws = get_active_task_worksheet()
     aktif = baca_sesi_aktif_siswa(siswa_id)
     if aktif and str(aktif.get("ID_Tugas", "")).strip() != str(task_id).strip():
@@ -1907,6 +1988,10 @@ else:
 
 def simpan_jawaban_per_soal(task_id, student_id, answers, submitted=False):
     """Simpan jawaban dengan indeks baris sesi; satu pembacaan awal, lalu update langsung."""
+    # Draft dan pengiriman diperiksa di server. Fungsi validasi mengabaikan
+    # tugas non-online agar alur upload tugas offline tidak terkena timer lembar online.
+    if not submitted:
+        validasi_waktu_pengiriman(task_id, student_id)
     ws = get_answers_worksheet()
     cache_key = "_indeks_baris_jawaban_siswa"
     locked_key = "_tugas_jawaban_terkunci"
@@ -2953,7 +3038,7 @@ button{display:block;width:100%;border:0;border-radius:10px;padding:12px;backgro
 </script></body></html>'''.replace("__STORAGE_KEY__", json.dumps(storage_key))
     components.html(html, height=245, scrolling=False)
 
-def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
+def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_aktif_page=None):
     """Satu kartu tugas/PR untuk siswa. Setiap tugas menyimpan jawabannya sendiri
     (tidak saling menimpa), dan terkunci setelah dikirim."""
     task_id = str(t.get("ID_Tugas", "")).strip()
@@ -2968,7 +3053,7 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
     # Pertahankan kartu tetap terbuka setelah tombol Mulai memicu st.rerun().
     # Cek sesi dari server juga agar kartu terbuka kembali setelah refresh halaman.
     expander_state_key = f"_buka_kartu_tugas_{task_id}"
-    sesi_awal = baca_sesi_aktif_siswa(siswa_id) if siswa_id else None
+    sesi_awal = sesi_aktif_page if siswa_id else None
     sesi_tugas_ini_awal = bool(
         sesi_awal and str(sesi_awal.get("ID_Tugas", "")).strip() == task_id
         and str(sesi_awal.get("Status", "")).strip().lower() == "aktif"
@@ -2994,13 +3079,13 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
         mode_pengerjaan = mode_tugas(t)
 
         if mode_pengerjaan == TASK_MODE_MATERI:
-            sesi_aktif_materi = baca_sesi_aktif_siswa(siswa_id)
+            sesi_aktif_materi = sesi_aktif_page
             if sesi_aktif_materi:
                 st.error("🔒 Materi terkunci selama tugas online sedang dikerjakan. Kumpulkan tugas aktif terlebih dahulu.")
                 return
             st.info("Ini materi bacaan dari Tutor, tidak ada yang perlu dikirim.")
         elif mode_pengerjaan == TASK_MODE_ONLINE and daftar_soal:
-            sesi_aktif = baca_sesi_aktif_siswa(siswa_id)
+            sesi_aktif = sesi_aktif_page
             sesi_ini_aktif = bool(sesi_aktif and str(sesi_aktif.get("ID_Tugas", "")).strip() == task_id)
             sesi_lain_aktif = bool(sesi_aktif and not sesi_ini_aktif)
             if terkunci:
@@ -3020,6 +3105,9 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids):
                         st.error(pesan_mulai)
                 return
             if not terkunci and sesi_ini_aktif:
+                if timer_txt not in ("", "0"):
+                    sisa_timer = hitung_sisa_waktu_sesi(sesi_aktif, timer_txt)
+                    tampilkan_timer_sisa(sisa_timer, task_id)
                 tampilkan_nazma_focus_alert(task_id, siswa_id)
             st.markdown("#### 📝 Lembar Jawaban Online")
             file_jawaban = []
@@ -3486,7 +3574,7 @@ if peran == "🎓 Siswa":
             if not daftar_tugas_menu:
                 st.info("Belum ada tugas yang diberikan.")
             for t in daftar_tugas_menu:
-                tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids)
+                tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_online_aktif_global)
 
         elif menu_siswa == "📌 PR":
             st.markdown(f"### 📌 PR Ananda {nama_aktif}")
@@ -3502,13 +3590,13 @@ if peran == "🎓 Siswa":
                 st.markdown(f"#### PR yang perlu dikerjakan ({len(aktif)})")
                 if aktif:
                     for t in aktif:
-                        tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids)
+                        tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_online_aktif_global)
                 else:
                     st.success("Semua PR sudah dikerjakan. Hebat! 🎉")
                 if selesai:
                     st.markdown(f"#### PR yang sudah dikirim / dinilai ({len(selesai)})")
                     for t in selesai:
-                        tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids)
+                        tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_online_aktif_global)
 
         elif menu_siswa == "📝 Hasil Penilaian":
             st.markdown("### 📝 Hasil Penilaian Tutor")
