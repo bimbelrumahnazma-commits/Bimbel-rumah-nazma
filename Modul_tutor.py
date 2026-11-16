@@ -1522,14 +1522,15 @@ def get_active_task_worksheet():
         )
         ws.append_row(ACTIVE_TASK_HEADERS)
         _worksheet_header_cached.clear()
-    if [str(x).strip() for x in ws.row_values(1)] != ACTIVE_TASK_HEADERS:
+    header_aktif = [str(x).strip() for x in _worksheet_header_cached(init_spreadsheet().id, ws.title)]
+    if header_aktif != ACTIVE_TASK_HEADERS:
         raise ValueError("Header Status_Sesi_Tugas tidak sesuai.")
     return ws
 
 
 def baca_sesi_aktif_siswa(siswa_id):
-    """Membaca status sesi langsung dari Sheets agar tidak memakai cache lama."""
-    rows = baca_records_aman(get_active_task_worksheet(), refresh=True)
+    """Membaca status sesi dari cache bersama; cache dibersihkan saat sesi berubah."""
+    rows = baca_records_aman(get_active_task_worksheet())
     sid = str(siswa_id or "").strip()
     aktif = [r for r in rows if str(r.get("ID_Siswa", "")).strip() == sid
              and str(r.get("Status", "")).strip().lower() == "aktif"]
@@ -1675,6 +1676,7 @@ def mulai_sesi_online(siswa_id, task_id):
         waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"), "Aktif", ""
     ], value_input_option="RAW")
     _baca_values_cache.clear()
+    _worksheet_header_cached.clear()
     return True, "Sesi pengerjaan dimulai."
 
 
@@ -1686,8 +1688,9 @@ def akhiri_sesi_online(siswa_id, task_id):
         if (str(row.get("ID_Siswa", "")).strip() == sid
                 and str(row.get("ID_Tugas", "")).strip() == tid
                 and str(row.get("Status", "")).strip().lower() == "aktif"):
-            ws.update_cell(int(row["_baris"]), 4, "Selesai")
-            ws.update_cell(int(row["_baris"]), 5, waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"))
+            baris = int(row["_baris"])
+            selesai = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+            ws.update(f"D{baris}:E{baris}", [["Selesai", selesai]], value_input_option="RAW")
             _baca_values_cache.clear()
             return True
     return False
@@ -2534,6 +2537,13 @@ def _hapus_lampiran_autosave(k):
 def catat_persetujuan_nilai(id_jawaban, id_tugas, id_siswa, nilai_sementara,
                             nilai_akhir, tutor, catatan):
     ws = _sheet_v2("DB_Persetujuan_Nilai", PERSETUJUAN_NILAI_HEADERS)
+    sudah_ada = next((
+        r for r in baca_records_aman(ws)
+        if str(r.get("ID_Jawaban", "")).strip() == str(id_jawaban).strip()
+        and str(r.get("Status_Persetujuan", "")).strip().lower() == "disetujui dan diterbitkan"
+    ), None)
+    if sudah_ada:
+        return False
     ws.append_row([
         "APR-" + uuid.uuid4().hex[:10].upper(), str(id_jawaban),
         str(id_tugas), str(id_siswa),
@@ -2541,6 +2551,8 @@ def catat_persetujuan_nilai(id_jawaban, id_tugas, id_siswa, nilai_sementara,
         nilai_akhir, "Disetujui dan diterbitkan", str(tutor),
         waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"), str(catatan or "")
     ], value_input_option="RAW")
+    _baca_values_cache.clear()
+    return True
 
 
 def validasi_konfigurasi_soal(soal):
@@ -5147,17 +5159,30 @@ elif peran == "🔒 Pengajar / Tutor":
                                             "Tutor", "Waktu_Penilaian"
                                         ]
                                     )
-                                    ws_nilai.append_row([
-                                        "NIL-" + uuid.uuid4().hex[:10].upper(),
-                                        item.get("ID_Jawaban"),
-                                        item.get("ID_Tugas"),
-                                        item.get("Nama_Siswa"),
-                                        nilai,
-                                        catatan,
-                                        st.session_state.tutor_nama,
-                                        waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
-                                    ])
-                                    # Catat persetujuan terpisah; DB_Nilai_Tugas hanya berisi nilai yang sudah diterbitkan.
+                                    id_jawaban_target = str(item.get("ID_Jawaban", "")).strip()
+                                    nilai_terbit_ada = next((
+                                        r for r in baca_records_aman(ws_nilai)
+                                        if str(r.get("ID_Jawaban", "")).strip() == id_jawaban_target
+                                    ), None)
+                                    if nilai_terbit_ada:
+                                        st.info(
+                                            f"Nilai untuk jawaban ini sudah pernah diterbitkan "
+                                            f"(ID nilai: {nilai_terbit_ada.get('ID_Nilai', '-')}). "
+                                            "Sistem tidak membuat nilai duplikat."
+                                        )
+                                    else:
+                                        ws_nilai.append_row([
+                                            "NIL-" + uuid.uuid4().hex[:10].upper(),
+                                            id_jawaban_target,
+                                            item.get("ID_Tugas"),
+                                            item.get("Nama_Siswa"),
+                                            nilai,
+                                            catatan,
+                                            st.session_state.tutor_nama,
+                                            waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+                                        ], value_input_option="RAW")
+                                        _baca_values_cache.clear()
+                                    # Catat persetujuan secara idempotent; tidak membuat baris kedua untuk ID_Jawaban yang sama.
                                     catat_persetujuan_nilai(
                                         item.get("ID_Jawaban"), item.get("ID_Tugas"),
                                         item.get("ID_Siswa"), hasil_sementara.get("nilai_sementara"),
@@ -5978,15 +6003,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                     st.session_state.pop(key, None)
                 st.rerun()
 
-        if st.session_state.get("ortu_baris"):
-            akun_ortu_aktif = next((r for r in baca_records_aman(get_worksheet("Akun_Pengguna")) if int(r.get("_baris", 0)) == int(st.session_state.ortu_baris)), None)
-            if akun_ortu_aktif:
-                form_ganti_pin(
-                    get_worksheet("Akun_Pengguna"), akun_ortu_aktif,
-                    "PIN_Password", "ortu",
-                    identity_field="ID_User",
-                    identity_value=akun_ortu_aktif.get("ID_User", "")
-                )
+        # Pengaturan PIN orang tua dipindahkan ke menu khusus agar tidak memenuhi beranda.
 
         anak_list = st.session_state.get("ortu_children", [])
         if not anak_list:
@@ -6025,7 +6042,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
             "MENU WALI MURID",
             ["🏠 Beranda Anak", "📋 Transparansi Sesi & PR",
              "📈 Rekap Nilai & Evaluasi", "🕒 Kehadiran Anak",
-             "💬 Pesan untuk Tutor"],
+             "💬 Pesan untuk Tutor", "⚙️ Pengaturan Akun"],
             label_visibility="visible",
             key="menu_navigasi_ortu"
         )
@@ -6078,25 +6095,63 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 st.info("Belum ada catatan sesi atau PR untuk anak ini.")
 
         elif menu_ortu == "📈 Rekap Nilai & Evaluasi":
+            st.header("📈 Rekap Nilai & Evaluasi")
             data_tabel_ortu = []
             try:
-                ws_r = get_worksheet("Riwayat_Latihan")
-                for r in baca_records_aman(ws_r):
-                    if _norm_text(r.get("Nama_Siswa", "")) == _norm_text(nama_anak_aktif):
-                        data_tabel_ortu.append({
-                            "Tanggal": str(r.get("Waktu_Selesai", ""))[:10],
-                            "Mapel": r.get("Mapel"),
-                            "Aktivitas": r.get("Topik_Kuis"),
-                            "Skor": r.get("Skor"),
-                            "Evaluasi": r.get("Detail_Salah")
-                        })
-            except Exception:
-                pass
+                nilai_ortu = baca_records_aman(get_worksheet("DB_Nilai_Tugas"))
+                jawaban_ortu = baca_jawaban_tergabung(get_answers_worksheet())
+                jawaban_by_id = {
+                    str(j.get("ID_Jawaban", "")).strip(): j
+                    for j in jawaban_ortu
+                    if str(j.get("ID_Siswa", "")).strip() == str(id_anak_ortu).strip()
+                }
+                tugas_ortu = {
+                    str(t.get("ID_Tugas", "")).strip(): t
+                    for t in get_student_tasks()
+                    if str(t.get("ID_Siswa", "")).strip() == str(id_anak_ortu).strip()
+                    or _norm_text(t.get("Nama_Siswa", "")) == _norm_text(nama_anak_aktif)
+                }
+                for n in nilai_ortu:
+                    id_jawaban = str(n.get("ID_Jawaban", "")).strip()
+                    jawaban = jawaban_by_id.get(id_jawaban)
+                    if not jawaban:
+                        continue
+                    tugas = tugas_ortu.get(str(n.get("ID_Tugas", "")).strip(), {})
+                    data_tabel_ortu.append({
+                        "Tanggal": n.get("Waktu_Penilaian", "-"),
+                        "Mapel": tugas.get("Mapel", "-"),
+                        "Aktivitas": tugas.get("Judul_Tugas", n.get("ID_Tugas", "-")),
+                        "Nilai": n.get("Nilai", "-"),
+                        "Evaluasi Tutor": n.get("Catatan", "-"),
+                        "Tutor": n.get("Tutor", "-")
+                    })
+            except Exception as exc:
+                st.warning(f"Nilai anak belum dapat dibaca dari sistem: {exc}")
 
             if data_tabel_ortu:
                 st.dataframe(pd.DataFrame(data_tabel_ortu), use_container_width=True, hide_index=True)
             else:
-                st.info("Belum ada data rekap nilai.")
+                st.info("Belum ada nilai yang diterbitkan untuk anak ini.")
+
+
+        elif menu_ortu == "⚙️ Pengaturan Akun":
+            st.header("⚙️ Pengaturan Akun Orang Tua")
+            st.caption("Ubah PIN akun wali murid. Username dan identitas akun tidak berubah.")
+            akun_ortu_aktif = None
+            if st.session_state.get("ortu_baris"):
+                akun_ortu_aktif = next((
+                    r for r in baca_records_aman(get_worksheet("Akun_Pengguna"))
+                    if int(r.get("_baris", 0) or 0) == int(st.session_state.ortu_baris)
+                ), None)
+            if akun_ortu_aktif:
+                form_ganti_pin(
+                    get_worksheet("Akun_Pengguna"), akun_ortu_aktif,
+                    "PIN_Password", "ortu",
+                    identity_field="ID_User",
+                    identity_value=akun_ortu_aktif.get("ID_User", "")
+                )
+            else:
+                st.warning("Data akun orang tua belum ditemukan. Silakan logout lalu login kembali.")
 
         elif menu_ortu == "🕒 Kehadiran Anak":
             tampilkan_riwayat_kehadiran(id_anak_ortu, "Riwayat Kehadiran Anak")
