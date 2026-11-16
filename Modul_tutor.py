@@ -1693,6 +1693,31 @@ def akhiri_sesi_online(siswa_id, task_id):
     return False
 
 
+def rekonsiliasi_sesi_aktif_siswa(siswa_id, status_by_task, nilai_ids):
+    """Tutup hanya sesi aktif yang tugasnya sudah terbukti terkirim atau dinilai.
+
+    Tidak menghapus baris riwayat dan tidak membuka sesi yang status pengumpulannya
+    belum jelas. Dipakai untuk memulihkan kunci tertinggal setelah pengiriman berhasil.
+    """
+    sid = str(siswa_id or "").strip()
+    if not sid:
+        return False
+    sesi = baca_sesi_aktif_siswa(sid)
+    if not sesi:
+        return False
+    tid = str(sesi.get("ID_Tugas", "")).strip()
+    status = str(status_by_task.get(tid, "")).strip().lower()
+    sudah_dikirim = (
+        tid in {str(x).strip() for x in (nilai_ids or set())}
+        or "dikirim" in status
+        or "menunggu" in status
+        or "dinilai" in status
+    )
+    if not sudah_dikirim:
+        return False
+    return akhiri_sesi_online(sid, tid)
+
+
 def get_student_tasks():
     """Membaca tugas dari sheet V2, dengan konversi aman untuk sheet lama."""
     try:
@@ -3536,6 +3561,12 @@ if peran == "🎓 Siswa":
         m3.metric("Draft jawaban", draft_count)
         m4.metric("Sudah dinilai", marked)
 
+        # Pulihkan kunci yang tertinggal hanya jika data pengumpulan/penilaian
+        # membuktikan tugas pada sesi aktif sudah selesai. Riwayat sesi tetap disimpan.
+        try:
+            rekonsiliasi_sesi_aktif_siswa(siswa_id_aktif, status_by_task, nilai_ids)
+        except Exception as exc:
+            st.warning(f"Status sesi online belum dapat direkonsiliasi: {exc}")
         sesi_online_aktif_global = baca_sesi_aktif_siswa(siswa_id_aktif)
         # Bersihkan pilihan menu lama agar sesi yang masih menyimpan "Materi" tetap aman.
         if st.session_state.get("menu_navigasi_siswa") == "📖 Materi":
@@ -3571,10 +3602,25 @@ if peran == "🎓 Siswa":
         elif menu_siswa == "📝 Tugas":
             st.markdown("### 📝 Tugas Pembelajaran")
             daftar_tugas_menu = [t for t in tugas_reguler if not adalah_materi(t)]
-            if not daftar_tugas_menu:
-                st.info("Belum ada tugas yang diberikan.")
-            for t in daftar_tugas_menu:
-                tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_online_aktif_global)
+            tugas_reguler_aktif = [
+                t for t in daftar_tugas_menu
+                if label_status(t, status_by_task, nilai_ids)[0] not in ("dikirim", "dinilai")
+            ]
+            tugas_reguler_selesai = [
+                t for t in daftar_tugas_menu
+                if label_status(t, status_by_task, nilai_ids)[0] in ("dikirim", "dinilai")
+            ]
+            st.markdown(f"#### Tugas yang perlu dikerjakan ({len(tugas_reguler_aktif)})")
+            if tugas_reguler_aktif:
+                for t in tugas_reguler_aktif:
+                    tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_online_aktif_global)
+            else:
+                st.success("Tidak ada tugas aktif yang menunggu dikerjakan.")
+            if tugas_reguler_selesai:
+                with st.expander(f"📚 Riwayat / Arsip Tugas Selesai ({len(tugas_reguler_selesai)})", expanded=False):
+                    st.caption("Tugas yang sudah dikirim atau dinilai dipindahkan ke sini. Riwayat tetap tersimpan dan dapat dibuka kembali.")
+                    for t in reversed(tugas_reguler_selesai):
+                        tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_online_aktif_global)
 
         elif menu_siswa == "📌 PR":
             st.markdown(f"### 📌 PR Ananda {nama_aktif}")
