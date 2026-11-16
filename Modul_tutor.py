@@ -2534,6 +2534,13 @@ def _hapus_lampiran_autosave(k):
 def catat_persetujuan_nilai(id_jawaban, id_tugas, id_siswa, nilai_sementara,
                             nilai_akhir, tutor, catatan):
     ws = _sheet_v2("DB_Persetujuan_Nilai", PERSETUJUAN_NILAI_HEADERS)
+    # Jangan menambah catatan yang sama berulang bila tombol terbit tertekan lagi.
+    for r in reversed(baca_records_aman(ws, refresh=True)):
+        if str(r.get("ID_Jawaban", "")).strip() == str(id_jawaban).strip():
+            if str(r.get("Nilai_Akhir", "")).strip() == str(nilai_akhir).strip() \
+                    and str(r.get("Catatan", "")).strip() == str(catatan or "").strip():
+                return
+            break
     ws.append_row([
         "APR-" + uuid.uuid4().hex[:10].upper(), str(id_jawaban),
         str(id_tugas), str(id_siswa),
@@ -2541,6 +2548,143 @@ def catat_persetujuan_nilai(id_jawaban, id_tugas, id_siswa, nilai_sementara,
         nilai_akhir, "Disetujui dan diterbitkan", str(tutor),
         waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"), str(catatan or "")
     ], value_input_option="RAW")
+
+
+DB_NILAI_HEADERS = [
+    "ID_Nilai", "ID_Jawaban", "ID_Tugas", "Nama_Siswa",
+    "Nilai", "Catatan", "Tutor", "Waktu_Penilaian"
+]
+
+
+def ambil_nilai_diterbitkan(refresh=False):
+    """Satu-satunya pembaca nilai akhir untuk akun anak, wali, dan tutor.
+    DB_Nilai_Tugas hanya berisi nilai yang sudah disetujui tutor. Duplikat lama dirapikan
+    (baris terakhir menang) dan ID_Siswa dilengkapi dari DB_Persetujuan_Nilai."""
+    try:
+        baris = baca_records_aman(get_worksheet("DB_Nilai_Tugas"), refresh=refresh)
+    except Exception:
+        return []
+    peta_siswa = {}
+    try:
+        for p in baca_records_aman(get_worksheet("DB_Persetujuan_Nilai"), refresh=refresh):
+            peta_siswa[str(p.get("ID_Jawaban", "")).strip()] = str(p.get("ID_Siswa", "")).strip()
+    except Exception:
+        pass
+    terbaru = {}
+    for n in baris:
+        id_tugas = str(n.get("ID_Tugas", "")).strip()
+        if not id_tugas:
+            continue
+        rec = dict(n)
+        rec["ID_Siswa"] = peta_siswa.get(str(n.get("ID_Jawaban", "")).strip(), "")
+        terbaru[(id_tugas, str(n.get("Nama_Siswa", "")).strip().casefold())] = rec
+    return list(terbaru.values())
+
+
+def terbitkan_nilai_akhir(item, nilai, catatan, nilai_sementara, tutor, ws_jawaban):
+    """Terbitkan nilai akhir satu paket: cek header, catat persetujuan, tulis/perbarui nilai
+    (tanpa duplikat), tandai jawaban, lalu bersihkan cache agar anak dan wali langsung melihatnya."""
+    id_jawaban = str(item.get("ID_Jawaban", "")).strip()
+    id_tugas = str(item.get("ID_Tugas", "")).strip()
+    id_siswa = str(item.get("ID_Siswa", "")).strip()
+    nama = str(item.get("Nama_Siswa", "")).strip()
+    ws_nilai = get_or_create_worksheet("DB_Nilai_Tugas", DB_NILAI_HEADERS)
+    header = [str(x).strip() for x in ws_nilai.row_values(1)]
+    if header[:len(DB_NILAI_HEADERS)] != DB_NILAI_HEADERS:
+        raise RuntimeError("Header DB_Nilai_Tugas tidak sesuai. Nilai tidak diterbitkan agar kolom tidak bergeser.")
+    waktu = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        # 1) Catat persetujuan lebih dulu; bila gagal, nilai belum terlihat siapa pun.
+        catat_persetujuan_nilai(id_jawaban, id_tugas, id_siswa, nilai_sementara, nilai, tutor, catatan)
+        # 2) Tulis nilai; bila sudah pernah diterbitkan, perbarui barisnya (tanpa duplikat).
+        ada = next((
+            r for r in baca_records_aman(ws_nilai, refresh=True)
+            if (id_jawaban and str(r.get("ID_Jawaban", "")).strip() == id_jawaban)
+            or (str(r.get("ID_Tugas", "")).strip() == id_tugas
+                and str(r.get("Nama_Siswa", "")).strip().casefold() == nama.casefold())
+        ), None)
+        if ada:
+            baris = int(ada["_baris"])
+            ws_nilai.batch_update(
+                [{"range": f"E{baris}:H{baris}", "values": [[nilai, catatan, tutor, waktu]]}],
+                value_input_option="RAW"
+            )
+            hasil = "Nilai akhir diperbarui dan sudah tampil di akun anak dan wali."
+        else:
+            ws_nilai.append_row(
+                ["NIL-" + uuid.uuid4().hex[:10].upper(), id_jawaban, id_tugas, nama, nilai, catatan, tutor, waktu],
+                value_input_option="RAW"
+            )
+            hasil = "Nilai akhir diterbitkan dan sudah tampil di akun anak dan wali."
+        # 3) Tandai seluruh baris soal siswa pada tugas ini sebagai sudah dinilai.
+        try:
+            pembaruan = [
+                {"range": f"F{row['_baris']}", "values": [["Sudah Dinilai"]]}
+                for row in baca_records_aman(ws_jawaban, refresh=True)
+                if str(row.get("ID_Penugasan", "")).strip() == id_tugas
+                and str(row.get("ID_Siswa", "")).strip() == id_siswa
+            ]
+            if pembaruan:
+                ws_jawaban.batch_update(pembaruan, value_input_option="RAW")
+        except Exception as exc:
+            hasil += f" Catatan: status jawaban belum diperbarui ({exc}); aman diulang."
+        return hasil
+    finally:
+        _baca_values_cache.clear()
+
+
+def tugas_dengan_nilai_untuk_anak(nama_anak):
+    """Tugas milik anak yang nilainya sudah diterbitkan tutor; terbaru di atas."""
+    nm = str(nama_anak or "").strip().casefold()
+    tugas_anak_ini = {
+        str(t.get("ID_Tugas", "")).strip(): t for t in get_student_tasks()
+        if str(t.get("Nama_Siswa", "")).strip().casefold() == nm and not adalah_materi(t)
+    }
+    hasil = []
+    for n in ambil_nilai_diterbitkan():
+        tg = tugas_anak_ini.get(str(n.get("ID_Tugas", "")).strip())
+        if tg is not None:
+            hasil.append((tg, n))
+    hasil.sort(key=lambda x: str(x[1].get("Waktu_Penilaian", "")), reverse=True)
+    return hasil
+
+
+def _teks_jawaban_siswa(v):
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except (ValueError, TypeError):
+            return v
+    if isinstance(v, list):
+        return ", ".join(str(x) for x in v)
+    if isinstance(v, dict):
+        return "; ".join(f"{k} → {x}" for k, x in v.items())
+    return str(v)
+
+
+def tampilkan_laporan_nilai_wali(tg, n, id_siswa, jawaban_semua):
+    """Satu laporan tugas untuk wali: soal/lampiran, jawaban anak, nilai akhir, catatan tutor."""
+    id_tugas = str(tg.get("ID_Tugas", "")).strip()
+    ikon = "📌" if adalah_pr(tg) else "📝"
+    with st.expander(f"{ikon} {tg.get('Mapel', '')} — {tg.get('Judul_Tugas', id_tugas)} · Nilai {n.get('Nilai', '-')}"):
+        st.metric("Nilai akhir", n.get("Nilai", "-"))
+        st.write(f"**Catatan tutor:** {n.get('Catatan') or '-'}")
+        st.caption(f"Diperiksa oleh {n.get('Tutor') or '-'} · {n.get('Waktu_Penilaian') or '-'}")
+        if tg.get("File_Offline"):
+            st.markdown("**📎 Soal / lampiran tugas**")
+            tampilkan_materi(tg.get("File_Offline"))
+        jwb = next((j for j in jawaban_semua
+                    if str(j.get("ID_Tugas", "")).strip() == id_tugas
+                    and str(j.get("ID_Siswa", "")).strip() == str(id_siswa).strip()), None)
+        if jwb and isinstance(jwb.get("Jawaban"), dict) and jwb["Jawaban"]:
+            st.markdown("**Jawaban anak:**")
+            for nomor, isi in sorted(jwb["Jawaban"].items(), key=lambda x: (len(str(x[0])), str(x[0]))):
+                st.write(_teks_jawaban_siswa(isi) if str(nomor) == "0" else f"{nomor}. {_teks_jawaban_siswa(isi)}")
+        try:
+            for lamp in baca_lampiran_jawaban(id_tugas, id_siswa):
+                st.markdown(f"[📎 {lamp.get('Nama_File', 'Lampiran jawaban')}]({lamp.get('URL_Drive', '')})")
+        except Exception:
+            pass
 
 
 def validasi_konfigurasi_soal(soal):
@@ -2779,6 +2923,27 @@ def tampilkan_laporan_perkembangan(nama_siswa, tugas, jawaban, nilai):
 
 
 
+def _kanon_opsi(v, opsi):
+    """Bentuk baku jawaban pilihan: huruf opsi. 'A', 'A. teks', dan 'teks' dari opsi yang sama dianggap setara."""
+    s = _nilai_normalisasi(v)
+    if not isinstance(s, str) or not s:
+        return s
+    daftar = [_nilai_normalisasi(o) for o in (opsi or [])]
+    tanpa_huruf = lambda t: re.sub(r"^[a-z][\.\)\:]\s+", "", t)
+    if s in daftar:
+        return chr(97 + daftar.index(s))
+    m = re.fullmatch(r"([a-z])[\.\)\:]?", s)
+    if m and (not daftar or ord(m.group(1)) - 97 < len(daftar)):
+        return m.group(1)
+    m = re.match(r"([a-z])[\.\)\:]\s+", s)
+    if m:
+        return m.group(1)
+    for i, d in enumerate(daftar):
+        if isinstance(d, str) and tanpa_huruf(d) == tanpa_huruf(s):
+            return chr(97 + i)
+    return s
+
+
 def hitung_nilai_objektif(daftar_soal, jawaban):
     """Hitung nilai soal objektif. Soal uraian sengaja tidak dinilai otomatis."""
     total_objektif = 0
@@ -2791,6 +2956,7 @@ def hitung_nilai_objektif(daftar_soal, jawaban):
         bentuk = str(soal.get("Bentuk_Soal", "")).casefold()
         kunci = _nilai_parse_jawaban(soal.get("Kunci", soal.get("Kunci_Jawaban", "")))
         siswa = _nilai_parse_jawaban(jawaban.get(str(nomor), ""))
+        opsi_soal = soal.get("Opsi_List") or []
         if any(k in bentuk for k in ("uraian", "essay", "esai", "isian", "jawaban singkat")):
             manual.append(nomor)
             continue
@@ -2804,8 +2970,8 @@ def hitung_nilai_objektif(daftar_soal, jawaban):
         if "pgk mcma" in bentuk or "pilihan ganda kompleks" in bentuk:
             k = kunci if isinstance(kunci, list) else [x.strip() for x in str(kunci).split("|") if x.strip()]
             s = siswa if isinstance(siswa, list) else ([siswa] if siswa not in ("", None) else [])
-            k_norm = {_nilai_normalisasi(x) for x in k}
-            s_norm = {_nilai_normalisasi(x) for x in s}
+            k_norm = {_kanon_opsi(x, opsi_soal) for x in k}
+            s_norm = {_kanon_opsi(x, opsi_soal) for x in s}
             # Nilai parsial: proporsi pilihan kunci yang tepat, tanpa bonus untuk pilihan salah.
             poin = len(k_norm & s_norm) / len(k_norm) if k_norm else 0
             if s_norm - k_norm:
@@ -2829,7 +2995,7 @@ def hitung_nilai_objektif(daftar_soal, jawaban):
             else:
                 poin = 0
         else:
-            poin = 1.0 if _nilai_normalisasi(siswa) == _nilai_normalisasi(kunci) else 0.0
+            poin = 1.0 if _kanon_opsi(siswa, opsi_soal) == _kanon_opsi(kunci, opsi_soal) else 0.0
 
         if poin >= 0.999:
             benar += 1
@@ -3535,10 +3701,7 @@ if peran == "🎓 Siswa":
         for ans in jawaban_siswa:
             status_by_task[str(ans.get("ID_Tugas", ""))] = str(ans.get("Status", "Draft"))
 
-        try:
-            nilai_records = baca_records_aman(get_worksheet("DB_Nilai_Tugas"))
-        except Exception:
-            nilai_records = []
+        nilai_records = ambil_nilai_diterbitkan()  # hanya nilai yang sudah disetujui tutor
         nilai_ids = {str(n.get("ID_Tugas", "")).strip() for n in nilai_records}
 
         tugas_pr = sorted([t for t in tugas_anak if adalah_pr(t)], key=lambda x: str(x.get("Tenggat", "")) or "9999")
@@ -3661,6 +3824,7 @@ if peran == "🎓 Siswa":
 
         elif menu_siswa == "📈 Riwayat Belajar":
             st.markdown("### 📈 Riwayat Belajar")
+            data_tabel_siswa = []
             try:
                 ws_r = get_worksheet("Riwayat_Latihan")
                 data_tabel_siswa = [
@@ -3674,12 +3838,25 @@ if peran == "🎓 Siswa":
                     for r in baca_records_aman(ws_r)
                     if str(r.get("Nama_Siswa", "")).strip().lower() == nama_aktif.strip().lower()
                 ]
-                if data_tabel_siswa:
-                    st.dataframe(pd.DataFrame(data_tabel_siswa), use_container_width=True)
-                else:
-                    st.info("Belum ada riwayat belajar.")
             except gspread.WorksheetNotFound:
-                st.info("Riwayat belajar belum tersedia.")
+                pass
+            # Tugas/PR (online maupun upload) yang nilainya sudah diterbitkan tutor masuk riwayat.
+            peta_tugas_riwayat = {str(t.get("ID_Tugas", "")).strip(): t for t in tugas_anak}
+            for n_r in nilai_records:
+                tg_r = peta_tugas_riwayat.get(str(n_r.get("ID_Tugas", "")).strip())
+                if tg_r is None:
+                    continue
+                data_tabel_siswa.append({
+                    "Tanggal": str(n_r.get("Waktu_Penilaian", ""))[:10],
+                    "Mapel": tg_r.get("Mapel", ""),
+                    "Aktivitas": f"{'PR' if adalah_pr(tg_r) else 'Tugas'}: {tg_r.get('Judul_Tugas', '')}",
+                    "Skor": n_r.get("Nilai", ""),
+                    "Catatan": n_r.get("Catatan", ""),
+                })
+            if data_tabel_siswa:
+                st.dataframe(pd.DataFrame(data_tabel_siswa), use_container_width=True)
+            else:
+                st.info("Belum ada riwayat belajar.")
             tampilkan_riwayat_kehadiran(st.session_state.siswa_id, "Kehadiran Sesi Belajar")
 
 
@@ -4937,8 +5114,7 @@ elif peran == "🔒 Pengajar / Tutor":
                             jwb_pantau = []
                         status_pantau = {str(x.get("ID_Tugas", "")): str(x.get("Status", "")) for x in jwb_pantau}
                         try:
-                            nilai_pantau = {str(n.get("ID_Tugas", "")).strip()
-                                            for n in baca_records_aman(get_worksheet("DB_Nilai_Tugas"))}
+                            nilai_pantau = {str(n.get("ID_Tugas", "")).strip() for n in ambil_nilai_diterbitkan()}
                         except Exception:
                             nilai_pantau = set()
 
@@ -5001,7 +5177,7 @@ elif peran == "🔒 Pengajar / Tutor":
                     if nama_siswa_laporan != "— Pilih siswa —":
                         semua_tugas_laporan = get_student_tasks()
                         semua_jawaban_laporan = baca_jawaban_tergabung(get_worksheet("DB_Jawaban_Siswa"))
-                        semua_nilai_laporan = baca_records_aman(get_worksheet("DB_Nilai_Tugas"))
+                        semua_nilai_laporan = ambil_nilai_diterbitkan()
                         tampilkan_laporan_perkembangan(
                             nama_siswa_laporan, semua_tugas_laporan,
                             semua_jawaban_laporan, semua_nilai_laporan
@@ -5037,6 +5213,8 @@ elif peran == "🔒 Pengajar / Tutor":
 
                 if jawaban_records:
                     st.subheader("Jawaban yang menunggu pemeriksaan")
+                    if st.session_state.get("_pesan_terbit"):
+                        st.success(st.session_state.pop("_pesan_terbit"))
                     menunggu = [
                         x for x in jawaban_records
                         if "Menunggu" in str(x.get("Status", ""))
@@ -5139,42 +5317,16 @@ elif peran == "🔒 Pengajar / Tutor":
                                 if not persetujuan:
                                     st.warning("Centang persetujuan tutor terlebih dahulu sebelum menerbitkan nilai.")
                                 else:
-                                    ws_nilai = get_or_create_worksheet(
-                                        "DB_Nilai_Tugas",
-                                        [
-                                            "ID_Nilai", "ID_Jawaban", "ID_Tugas",
-                                            "Nama_Siswa", "Nilai", "Catatan",
-                                            "Tutor", "Waktu_Penilaian"
-                                        ]
-                                    )
-                                    ws_nilai.append_row([
-                                        "NIL-" + uuid.uuid4().hex[:10].upper(),
-                                        item.get("ID_Jawaban"),
-                                        item.get("ID_Tugas"),
-                                        item.get("Nama_Siswa"),
-                                        nilai,
-                                        catatan,
-                                        st.session_state.tutor_nama,
-                                        waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
-                                    ])
-                                    # Catat persetujuan terpisah; DB_Nilai_Tugas hanya berisi nilai yang sudah diterbitkan.
-                                    catat_persetujuan_nilai(
-                                        item.get("ID_Jawaban"), item.get("ID_Tugas"),
-                                        item.get("ID_Siswa"), hasil_sementara.get("nilai_sementara"),
-                                        nilai, st.session_state.tutor_nama, catatan
-                                    )
-                                    # Tandai seluruh baris soal pada penugasan/siswa sebagai sudah dinilai.
-                                    all_rows = baca_records_aman(ws_jawaban)
-                                    pembaruan = [
-                                        {"range": f"F{row['_baris']}", "values": [["Sudah Dinilai"]]}
-                                        for row in all_rows
-                                        if str(row.get("ID_Penugasan", "")) == str(item.get("ID_Tugas", ""))
-                                        and str(row.get("ID_Siswa", "")) == str(item.get("ID_Siswa", ""))
-                                    ]
-                                    if pembaruan:
-                                        ws_jawaban.batch_update(pembaruan, value_input_option="RAW")
-                                    st.success("Nilai akhir disetujui dan diterbitkan. Nilai sementara tidak pernah ditampilkan kepada siswa.")
-                                    st.rerun()
+                                    try:
+                                        pesan_terbit = terbitkan_nilai_akhir(
+                                            item, nilai, catatan, hasil_sementara.get("nilai_sementara"),
+                                            st.session_state.tutor_nama, ws_jawaban
+                                        )
+                                    except Exception as e_terbit:
+                                        st.error(f"Nilai belum diterbitkan: {e_terbit}")
+                                    else:
+                                        st.session_state["_pesan_terbit"] = pesan_terbit
+                                        st.rerun()
 
                     else:
                         st.info("Tidak ada jawaban yang menunggu pemeriksaan.")
@@ -6043,6 +6195,20 @@ elif peran == "👨‍👩‍👧 Orang Tua":
             st.info("Gunakan menu di sebelah kiri untuk melihat laporan sesi, nilai, dan kehadiran anak.")
 
         elif menu_ortu == "📋 Transparansi Sesi & PR":
+            st.markdown("#### 📑 Laporan Tugas & PR (sudah dinilai tutor)")
+            try:
+                laporan_nilai_anak = tugas_dengan_nilai_untuk_anak(nama_anak_aktif)
+                jawaban_wali = baca_jawaban_tergabung(get_answers_worksheet()) if laporan_nilai_anak else []
+            except Exception as e_wali:
+                laporan_nilai_anak, jawaban_wali = [], []
+                st.warning(f"Laporan tugas belum dapat dimuat: {e_wali}")
+            if laporan_nilai_anak:
+                for tg_w, n_w in laporan_nilai_anak:
+                    tampilkan_laporan_nilai_wali(tg_w, n_w, id_anak_ortu, jawaban_wali)
+            else:
+                st.info("Belum ada tugas atau PR yang nilainya diterbitkan tutor.")
+            st.markdown("---")
+            st.markdown("#### 📓 Catatan sesi dan latihan")
             laporan_list = []
             try:
                 ws_riwayat = get_worksheet("Riwayat_Latihan")
@@ -6090,6 +6256,18 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                             "Skor": r.get("Skor"),
                             "Evaluasi": r.get("Detail_Salah")
                         })
+            except Exception:
+                pass
+
+            try:
+                for tg_o, n_o in tugas_dengan_nilai_untuk_anak(nama_anak_aktif):
+                    data_tabel_ortu.append({
+                        "Tanggal": str(n_o.get("Waktu_Penilaian", ""))[:10],
+                        "Mapel": tg_o.get("Mapel", ""),
+                        "Aktivitas": f"{'PR' if adalah_pr(tg_o) else 'Tugas'}: {tg_o.get('Judul_Tugas', '')}",
+                        "Skor": n_o.get("Nilai", ""),
+                        "Evaluasi": n_o.get("Catatan", "")
+                    })
             except Exception:
                 pass
 
