@@ -4825,8 +4825,14 @@ elif peran == "🔒 Pengajar / Tutor":
 
                     st.markdown("---")
                     st.subheader("📝 Jurnal dan Evaluasi Sesi")
-                    # Tanggal & pilihan mapel di LUAR form agar kolom evaluasi per mapel langsung muncul.
+                    # Status kirim per siswa-tanggal mencegah klik berulang setelah penyimpanan sukses.
                     tanggal_sesi = st.date_input("Tanggal sesi:", waktu_lokal().date(), key=f"tgl_sesi_{selected_siswa}")
+                    jurnal_lock_key = f"jurnal_terkirim_{selected_siswa}_{tanggal_sesi.strftime('%Y%m%d')}"
+                    if st.session_state.get(jurnal_lock_key, False):
+                        st.success("✅ Jurnal untuk siswa dan tanggal ini sudah tersimpan. Tombol pengiriman dikunci agar tidak membuat catatan ganda.")
+                        if st.button("➕ Buat jurnal sesi berikutnya", key=f"jurnal_baru_{selected_siswa}_{tanggal_sesi.strftime('%Y%m%d')}"):
+                            st.session_state[jurnal_lock_key] = False
+                            st.rerun()
                     mapel_diajarkan = st.multiselect("Mata pelajaran yang diajarkan:", MAPEL_OPTIONS, key=f"mapel_ajar_{selected_siswa}")
                     with st.form(f"form_jurnal_v2_{selected_siswa}"):
                         st.markdown("#### Evaluasi per mata pelajaran")
@@ -4852,30 +4858,46 @@ elif peran == "🔒 Pengajar / Tutor":
                             accept_multiple_files=True,
                             key=f"lampiran_evaluasi_{selected_siswa}"
                         )
-                        simpan_jurnal = st.form_submit_button("💾 Simpan Jurnal dan Evaluasi")
+                        simpan_jurnal = st.form_submit_button(
+                            "💾 Simpan Jurnal dan Evaluasi",
+                            disabled=st.session_state.get(jurnal_lock_key, False)
+                        )
 
                     if simpan_jurnal:
                         try:
                             daftar_dokumentasi = [dokumentasi.strip()] if dokumentasi.strip() else []
+                            peringatan_lampiran = []
                             for file_doc in list(file_dokumentasi or []):
                                 if len(file_doc.getvalue()) > 30 * 1024 * 1024:
-                                    raise ValueError(f"File {file_doc.name} melebihi batas 30 MB.")
-                                url_doc = upload_lampiran_ke_drive(
-                                    file_doc.getvalue(), file_doc.name, file_doc.type or "application/octet-stream"
-                                )
-                                daftar_dokumentasi.append(
-                                    f"{jenis_dari_mime(file_doc.type, file_doc.name)}::{url_doc}"
-                                )
+                                    peringatan_lampiran.append(f"{file_doc.name} melebihi batas 30 MB dan tidak diunggah.")
+                                    continue
+                                try:
+                                    url_doc = upload_lampiran_ke_drive(
+                                        file_doc.getvalue(), file_doc.name, file_doc.type or "application/octet-stream"
+                                    )
+                                    daftar_dokumentasi.append(
+                                        f"{jenis_dari_mime(file_doc.type, file_doc.name)}::{url_doc}"
+                                    )
+                                except Exception as upload_error:
+                                    peringatan_lampiran.append(f"Lampiran {file_doc.name} gagal diunggah: {upload_error}")
                             dokumentasi_final = " | ".join(daftar_dokumentasi)
                             ws_sesi = get_or_create_worksheet("Jurnal_Sesi_Tutor_v2", ["ID_Sesi", "Tanggal", "Nama_Siswa", "Tutor", "Kondisi_Siswa", "Keaktifan", "Kendala_Umum", "Rekomendasi", "Handover", "Dokumentasi"])
                             id_sesi = "SES-" + uuid.uuid4().hex[:10].upper()
                             ws_sesi.append_row([id_sesi, tanggal_sesi.strftime("%Y-%m-%d"), selected_siswa, st.session_state.tutor_nama, kondisi_siswa, keaktifan, kendala_umum, rekomendasi, handover, dokumentasi_final])
-                            ws_eval = get_or_create_worksheet("Evaluasi_Mapel_Tutor_v2", ["ID_Evaluasi", "ID_Sesi", "Tanggal", "Nama_Siswa", "Tutor", "Mapel", "Materi", "Target", "Capaian", "Penguatan", "Nilai"])
-                            for mp, ev in evaluasi_mapel.items():
-                                ws_eval.append_row(["EVL-" + uuid.uuid4().hex[:10].upper(), id_sesi, tanggal_sesi.strftime("%Y-%m-%d"), selected_siswa, st.session_state.tutor_nama, mp, ev["Materi"], ev["Target"], ev["Capaian"], ev["Penguatan"], ev["Nilai"]])
-                            st.success("Jurnal sesi dan evaluasi per mapel berhasil disimpan.")
+                            # Kunci setelah jurnal utama berhasil tersimpan, agar retry tidak menggandakan jurnal.
+                            st.session_state[jurnal_lock_key] = True
+                            try:
+                                ws_eval = get_or_create_worksheet("Evaluasi_Mapel_Tutor_v2", ["ID_Evaluasi", "ID_Sesi", "Tanggal", "Nama_Siswa", "Tutor", "Mapel", "Materi", "Target", "Capaian", "Penguatan", "Nilai"])
+                                baris_eval = [["EVL-" + uuid.uuid4().hex[:10].upper(), id_sesi, tanggal_sesi.strftime("%Y-%m-%d"), selected_siswa, st.session_state.tutor_nama, mp, ev["Materi"], ev["Target"], ev["Capaian"], ev["Penguatan"], ev["Nilai"]] for mp, ev in evaluasi_mapel.items()]
+                                if baris_eval:
+                                    ws_eval.append_rows(baris_eval, value_input_option="RAW")
+                                st.success(f"✅ Terkirim! Jurnal sesi dan evaluasi berhasil disimpan. ID sesi: {id_sesi}. Tombol dikunci agar tidak terkirim dua kali.")
+                            except Exception as eval_error:
+                                st.warning(f"Jurnal utama sudah tersimpan dengan ID {id_sesi}, tetapi evaluasi per mapel belum seluruhnya tersimpan. Jangan kirim ulang jurnal; catat ID ini untuk perbaikan: {eval_error}")
+                            for peringatan in peringatan_lampiran:
+                                st.warning(peringatan)
                         except Exception as e:
-                            st.error(f"Gagal menyimpan jurnal/evaluasi: {e}")
+                            st.error(f"Gagal menyimpan jurnal/evaluasi: {e}. Periksa riwayat sebelum mencoba mengirim ulang.")
 
             # -------------------------------------------------
             # TAB 2: PORTOFOLIO DAN PENILAIAN JAWABAN
@@ -5227,18 +5249,27 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.write(f"**Siswa:** {siswa_pilih.get('Nama_Lengkap', '-')}")
                                 try:
                                     ws_att, active_row, active_rec = cari_sesi_aktif(sid, tutor_id)
+                                    flash_att_key = f"flash_kehadiran_{sid}"
+                                    if st.session_state.get(flash_att_key):
+                                        st.success(st.session_state.pop(flash_att_key))
                                     if active_rec:
                                         st.info(f"Sesi aktif sejak pukul **{active_rec.get('Waktu_Hadir', '-')}** pada {active_rec.get('Tanggal_Sesi', '-')}")
                                         if st.button("✅ Tandai Selesai Belajar", type="primary", key=f"finish_att_{sid}"):
                                             ok, msg = tandai_selesai_belajar(sid, tutor_id)
-                                            (st.success if ok else st.error)(msg)
-                                            st.rerun()
+                                            if ok:
+                                                st.session_state[flash_att_key] = "✅ Terkirim! Waktu selesai belajar berhasil dicatat."
+                                                st.rerun()
+                                            else:
+                                                st.error(msg)
                                     else:
                                         catatan_hadir = st.text_input("Catatan kehadiran (opsional):", key=f"attendance_note_{sid}")
                                         if st.button("🟢 Catat Hadir / Mulai Belajar", type="primary", key=f"start_att_{sid}"):
                                             ok, msg = catat_kehadiran(sid, tutor_id, st.session_state.tutor_nama, catatan_hadir)
-                                            (st.success if ok else st.error)(msg)
-                                            st.rerun()
+                                            if ok:
+                                                st.session_state[flash_att_key] = "✅ Terkirim! Kehadiran berhasil dicatat. Sesi belajar sudah aktif."
+                                                st.rerun()
+                                            else:
+                                                st.error(msg)
                                     tampilkan_riwayat_kehadiran(sid, "Riwayat Kehadiran Siswa")
 
                                     # Koreksi hanya untuk catatan yang dibuat oleh tutor yang sedang login.
