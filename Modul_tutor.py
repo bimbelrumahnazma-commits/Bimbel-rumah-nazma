@@ -656,11 +656,24 @@ def get_siswa_aktif():
     ]
 
 
+def get_siswa_record_by_nama(nama):
+    """Ambil satu identitas siswa berdasarkan nama; gagal tertutup jika nama ganda."""
+    target = str(nama or "").strip().casefold()
+    if not target:
+        return None
+    rows = baca_records_aman(get_worksheet("Data_Siswa"))
+    cocok = [r for r in rows
+             if str(r.get("Nama_Lengkap", "")).strip().casefold() == target
+             and str(r.get("Status", "Aktif")).strip().casefold() not in ("nonaktif", "tidak aktif")]
+    if len(cocok) != 1 or not str(cocok[0].get("ID_Siswa", "")).strip():
+        return None
+    return cocok[0]
+
+
 def get_siswa_id_by_nama(nama):
-    for s in baca_records_aman(get_worksheet("Data_Siswa")):
-        if str(s.get("Nama_Lengkap", "")).strip().lower() == str(nama).strip().lower():
-            return str(s.get("ID_Siswa", "")).strip()
-    return ""
+    """Kompatibilitas nama lama; tidak memilih ID pertama jika nama siswa ganda."""
+    record = get_siswa_record_by_nama(nama)
+    return str(record.get("ID_Siswa", "")).strip() if record else ""
 
 
 def adalah_akun_ortu(akun):
@@ -1489,23 +1502,33 @@ def tampilkan_riwayat_kehadiran(id_siswa, judul="Riwayat Kehadiran"):
         st.warning(f"Riwayat kehadiran belum dapat dibaca: {e}")
 
 
-TASK_HEADERS = ["ID_Tugas", "Tanggal", "Nama_Siswa", "Mapel", "Judul_Tugas", "Jenis_Tugas", "Sumber", "Instruksi", "File_Offline", "Timer_Menit", "Tenggat", "Soal_JSON", "Status_Tugas", "Tutor", "Mode_Pengerjaan"]
+TASK_BASE_HEADERS = ["ID_Tugas", "Tanggal", "Nama_Siswa", "Mapel", "Judul_Tugas", "Jenis_Tugas", "Sumber", "Instruksi", "File_Offline", "Timer_Menit", "Tenggat", "Soal_JSON", "Status_Tugas", "Tutor", "Mode_Pengerjaan"]
+TASK_HEADERS = TASK_BASE_HEADERS + ["ID_Siswa", "ID_Tutor"]
 ANSWER_HEADERS = ["ID_Jawaban", "ID_Penugasan", "ID_Siswa", "Nomor_Soal", "Jawaban", "Status_Jawaban", "Waktu_Tersimpan", "Waktu_Dikumpulkan"]
 
 
 def pastikan_header_tugas(ws):
-    """Migrasi aman: kolom baru hanya ditambahkan di ujung, tanpa menggeser data lama."""
+    """Migrasi aman: pertahankan semua kolom lama, tambahkan identitas di ujung kanan."""
     headers = [str(x).strip() for x in ws.row_values(1)]
-    base_lama = TASK_HEADERS[:-1]
-    if headers == base_lama:
-        if ws.col_count < len(TASK_HEADERS):
-            ws.add_cols(len(TASK_HEADERS) - ws.col_count)
-        ws.update_cell(1, len(TASK_HEADERS), "Mode_Pengerjaan")
+    base_sebelum_mode = TASK_BASE_HEADERS[:-1]
+    if headers == base_sebelum_mode:
+        if ws.col_count < len(TASK_BASE_HEADERS):
+            ws.add_cols(len(TASK_BASE_HEADERS) - ws.col_count)
+        ws.update_cell(1, len(TASK_BASE_HEADERS), "Mode_Pengerjaan")
+        headers = TASK_BASE_HEADERS.copy()
+    if headers[:len(TASK_BASE_HEADERS)] != TASK_BASE_HEADERS:
+        return False
+    tambahan = [h for h in ("ID_Siswa", "ID_Tutor") if h not in headers]
+    if tambahan:
+        kolom_awal = len(headers) + 1
+        if ws.col_count < len(headers) + len(tambahan):
+            ws.add_cols(len(headers) + len(tambahan) - ws.col_count)
+        ws.update(f"{gspread.utils.rowcol_to_a1(1, kolom_awal)}:{gspread.utils.rowcol_to_a1(1, kolom_awal + len(tambahan) - 1)}", [tambahan], value_input_option="RAW")
         try:
             _baca_values_cache.clear()
         except Exception:
             pass
-        return True
+        headers = [str(x).strip() for x in ws.row_values(1)]
     return headers == TASK_HEADERS
 
 
@@ -1726,6 +1749,24 @@ def get_student_tasks():
     try:
         ws = get_worksheet("Tugas_Sesi_Siswa_v2")
         records = baca_records_aman(ws)
+        # Satu pembacaan Data_Siswa untuk seluruh tugas lama, bukan satu API read per tugas.
+        siswa_rows = baca_records_aman(get_worksheet("Data_Siswa"))
+        nama_ke_id = {}
+        nama_ganda = set()
+        for siswa in siswa_rows:
+            nama = str(siswa.get("Nama_Lengkap", "")).strip().casefold()
+            sid = str(siswa.get("ID_Siswa", "")).strip()
+            aktif = str(siswa.get("Status", "Aktif")).strip().casefold() not in ("nonaktif", "tidak aktif")
+            if nama and sid and aktif:
+                if nama in nama_ke_id:
+                    nama_ganda.add(nama)
+                else:
+                    nama_ke_id[nama] = sid
+        for rec in records:
+            if not str(rec.get("ID_Siswa", "")).strip():
+                nama = str(rec.get("Nama_Siswa", "")).strip().casefold()
+                if nama and nama not in nama_ganda:
+                    rec["ID_Siswa"] = nama_ke_id.get(nama, "")
         return records
     except gspread.WorksheetNotFound:
         try:
@@ -4775,6 +4816,14 @@ elif peran == "🔒 Pengajar / Tutor":
                                     if not pastikan_header_tugas(ws_tugas):
                                         st.error("Header Tugas_Sesi_Siswa_v2 tidak cocok. Data tidak ditulis agar tidak bergeser.")
                                     else:
+                                        id_siswa_terpilih = get_siswa_id_by_nama(selected_siswa)
+                                        id_tutor_aktif = str(st.session_state.get("tutor_id", "")).strip()
+                                        if not id_siswa_terpilih:
+                                            st.error("Identitas siswa tidak dapat dipastikan. Jika ada nama siswa yang sama, pilih siswa melalui identitas yang dibedakan pada data siswa sebelum mengirim tugas.")
+                                            st.stop()
+                                        if not id_tutor_aktif:
+                                            st.error("ID tutor tidak ditemukan pada akun login. Tugas tidak dikirim agar tanggung jawab penilaian tidak hilang.")
+                                            st.stop()
                                         # Unggah seluruh lampiran dulu; baris tugas ditulis setelah semua unggahan berhasil.
                                         hasil_kirim = []
                                         for item in daftar_draft:
@@ -4805,7 +4854,9 @@ elif peran == "🔒 Pengajar / Tutor":
                                                     item.get("Daftar_Mapel", [item.get("Mapel", "")])
                                                 ), ensure_ascii=False),
                                                 "Diberikan", st.session_state.tutor_nama,
-                                                item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD)
+                                                item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD),
+                                                get_siswa_id_by_nama(selected_siswa),
+                                                str(st.session_state.get("tutor_id", "")).strip()
                                             ])
                                         ws_tugas.append_rows(baris_baru, value_input_option="RAW")
                                         n_pr = sum(1 for it in daftar_draft if str(it["Jenis"]).startswith("PR"))
@@ -5049,10 +5100,21 @@ elif peran == "🔒 Pengajar / Tutor":
 
                 if jawaban_records:
                     st.subheader("Jawaban yang menunggu pemeriksaan")
-                    menunggu = [
-                        x for x in jawaban_records
-                        if "Menunggu" in str(x.get("Status", ""))
-                    ]
+                    tutor_id_login = str(st.session_state.get("tutor_id", "")).strip()
+                    tutor_nama_login = str(st.session_state.get("tutor_nama", "")).strip().casefold()
+                    daftar_tugas_review = get_student_tasks()
+                    peta_tugas_review = {str(t.get("ID_Tugas", "")).strip(): t for t in daftar_tugas_review}
+                    menunggu = []
+                    for jawaban in jawaban_records:
+                        if "menunggu" not in str(jawaban.get("Status", "")).casefold():
+                            continue
+                        tugas_review = peta_tugas_review.get(str(jawaban.get("ID_Tugas", "")).strip(), {})
+                        pemilik_id = str(tugas_review.get("ID_Tutor", "")).strip()
+                        pemilik_nama = str(tugas_review.get("Tutor", "")).strip().casefold()
+                        # Tugas baru: wajib cocok ID. Tugas lama: kompatibilitas terbatas pada nama tutor tersimpan.
+                        milik_tutor = (pemilik_id == tutor_id_login and bool(tutor_id_login)) if pemilik_id else (bool(tutor_nama_login) and pemilik_nama == tutor_nama_login)
+                        if milik_tutor:
+                            menunggu.append(jawaban)
                     if menunggu:
                         try:
                             info_tgs = {str(t.get("ID_Tugas", "")).strip(): t for t in get_student_tasks()}
@@ -5148,7 +5210,16 @@ elif peran == "🔒 Pengajar / Tutor":
                             # baru dikirim ke server saat form disubmit.
                             simpan_nilai = st.form_submit_button("Setujui dan Terbitkan Nilai")
                             if simpan_nilai:
-                                if not persetujuan:
+                                tugas_target = info_tgs.get(str(item.get("ID_Tugas", "")).strip(), {})
+                                pemilik_id_target = str(tugas_target.get("ID_Tutor", "")).strip()
+                                pemilik_nama_target = str(tugas_target.get("Tutor", "")).strip().casefold()
+                                tutor_id_sekarang = str(st.session_state.get("tutor_id", "")).strip()
+                                tutor_nama_sekarang = str(st.session_state.get("tutor_nama", "")).strip().casefold()
+                                izin_menilai = ((pemilik_id_target == tutor_id_sekarang and bool(tutor_id_sekarang))
+                                                if pemilik_id_target else (bool(tutor_nama_sekarang) and pemilik_nama_target == tutor_nama_sekarang))
+                                if not izin_menilai:
+                                    st.error("Penerbitan ditolak. Hanya tutor pemberi tugas yang dapat menerbitkan nilai.")
+                                elif not persetujuan:
                                     st.warning("Centang persetujuan tutor terlebih dahulu sebelum menerbitkan nilai.")
                                 else:
                                     ws_nilai = get_or_create_worksheet(
@@ -5156,9 +5227,17 @@ elif peran == "🔒 Pengajar / Tutor":
                                         [
                                             "ID_Nilai", "ID_Jawaban", "ID_Tugas",
                                             "Nama_Siswa", "Nilai", "Catatan",
-                                            "Tutor", "Waktu_Penilaian"
+                                            "Tutor", "Waktu_Penilaian", "ID_Tutor"
                                         ]
                                     )
+                                    header_nilai = [str(h).strip() for h in ws_nilai.row_values(1)]
+                                    if header_nilai == ["ID_Nilai", "ID_Jawaban", "ID_Tugas", "Nama_Siswa", "Nilai", "Catatan", "Tutor", "Waktu_Penilaian"]:
+                                        if ws_nilai.col_count < 9:
+                                            ws_nilai.add_cols(9 - ws_nilai.col_count)
+                                        ws_nilai.update_cell(1, 9, "ID_Tutor")
+                                        _baca_values_cache.clear()
+                                    elif header_nilai != ["ID_Nilai", "ID_Jawaban", "ID_Tugas", "Nama_Siswa", "Nilai", "Catatan", "Tutor", "Waktu_Penilaian", "ID_Tutor"]:
+                                        raise ValueError("Header DB_Nilai_Tugas tidak sesuai. Nilai tidak ditulis agar kolom tidak bergeser.")
                                     id_jawaban_target = str(item.get("ID_Jawaban", "")).strip()
                                     nilai_terbit_ada = next((
                                         r for r in baca_records_aman(ws_nilai)
@@ -5179,7 +5258,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                             nilai,
                                             catatan,
                                             st.session_state.tutor_nama,
-                                            waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+                                            waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"),
+                                            str(st.session_state.get("tutor_id", "")).strip()
                                         ], value_input_option="RAW")
                                         _baca_values_cache.clear()
                                     # Catat persetujuan secara idempotent; tidak membuat baris kedua untuk ID_Jawaban yang sama.
