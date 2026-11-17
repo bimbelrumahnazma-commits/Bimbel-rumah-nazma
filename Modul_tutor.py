@@ -1735,6 +1735,7 @@ def rekonsiliasi_sesi_aktif_siswa(siswa_id, status_by_task, nilai_ids):
     status = str(status_by_task.get(tid, "")).strip().lower()
     sudah_dikirim = (
         tid in {str(x).strip() for x in (nilai_ids or set())}
+        or (tid, str(siswa_id).strip()) in (nilai_ids or set())
         or "dikirim" in status
         or "menunggu" in status
         or "dinilai" in status
@@ -1780,6 +1781,94 @@ def get_student_tasks():
                 converted.append({**r, "Judul_Tugas": r.get("Judul_Tugas", r.get("Instruksi", "")), "Soal_JSON": r.get("Soal_JSON", "")})
         return converted
 
+
+NILAI_TUGAS_HEADERS = [
+    "ID_Nilai", "ID_Penugasan", "ID_Siswa", "ID_Tutor_Penilai",
+    "Nilai", "Nilai_Maksimal", "Umpan_Balik", "Tanggal_Penilaian"
+]
+
+
+def get_nilai_tugas_worksheet():
+    """Ambil sheet nilai dengan skema aktif; tidak mengubah header/data lama."""
+    ws = get_or_create_worksheet(
+        "DB_Nilai_Tugas", NILAI_TUGAS_HEADERS,
+        rows="5000", cols=str(len(NILAI_TUGAS_HEADERS))
+    )
+    headers = [str(x).strip() for x in ws.row_values(1)]
+    if headers != NILAI_TUGAS_HEADERS:
+        raise ValueError(
+            "Header DB_Nilai_Tugas tidak sesuai. Tidak ada perubahan data. "
+            "Header yang dibutuhkan: " + ", ".join(NILAI_TUGAS_HEADERS)
+        )
+    return ws
+
+
+def kunci_nilai_penugasan(record):
+    """Kunci satu nilai akhir per pasangan penugasan dan siswa."""
+    return (
+        str(record.get("ID_Penugasan", record.get("ID_Tugas", ""))).strip(),
+        str(record.get("ID_Siswa", "")).strip(),
+    )
+
+
+def indeks_nilai_penugasan(records):
+    """Indeks nilai yang kompatibel dengan header baru dan rekaman lama."""
+    hasil = {}
+    for record in records or []:
+        key = kunci_nilai_penugasan(record)
+        if all(key):
+            hasil[key] = record
+    return hasil
+
+
+
+
+def baca_nilai_tugas_terpadu(refresh=False):
+    """Baca nilai kanonis dan pulihkan baris lama hanya melalui ID_Jawaban
+    yang cocok persis dengan DB_Persetujuan_Nilai. Fungsi ini read-only.
+    Baris lama yang tidak dapat dipetakan tidak ditebak atau diubah.
+    """
+    ws = get_nilai_tugas_worksheet()
+    nilai_raw = baca_records_aman(ws, refresh=refresh)
+    try:
+        ws_persetujuan = _sheet_v2("DB_Persetujuan_Nilai", PERSETUJUAN_NILAI_HEADERS)
+        persetujuan = baca_records_aman(ws_persetujuan, refresh=refresh)
+    except Exception:
+        persetujuan = []
+
+    approval_by_answer = {}
+    for approval in persetujuan:
+        answer_id = str(approval.get("ID_Jawaban", "")).strip()
+        status = str(approval.get("Status_Persetujuan", "")).strip().casefold()
+        if answer_id and status == "disetujui dan diterbitkan":
+            approval_by_answer[answer_id] = approval
+
+    hasil = []
+    for record in nilai_raw:
+        id_penugasan = str(record.get("ID_Penugasan", "")).strip()
+        id_siswa = str(record.get("ID_Siswa", "")).strip()
+        if id_penugasan.startswith("TGS-") and id_siswa.startswith("SIS-"):
+            hasil.append(record)
+            continue
+
+        approval = approval_by_answer.get(id_penugasan)
+        if not approval:
+            continue
+
+        hasil.append({
+            "ID_Nilai": record.get("ID_Nilai", ""),
+            "ID_Penugasan": str(approval.get("ID_Tugas", "")).strip(),
+            "ID_Siswa": str(approval.get("ID_Siswa", "")).strip(),
+            "ID_Tutor_Penilai": "",
+            "Nilai": str(approval.get("Nilai_Akhir", record.get("Nilai", ""))).strip(),
+            "Nilai_Maksimal": "100",
+            "Umpan_Balik": str(approval.get("Catatan", "") or record.get("Nilai_Maksimal", "")),
+            "Tanggal_Penilaian": str(approval.get("Waktu_Persetujuan", "") or record.get("Tanggal_Penilaian", "")),
+            "_ID_Jawaban": id_penugasan,
+            "_Dipulihkan_Dari_Persetujuan": True,
+            "_baris": record.get("_baris", ""),
+        })
+    return hasil
 
 def get_answers_worksheet():
     try:
@@ -2803,18 +2892,23 @@ def tampilkan_pratinjau_lembar_jawaban(daftar_soal, judul="Pratinjau lembar jawa
 
 
 def tampilkan_laporan_perkembangan(nama_siswa, tugas, jawaban, nilai):
-    """Ringkasan perkembangan berdasarkan tugas, status pengumpulan, dan nilai terbit."""
-    tugas = [
+    """Ringkasan perkembangan dengan relasi nilai berdasarkan penugasan dan siswa."""
+    tugas_siswa = [
         x for x in tugas
         if not adalah_materi(x)
         and str(x.get("Nama_Siswa", "")).strip().casefold() == str(nama_siswa).strip().casefold()
     ]
+    ids_tugas = {str(x.get("ID_Tugas", "")).strip() for x in tugas_siswa}
+    ids_siswa = {str(x.get("ID_Siswa", "")).strip() for x in tugas_siswa if str(x.get("ID_Siswa", "")).strip()}
+    jawaban_siswa = [
+        x for x in jawaban
+        if str(x.get("ID_Tugas", "")).strip() in ids_tugas
+    ]
     nilai_siswa = [
         x for x in nilai
-        if str(x.get("Nama_Siswa", "")).strip().casefold() == str(nama_siswa).strip().casefold()
+        if (str(x.get("ID_Penugasan", x.get("ID_Tugas", ""))).strip() in ids_tugas)
+        and (not ids_siswa or str(x.get("ID_Siswa", "")).strip() in ids_siswa)
     ]
-    ids = {str(x.get("ID_Tugas", "")) for x in tugas}
-    jawaban_siswa = [x for x in jawaban if str(x.get("ID_Tugas", "")) in ids]
     nilai_angka = []
     for x in nilai_siswa:
         try:
@@ -2822,7 +2916,7 @@ def tampilkan_laporan_perkembangan(nama_siswa, tugas, jawaban, nilai):
         except (ValueError, TypeError):
             pass
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total tugas", len(tugas))
+    c1.metric("Total tugas", len(tugas_siswa))
     c2.metric("Jawaban terkirim", len(jawaban_siswa))
     c3.metric("Nilai diterbitkan", len(nilai_angka))
     if nilai_angka:
@@ -2897,6 +2991,37 @@ def hitung_nilai_objektif(daftar_soal, jawaban):
         "soal_manual": manual,
         "rincian": rincian,
     }
+
+
+def hitung_nilai_akhir_berbobot(daftar_soal, hasil_sementara, nilai_manual=None):
+    """Gabungkan skor otomatis dan skor manual memakai bobot soal dari tutor."""
+    nilai_manual = {int(k): float(v) for k, v in (nilai_manual or {}).items()}
+    rincian_auto = {
+        int(x.get("nomor")): (float(x.get("poin", 0) or 0) * 100.0, float(x.get("bobot", 0) or 0))
+        for x in (hasil_sementara or {}).get("rincian", [])
+    }
+    total_bobot = 0.0
+    total_tertimbang = 0.0
+    belum_dinilai = []
+    for nomor, soal in enumerate(daftar_soal or [], 1):
+        try:
+            bobot = float(soal.get("Bobot", 1) or 0)
+        except (TypeError, ValueError):
+            return None
+        if bobot <= 0:
+            return None
+        if nomor in rincian_auto:
+            skor, _bobot_hasil = rincian_auto[nomor]
+        elif nomor in nilai_manual:
+            skor = max(0.0, min(100.0, nilai_manual[nomor]))
+        else:
+            belum_dinilai.append(nomor)
+            continue
+        total_bobot += bobot
+        total_tertimbang += skor * bobot
+    if belum_dinilai or total_bobot <= 0:
+        return None
+    return round(max(1.0, min(100.0, total_tertimbang / total_bobot)), 2)
 
 
 def normalisasi_opsi(teks):
@@ -3056,11 +3181,13 @@ def parse_tanggal(teks):
         return None
 
 
-def label_status(t, status_by_task, nilai_ids):
-    """Kembalikan (kode, label). kode: dinilai / dikirim / draft / belum / materi."""
+def label_status(t, status_by_task, nilai_keys):
+    """Kembalikan status tugas; nilai dicocokkan dengan ID penugasan + ID siswa."""
     tid = str(t.get("ID_Tugas", "")).strip()
+    sid = str(t.get("ID_Siswa", "")).strip()
     s = str(status_by_task.get(tid, "")).lower()
-    if tid in nilai_ids or "dinilai" in s:
+    sudah_dinilai = (tid, sid) in (nilai_keys or set()) or tid in (nilai_keys or set())
+    if sudah_dinilai or "dinilai" in s:
         return "dinilai", "✅ Sudah dinilai"
     if "dikirim" in s or "menunggu" in s:
         return "dikirim", "📤 Dikirim"
@@ -3589,10 +3716,10 @@ if peran == "🎓 Siswa":
             status_by_task[str(ans.get("ID_Tugas", ""))] = str(ans.get("Status", "Draft"))
 
         try:
-            nilai_records = baca_records_aman(get_worksheet("DB_Nilai_Tugas"))
+            nilai_records = baca_nilai_tugas_terpadu()
         except Exception:
             nilai_records = []
-        nilai_ids = {str(n.get("ID_Tugas", "")).strip() for n in nilai_records}
+        nilai_ids = {kunci_nilai_penugasan(n) for n in nilai_records if all(kunci_nilai_penugasan(n))}
 
         tugas_pr = sorted([t for t in tugas_anak if adalah_pr(t)], key=lambda x: str(x.get("Tenggat", "")) or "9999")
         tugas_reguler = [t for t in tugas_anak if not adalah_pr(t)]
@@ -5000,8 +5127,9 @@ elif peran == "🔒 Pengajar / Tutor":
                             jwb_pantau = []
                         status_pantau = {str(x.get("ID_Tugas", "")): str(x.get("Status", "")) for x in jwb_pantau}
                         try:
-                            nilai_pantau = {str(n.get("ID_Tugas", "")).strip()
-                                            for n in baca_records_aman(get_worksheet("DB_Nilai_Tugas"))}
+                            nilai_pantau = {kunci_nilai_penugasan(n)
+                                            for n in baca_nilai_tugas_terpadu()
+                                            if all(kunci_nilai_penugasan(n))}
                         except Exception:
                             nilai_pantau = set()
 
@@ -5064,7 +5192,7 @@ elif peran == "🔒 Pengajar / Tutor":
                     if nama_siswa_laporan != "— Pilih siswa —":
                         semua_tugas_laporan = get_student_tasks()
                         semua_jawaban_laporan = baca_jawaban_tergabung(get_worksheet("DB_Jawaban_Siswa"))
-                        semua_nilai_laporan = baca_records_aman(get_worksheet("DB_Nilai_Tugas"))
+                        semua_nilai_laporan = baca_nilai_tugas_terpadu()
                         tampilkan_laporan_perkembangan(
                             nama_siswa_laporan, semua_tugas_laporan,
                             semua_jawaban_laporan, semua_nilai_laporan
@@ -5075,17 +5203,25 @@ elif peran == "🔒 Pengajar / Tutor":
                             and not adalah_materi(x)
                         ]
                         if tugas_siswa_laporan:
+                            siswa_ids_laporan = {
+                                str(x.get("ID_Siswa", "")).strip() for x in tugas_siswa_laporan
+                                if str(x.get("ID_Siswa", "")).strip()
+                            }
                             nilai_map_laporan = {
-                                str(x.get("ID_Tugas", "")): x.get("Nilai")
+                                kunci_nilai_penugasan(x): x.get("Nilai")
                                 for x in semua_nilai_laporan
-                                if str(x.get("Nama_Siswa", "")).strip().casefold() == nama_siswa_laporan.strip().casefold()
+                                if kunci_nilai_penugasan(x)[0]
+                                and (not siswa_ids_laporan or kunci_nilai_penugasan(x)[1] in siswa_ids_laporan)
                             }
                             st.dataframe(pd.DataFrame([
                                 {
                                     "Mapel": x.get("Mapel", ""),
                                     "Tugas": x.get("Judul_Tugas", ""),
                                     "Kategori": "PR" if adalah_pr(x) else "Tugas sesi",
-                                    "Nilai akhir": nilai_map_laporan.get(str(x.get("ID_Tugas", "")), "Belum terbit")
+                                    "Nilai akhir": nilai_map_laporan.get(
+                                        (str(x.get("ID_Tugas", "")).strip(), str(x.get("ID_Siswa", "")).strip()),
+                                        "Belum terbit"
+                                    )
                                 } for x in tugas_siswa_laporan
                             ]), use_container_width=True, hide_index=True)
                 except Exception as exc:
@@ -5200,14 +5336,35 @@ elif peran == "🔒 Pengajar / Tutor":
                                     if detail.get("nilai") is None:
                                         st.info("Rubrik belum tersedia atau tidak valid. Tentukan nilai secara manual.")
 
-                        nilai_awal = int(round(hasil_sementara.get("nilai_sementara") or hasil_otomatis["skor_objektif"] or 0))
-                        with st.form(f"form_penilaian_jawaban_{item.get('ID_Jawaban')}"):
-                            st.caption("Periksa jawaban dan nilai sementara. Nilai baru diterbitkan setelah persetujuan tutor.")
-                            nilai = st.number_input("Nilai akhir (0–100):", min_value=0, max_value=100, value=nilai_awal)
-                            catatan = st.text_area("Catatan tutor:")
+                        nilai_awal = int(round(hasil_sementara.get("nilai_sementara") or hasil_otomatis["skor_objektif"] or 1))
+                        key_penilaian = f"{item.get('ID_Tugas')}_{item.get('ID_Siswa')}"
+                        with st.form(f"form_penilaian_jawaban_{key_penilaian}"):
+                            st.caption("Skor otomatis memakai bobot yang ditentukan tutor. Soal yang belum dapat dinilai otomatis harus diberi skor manual.")
+                            nilai_manual_per_soal = {}
+                            konfirmasi_manual_per_soal = {}
+                            for nomor_manual in hasil_sementara.get("soal_manual", []):
+                                soal_manual = soal_untuk_nilai[nomor_manual - 1] if 0 < nomor_manual <= len(soal_untuk_nilai) else {}
+                                st.markdown(f"**Penilaian manual nomor {nomor_manual}** · Bobot {soal_manual.get('Bobot', 1)}")
+                                nilai_manual_per_soal[nomor_manual] = st.number_input(
+                                    f"Skor soal {nomor_manual} (0–100)", min_value=0, max_value=100, value=0,
+                                    key=f"nilai_manual_{key_penilaian}_{nomor_manual}"
+                                )
+                                konfirmasi_manual_per_soal[nomor_manual] = st.checkbox(
+                                    f"Saya sudah memeriksa soal nomor {nomor_manual}",
+                                    key=f"konfirmasi_manual_{key_penilaian}_{nomor_manual}"
+                                )
+                            nilai_berbobot = hitung_nilai_akhir_berbobot(
+                                soal_untuk_nilai, hasil_sementara, nilai_manual_per_soal
+                            ) if soal_untuk_nilai else None
+                            if nilai_berbobot is not None:
+                                st.metric("Nilai akhir berdasarkan bobot tutor", f"{nilai_berbobot:.2f}/100")
+                                nilai_awal = int(round(nilai_berbobot))
+                            elif hasil_sementara.get("soal_manual"):
+                                st.warning("Lengkapi pemeriksaan manual setiap soal agar nilai berbobot dapat dihitung.")
+                            nilai = st.number_input("Nilai akhir (1–100):", min_value=1, max_value=100, value=max(1, min(100, nilai_awal)))
+                            catatan = st.text_area("Umpan balik tutor:")
                             persetujuan = st.checkbox("Saya sudah memeriksa hasil dan menyetujui penerbitan nilai akhir.")
-                            # Tombol harus selalu aktif: nilai checkbox di dalam st.form
-                            # baru dikirim ke server saat form disubmit.
+                            # Tombol tetap mengirim nilai checkbox; validasi dilakukan setelah submit.
                             simpan_nilai = st.form_submit_button("Setujui dan Terbitkan Nilai")
                             if simpan_nilai:
                                 tugas_target = info_tgs.get(str(item.get("ID_Tugas", "")).strip(), {})
@@ -5219,49 +5376,43 @@ elif peran == "🔒 Pengajar / Tutor":
                                                 if pemilik_id_target else (bool(tutor_nama_sekarang) and pemilik_nama_target == tutor_nama_sekarang))
                                 if not izin_menilai:
                                     st.error("Penerbitan ditolak. Hanya tutor pemberi tugas yang dapat menerbitkan nilai.")
+                                elif any(not sudah for sudah in konfirmasi_manual_per_soal.values()):
+                                    st.warning("Periksa dan konfirmasi semua soal yang memerlukan penilaian manual.")
+                                elif nilai_berbobot is None and soal_untuk_nilai:
+                                    st.warning("Nilai berbobot belum dapat dihitung. Periksa bobot dan skor setiap soal.")
                                 elif not persetujuan:
                                     st.warning("Centang persetujuan tutor terlebih dahulu sebelum menerbitkan nilai.")
+                                elif not str(item.get("ID_Tugas", "")).strip() or not str(item.get("ID_Siswa", "")).strip():
+                                    st.error("ID penugasan atau ID siswa kosong. Nilai tidak diterbitkan untuk mencegah salah relasi.")
                                 else:
-                                    ws_nilai = get_or_create_worksheet(
-                                        "DB_Nilai_Tugas",
-                                        [
-                                            "ID_Nilai", "ID_Jawaban", "ID_Tugas",
-                                            "Nama_Siswa", "Nilai", "Catatan",
-                                            "Tutor", "Waktu_Penilaian", "ID_Tutor"
-                                        ]
-                                    )
-                                    header_nilai = [str(h).strip() for h in ws_nilai.row_values(1)]
-                                    if header_nilai == ["ID_Nilai", "ID_Jawaban", "ID_Tugas", "Nama_Siswa", "Nilai", "Catatan", "Tutor", "Waktu_Penilaian"]:
-                                        if ws_nilai.col_count < 9:
-                                            ws_nilai.add_cols(9 - ws_nilai.col_count)
-                                        ws_nilai.update_cell(1, 9, "ID_Tutor")
-                                        _baca_values_cache.clear()
-                                    elif header_nilai != ["ID_Nilai", "ID_Jawaban", "ID_Tugas", "Nama_Siswa", "Nilai", "Catatan", "Tutor", "Waktu_Penilaian", "ID_Tutor"]:
-                                        raise ValueError("Header DB_Nilai_Tugas tidak sesuai. Nilai tidak ditulis agar kolom tidak bergeser.")
-                                    id_jawaban_target = str(item.get("ID_Jawaban", "")).strip()
+                                    ws_nilai = get_nilai_tugas_worksheet()
+                                    id_tugas_target = str(item.get("ID_Tugas", "")).strip()
+                                    id_siswa_target = str(item.get("ID_Siswa", "")).strip()
+                                    nilai_baru_diterbitkan = False
                                     nilai_terbit_ada = next((
-                                        r for r in baca_records_aman(ws_nilai)
-                                        if str(r.get("ID_Jawaban", "")).strip() == id_jawaban_target
+                                        r for r in baca_nilai_tugas_terpadu(refresh=True)
+                                        if kunci_nilai_penugasan(r) == (id_tugas_target, id_siswa_target)
                                     ), None)
                                     if nilai_terbit_ada:
                                         st.info(
-                                            f"Nilai untuk jawaban ini sudah pernah diterbitkan "
+                                            f"Nilai untuk penugasan ini sudah diterbitkan "
                                             f"(ID nilai: {nilai_terbit_ada.get('ID_Nilai', '-')}). "
-                                            "Sistem tidak membuat nilai duplikat."
+                                            "Sistem tidak membuat nilai kedua untuk siswa dan tugas yang sama."
                                         )
                                     else:
+                                        nilai_aman = max(1, min(100, int(round(float(nilai)))))
                                         ws_nilai.append_row([
                                             "NIL-" + uuid.uuid4().hex[:10].upper(),
-                                            id_jawaban_target,
-                                            item.get("ID_Tugas"),
-                                            item.get("Nama_Siswa"),
-                                            nilai,
-                                            catatan,
-                                            st.session_state.tutor_nama,
-                                            waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"),
-                                            str(st.session_state.get("tutor_id", "")).strip()
+                                            id_tugas_target,
+                                            id_siswa_target,
+                                            str(st.session_state.get("tutor_id", "")).strip(),
+                                            nilai_aman,
+                                            100,
+                                            str(catatan or ""),
+                                            waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
                                         ], value_input_option="RAW")
                                         _baca_values_cache.clear()
+                                        nilai_baru_diterbitkan = True
                                     # Catat persetujuan secara idempotent; tidak membuat baris kedua untuk ID_Jawaban yang sama.
                                     catat_persetujuan_nilai(
                                         item.get("ID_Jawaban"), item.get("ID_Tugas"),
@@ -5278,7 +5429,10 @@ elif peran == "🔒 Pengajar / Tutor":
                                     ]
                                     if pembaruan:
                                         ws_jawaban.batch_update(pembaruan, value_input_option="RAW")
-                                    st.success("Nilai akhir disetujui dan diterbitkan. Nilai sementara tidak pernah ditampilkan kepada siswa.")
+                                    if nilai_baru_diterbitkan:
+                                        st.success("Satu nilai akhir berbobot berhasil diterbitkan untuk siswa dan penugasan ini.")
+                                    else:
+                                        st.info("Nilai untuk pasangan siswa dan penugasan ini sudah ada; tidak dibuat nilai duplikat.")
                                     st.rerun()
 
                     else:
@@ -6178,13 +6332,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
             st.header("📈 Rekap Nilai & Evaluasi")
             data_tabel_ortu = []
             try:
-                nilai_ortu = baca_records_aman(get_worksheet("DB_Nilai_Tugas"))
-                jawaban_ortu = baca_jawaban_tergabung(get_answers_worksheet())
-                jawaban_by_id = {
-                    str(j.get("ID_Jawaban", "")).strip(): j
-                    for j in jawaban_ortu
-                    if str(j.get("ID_Siswa", "")).strip() == str(id_anak_ortu).strip()
-                }
+                nilai_ortu = baca_nilai_tugas_terpadu()
                 tugas_ortu = {
                     str(t.get("ID_Tugas", "")).strip(): t
                     for t in get_student_tasks()
@@ -6192,18 +6340,19 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                     or _norm_text(t.get("Nama_Siswa", "")) == _norm_text(nama_anak_aktif)
                 }
                 for n in nilai_ortu:
-                    id_jawaban = str(n.get("ID_Jawaban", "")).strip()
-                    jawaban = jawaban_by_id.get(id_jawaban)
-                    if not jawaban:
+                    id_tugas_nilai = str(n.get("ID_Penugasan", n.get("ID_Tugas", ""))).strip()
+                    if str(n.get("ID_Siswa", "")).strip() != str(id_anak_ortu).strip():
                         continue
-                    tugas = tugas_ortu.get(str(n.get("ID_Tugas", "")).strip(), {})
+                    tugas = tugas_ortu.get(id_tugas_nilai, {})
+                    if not tugas:
+                        continue
                     data_tabel_ortu.append({
-                        "Tanggal": n.get("Waktu_Penilaian", "-"),
+                        "Tanggal": n.get("Tanggal_Penilaian", n.get("Waktu_Penilaian", "-")),
                         "Mapel": tugas.get("Mapel", "-"),
-                        "Aktivitas": tugas.get("Judul_Tugas", n.get("ID_Tugas", "-")),
+                        "Aktivitas": tugas.get("Judul_Tugas", id_tugas_nilai or "-"),
                         "Nilai": n.get("Nilai", "-"),
-                        "Evaluasi Tutor": n.get("Catatan", "-"),
-                        "Tutor": n.get("Tutor", "-")
+                        "Evaluasi Tutor": n.get("Umpan_Balik", n.get("Catatan", "-")),
+                        "Tutor": n.get("ID_Tutor_Penilai", n.get("Tutor", "-"))
                     })
             except Exception as exc:
                 st.warning(f"Nilai anak belum dapat dibaca dari sistem: {exc}")
