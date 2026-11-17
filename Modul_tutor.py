@@ -368,8 +368,11 @@ def upload_lampiran_ke_drive(file_bytes, file_name, mime_type):
         if folder_id:
             payload["folderId"] = folder_id
 
-        response = requests.post(endpoint, json=payload, timeout=120)
-        response.raise_for_status()
+        response = requests.post(endpoint, json=payload, timeout=120, allow_redirects=False)
+
+        if response.status_code in (301, 302, 303, 307, 308) and response.headers.get("Location"):
+    response = requests.get(response.headers["Location"], timeout=120)
+            response.raise_for_status()
         try:
             result = response.json()
         except ValueError:
