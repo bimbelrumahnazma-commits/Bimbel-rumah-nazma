@@ -48,7 +48,7 @@ MAPEL_OPTIONS = [
 # KONFIGURASI HALAMAN
 # =========================================================
 st.set_page_config(
-    page_title="Portal Bimbel Rumah Nazma - Tahap 7.47",
+    page_title="Portal Bimbel Rumah Nazma - Tahap 7.50",
     layout="wide",
     page_icon="🎓",
     initial_sidebar_state="expanded"
@@ -2468,19 +2468,209 @@ def simpan_template_soal(nama, tutor, mapel, konfigurasi):
         str(tutor), str(mapel), json.dumps(konfigurasi, ensure_ascii=False),
         now, now
     ], value_input_option="RAW")
+    _baca_values_cache.clear()
 
 
 def ambil_template_soal(tutor):
     try:
         ws = _sheet_v2("DB_Template_Lembar_Jawaban", TEMPLATE_SOAL_HEADERS)
         return [
-            x for x in baca_records_aman(ws, refresh=True)
+            x for x in baca_records_aman(ws)
             if str(x.get("Tutor", "")).strip() in ("", str(tutor).strip())
         ]
     except gspread.WorksheetNotFound:
         return []
     except Exception:
         return []
+
+
+# =========================================================
+# BANK BERKAS SOAL (PDF/GAMBAR) + TEMPLATE LEMBAR JAWABAN MELEKAT
+# Sheet baru DB_Bank_Berkas_Soal; sheet lama tidak diubah.
+# =========================================================
+BANK_BERKAS_HEADERS = [
+    "ID_Berkas", "Judul", "Mapel", "Kelas_Jenjang", "Bab_Atau_Topik", "Jenis_File",
+    "Lampiran_JSON", "Konfigurasi_JSON", "Jumlah_Soal", "Pemilik_Tutor", "Dibagikan",
+    "Status", "Sidik_Jari", "Dibuat_Pada", "Diperbarui_Pada"
+]
+KELAS_BANK_OPTIONS = ["Calistung"] + [f"Kelas {i}" for i in range(1, 13)] + ["Umum"]
+BATAS_KONFIGURASI_BANK = 45000  # batas aman satu sel Google Sheets (50.000 karakter)
+TTL_CACHE_BANK_BERKAS = 120
+_EKSTENSI_GAMBAR = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+
+def _json_aman(teks, bawaan):
+    try:
+        nilai = json.loads(teks) if str(teks or "").strip() else bawaan
+    except (ValueError, TypeError):
+        return bawaan
+    return nilai if isinstance(nilai, type(bawaan)) else bawaan
+
+
+def _jenis_file_bank(lampiran):
+    nama = [str(f.get("name", "")).lower() for f in lampiran]
+    if nama and all(n.endswith(".pdf") for n in nama):
+        return "PDF"
+    if nama and all(n.endswith(_EKSTENSI_GAMBAR) for n in nama):
+        return "Gambar"
+    return "Campuran"
+
+
+def ambil_bank_berkas(tutor, paksa=False):
+    """Daftar berkas aktif yang boleh dipakai tutor (milik sendiri atau dibagikan)."""
+    kunci = "_nazma_bank_berkas_cache"
+    cache = st.session_state.get(kunci)
+    if not paksa and cache and (time.time() - cache[0]) < TTL_CACHE_BANK_BERKAS:
+        data = cache[1]
+    else:
+        ws = _sheet_v2("DB_Bank_Berkas_Soal", BANK_BERKAS_HEADERS)
+        data = baca_records_aman(ws, refresh=paksa)
+        st.session_state[kunci] = (time.time(), data)
+    nama = str(tutor or "").strip()
+    return [
+        x for x in data
+        if str(x.get("Status", "")).strip() == "Aktif"
+        and (str(x.get("Dibagikan", "")).strip().casefold() == "ya"
+             or str(x.get("Pemilik_Tutor", "")).strip() == nama)
+    ]
+
+
+def simpan_berkas_ke_bank(judul, mapel, kelas, topik, lampiran, konfigurasi, tutor, dibagikan=True):
+    """Simpan berkas yang sudah ada di Google Drive ke bank. Berkas yang sama diperbarui, bukan digandakan."""
+    judul = str(judul or "").strip()
+    if not judul:
+        raise ValueError("Judul berkas di bank wajib diisi.")
+    daftar = [
+        {"name": str(f.get("name", "")), "mime": str(f.get("mime", "")), "url": str(f.get("url", ""))}
+        for f in (lampiran or []) if f.get("url")
+    ]
+    if not daftar:
+        raise ValueError("Berkas belum tersimpan di Google Drive, jadi belum bisa masuk bank.")
+    sumber_sidik = sorted(str(f.get("sha256") or f.get("url")) for f in lampiran if f.get("url"))
+    sidik = hashlib.sha256("|".join(sumber_sidik).encode("utf-8")).hexdigest()[:24]
+    konfigurasi = list(konfigurasi or [])
+    konfigurasi_json = json.dumps(konfigurasi, ensure_ascii=False)
+    template_ok = bool(konfigurasi)
+    if len(konfigurasi_json) > BATAS_KONFIGURASI_BANK:
+        konfigurasi_json, template_ok = "[]", False
+    ws = _sheet_v2("DB_Bank_Berkas_Soal", BANK_BERKAS_HEADERS)
+    now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    nama_tutor = str(tutor or "").strip()
+    ada = next((
+        r for r in baca_records_aman(ws, refresh=True)
+        if str(r.get("Pemilik_Tutor", "")).strip() == nama_tutor
+        and str(r.get("Sidik_Jari", "")).strip() == sidik
+        and str(r.get("Status", "")).strip() == "Aktif"
+    ), None)
+    jumlah_soal = len(konfigurasi) if template_ok else 0
+    if ada and not template_ok:
+        # Simpan ulang tanpa template tidak boleh menghapus template yang sudah ada.
+        konfigurasi_json = str(ada.get("Konfigurasi_JSON", "") or "[]")
+        jumlah_soal = int(ada.get("Jumlah_Soal", 0) or 0)
+    data = [
+        ada.get("ID_Berkas") if ada else "BRK-" + uuid.uuid4().hex[:10].upper(),
+        judul, str(mapel or ""), str(kelas or ""), str(topik or "").strip(), _jenis_file_bank(daftar),
+        json.dumps(daftar, ensure_ascii=False), konfigurasi_json, jumlah_soal,
+        nama_tutor, "Ya" if dibagikan else "Tidak", "Aktif", sidik,
+        ada.get("Dibuat_Pada", now) if ada else now, now
+    ]
+    if ada:
+        ws.update(f"A{ada['_baris']}:O{ada['_baris']}", [data], value_input_option="RAW")
+    else:
+        ws.append_row(data, value_input_option="RAW")
+    _baca_values_cache.clear()
+    st.session_state.pop("_nazma_bank_berkas_cache", None)
+    return {"aksi": "diperbarui" if ada else "baru", "template": template_ok, "id": data[0]}
+
+
+def pilih_berkas_dari_bank(k, tutor):
+    """UI memilih berkas dari bank. Mengembalikan lampiran siap pakai dan template jawabannya."""
+    kosong = {"files": [], "template": [], "id": "", "berkas": None}
+    try:
+        daftar = ambil_bank_berkas(tutor)
+    except Exception as exc:
+        st.error(f"Bank Berkas Soal belum dapat dibaca: {exc}")
+        return kosong
+    if not daftar:
+        st.info(
+            "Bank Berkas Soal masih kosong. Saat membuat tugas dari 'Upload dari perangkat', "
+            "buka bagian 'Simpan ke Bank Berkas Soal' agar berkas dan template jawabannya bisa dipakai ulang."
+        )
+        return kosong
+    kata = st.text_input("Cari judul berkas:", key=f"bb_cari_{k}").strip().casefold()
+    mapel_opsi = ["Semua"] + sorted({str(x.get("Mapel", "")).strip() for x in daftar if str(x.get("Mapel", "")).strip()})
+    kelas_opsi = ["Semua"] + sorted({str(x.get("Kelas_Jenjang", "")).strip() for x in daftar if str(x.get("Kelas_Jenjang", "")).strip()})
+    mapel_f = st.selectbox("Filter mapel:", mapel_opsi, key=f"bb_mp_{k}")
+    kelas_f = st.selectbox("Filter kelas:", kelas_opsi, key=f"bb_kelas_{k}")
+    peta = {}
+    for x in daftar:
+        id_berkas = str(x.get("ID_Berkas", "")).strip()
+        if not id_berkas:
+            continue
+        if mapel_f != "Semua" and str(x.get("Mapel", "")).strip() != mapel_f:
+            continue
+        if kelas_f != "Semua" and str(x.get("Kelas_Jenjang", "")).strip() != kelas_f:
+            continue
+        gabung = f"{x.get('Judul', '')} {x.get('Bab_Atau_Topik', '')}".casefold()
+        if kata and kata not in gabung:
+            continue
+        peta[id_berkas] = x
+    st.caption(f"{len(peta)} berkas cocok.")
+    placeholder = "— Pilih berkas —"
+
+    def _label(id_berkas):
+        if id_berkas == placeholder:
+            return placeholder
+        b = peta[id_berkas]
+        teks = f"{b.get('Judul', '')} · {b.get('Mapel', '')} · {b.get('Kelas_Jenjang', '')}"
+        try:
+            n_soal = int(b.get("Jumlah_Soal", 0) or 0)
+        except (ValueError, TypeError):
+            n_soal = 0
+        return teks + (f" · template {n_soal} soal" if n_soal else " · tanpa template")
+
+    pilihan = st.selectbox(
+        "Pilih berkas soal:", [placeholder] + list(peta.keys()), format_func=_label,
+        key=f"bb_pilih_{k}_{mapel_f}_{kelas_f}_{kata}"
+    )
+    if pilihan == placeholder or pilihan not in peta:
+        return kosong
+    berkas = peta[pilihan]
+    lampiran = _json_aman(berkas.get("Lampiran_JSON", ""), [])
+    files = []
+    for i, lb in enumerate(lampiran):
+        if isinstance(lb, dict) and str(lb.get("url", "")).startswith(("http://", "https://")):
+            files.append({
+                "name": str(lb.get("name", "berkas")), "mime": str(lb.get("mime", "") or "application/octet-stream"),
+                "url": str(lb["url"]), "uploaded": True, "sha256": f"bank:{pilihan}:{i}"
+            })
+            st.markdown(f"📎 [{lb.get('name', 'berkas')}]({lb['url']})")
+    if not files:
+        st.warning("Lampiran pada berkas ini tidak valid. Pilih berkas lain.")
+        return kosong
+    template = _json_aman(berkas.get("Konfigurasi_JSON", ""), [])
+    if template:
+        st.success(f"Template lembar jawaban tersedia ({len(template)} soal). Tidak perlu konfigurasi ulang.")
+    else:
+        st.info("Berkas ini belum punya template jawaban. Konfigurasi bisa dibuat sekali di bawah.")
+    return {"files": files, "template": template, "id": pilihan, "berkas": berkas}
+
+
+def form_simpan_ke_bank(k, judul_tugas, mapel_tugas):
+    """Pilihan menyimpan berkas yang baru diunggah ke bank. None bila tidak dicentang."""
+    with st.expander("📚 Simpan ke Bank Berkas Soal (opsional)", expanded=False):
+        simpan = st.checkbox("Simpan berkas ini agar bisa dipakai ulang untuk siswa lain", key=f"bb_simpan_{k}")
+        if not simpan:
+            return None
+        judul = st.text_input("Judul di bank:", value=str(judul_tugas or ""), key=f"bb_judul_{k}")
+        kelas = st.selectbox("Kelas / jenjang:", KELAS_BANK_OPTIONS, key=f"bb_kelas_simpan_{k}")
+        topik = st.text_input("Bab / topik (opsional):", key=f"bb_topik_{k}")
+        dibagikan = st.checkbox("Bagikan ke tutor lain", value=True, key=f"bb_bagikan_{k}")
+        st.caption(
+            "Jika Anda memilih lembar jawaban online, konfigurasi jawaban ikut tersimpan sebagai template "
+            "yang melekat pada berkas. Tersimpan saat tombol 'Tambahkan ke daftar tugas' ditekan."
+        )
+    return {"judul": judul, "mapel": mapel_tugas, "kelas": kelas, "topik": topik, "dibagikan": dibagikan}
 
 
 def simpan_draft_tugas_persisten(id_siswa, nama_siswa, tutor, daftar_draft):
@@ -2583,13 +2773,28 @@ def simpan_form_aktif_persisten(id_siswa, nama_siswa, tutor, payload):
     ws = _sheet_v2("DB_Form_Tugas_Aktif", FORM_AKTIF_HEADERS)
     now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
     payload_json = json.dumps(_serialisasi_form_aman(payload), ensure_ascii=False)
-    records = baca_records_aman(ws, refresh=True)
-    aktif = next((
-        r for r in reversed(records)
-        if str(r.get("ID_Siswa", "")) == str(id_siswa)
-        and str(r.get("Tutor", "")) == str(tutor)
-        and str(r.get("Status", "")) == "Aktif"
-    ), None)
+    ptr_key = f"_nazma_form_aktif_ptr_{id_siswa}_{tutor}"
+    aktif = None
+    ptr = st.session_state.get(ptr_key)
+    if isinstance(ptr, dict) and ptr.get("baris"):
+        # Cukup membaca satu baris untuk memastikan penunjuk masih benar (bukan seluruh sheet).
+        try:
+            baris_cek = ws.get(f"A{ptr['baris']}:F{ptr['baris']}")
+            nilai_baris = baris_cek[0] if baris_cek else []
+            if (len(nilai_baris) >= 6 and str(nilai_baris[0]) == str(ptr.get("ID_Form"))
+                    and str(nilai_baris[5]) == "Aktif"):
+                aktif = {"ID_Form": ptr["ID_Form"], "_baris": ptr["baris"],
+                         "Dibuat_Pada": ptr.get("Dibuat_Pada", now)}
+        except Exception:
+            aktif = None
+    if aktif is None:
+        records = baca_records_aman(ws, refresh=True)
+        aktif = next((
+            r for r in reversed(records)
+            if str(r.get("ID_Siswa", "")) == str(id_siswa)
+            and str(r.get("Tutor", "")) == str(tutor)
+            and str(r.get("Status", "")) == "Aktif"
+        ), None)
     data = [
         aktif.get("ID_Form") if aktif else "FRM-" + uuid.uuid4().hex[:10].upper(),
         str(id_siswa), str(nama_siswa), str(tutor), payload_json, "Aktif",
@@ -2597,8 +2802,18 @@ def simpan_form_aktif_persisten(id_siswa, nama_siswa, tutor, payload):
     ]
     if aktif:
         ws.update(f"A{aktif['_baris']}:H{aktif['_baris']}", [data], value_input_option="RAW")
+        st.session_state[ptr_key] = {"ID_Form": data[0], "baris": int(aktif["_baris"]),
+                                     "Dibuat_Pada": data[6]}
     else:
-        ws.append_row(data, value_input_option="RAW")
+        hasil_tambah = ws.append_row(data, value_input_option="RAW")
+        try:
+            rentang = str((hasil_tambah or {}).get("updates", {}).get("updatedRange", ""))
+            cocok_baris = re.search(r"!A(\d+):", rentang)
+            if cocok_baris:
+                st.session_state[ptr_key] = {"ID_Form": data[0], "baris": int(cocok_baris.group(1)),
+                                             "Dibuat_Pada": data[6]}
+        except Exception:
+            pass
     return hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
 
 
@@ -2623,6 +2838,7 @@ def ambil_form_aktif_persisten(id_siswa, tutor):
 
 
 def ubah_status_form_aktif(id_siswa, tutor, status):
+    st.session_state.pop(f"_nazma_form_aktif_ptr_{id_siswa}_{tutor}", None)
     ws = _sheet_v2("DB_Form_Tugas_Aktif", FORM_AKTIF_HEADERS)
     for record in baca_records_aman(ws, refresh=True):
         if (str(record.get("ID_Siswa", "")) == str(id_siswa)
@@ -2637,6 +2853,16 @@ def _kunci_autosave_form(id_siswa, tutor):
     ).hexdigest()[:16]
 
 
+# Nilai tombol (mis. "Salin konfigurasi nomor N") tidak boleh disimpan atau dipulihkan:
+# Streamlit melarang penulisan nilai tombol lewat session_state.
+KUNCI_TOMBOL_TIDAK_DISIMPAN = ("_salin_",)
+JEDA_AUTOSAVE_DETIK = 15
+
+
+def _kunci_tombol(nama):
+    return any(m in str(nama) for m in KUNCI_TOMBOL_TIDAK_DISIMPAN)
+
+
 def _ambil_widget_state_form(k):
     """Ambil state kontrol form yang perlu dipulihkan; file uploader disimpan terpisah."""
     prefix_tepat = (
@@ -2644,12 +2870,15 @@ def _ambil_widget_state_form(k):
         f"mode_{k}", f"jumlah_manual_{k}", f"_template_awal_{k}",
         f"in_{k}", f"tm_{k}_", f"tg_{k}_", f"template_pilih_{k}",
         f"template_nama_{k}", f"ps_{k}_", f"fj_{k}", f"fk_{k}",
-        f"fm_{k}", f"ft_{k}", f"fb_{k}"
+        f"fm_{k}", f"ft_{k}", f"fb_{k}",
+        f"bb_cari_{k}", f"bb_mp_{k}", f"bb_kelas_{k}", f"bb_pilih_{k}_", f"ubah_cfg_{k}"
     )
     prefix_awalan = f"cfg_{k}_"
     hasil = {}
     for key, value in list(st.session_state.items()):
         nama = str(key)
+        if _kunci_tombol(nama):
+            continue
         if nama.startswith(prefix_awalan) or any(
             nama == p or (p.endswith("_") and nama.startswith(p))
             for p in prefix_tepat
@@ -3089,6 +3318,7 @@ KATEGORI_PR = "📌 PR (dikerjakan di rumah)"
 SUMBER_BANK = "Bank Soal Bersama (Spreadsheet)"
 SUMBER_DRIVE = "Link Google Drive / Flipbook"
 SUMBER_UPLOAD = "Upload dari perangkat"
+SUMBER_BERKAS = "Bank Berkas Soal (PDF/Gambar)"
 
 
 TASK_MODE_MATERI = "Materi saja"
@@ -3337,7 +3567,7 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
             # Untuk tugas yang sumber soalnya berupa PDF/link/lampiran, aplikasi hanya
             # menyediakan lembar jawaban. Pertanyaan dan teks opsi tetap berada di sumber.
             sumber_tugas = str(t.get("Sumber", "") or "").strip()
-            soal_dari_lampiran = sumber_tugas in (SUMBER_UPLOAD, SUMBER_DRIVE)
+            soal_dari_lampiran = sumber_tugas in (SUMBER_UPLOAD, SUMBER_DRIVE, SUMBER_BERKAS)
             data_soal_tidak_lengkap = False
             for i, soal in enumerate(daftar_soal, 1):
                 qkey = f"student_{task_id}_{i}"
@@ -3757,7 +3987,7 @@ if peran == "🎓 Siswa":
             st.session_state.pop("menu_navigasi_siswa", None)
         menu_siswa = st.sidebar.radio(
             "MENU SISWA",
-            ["🏠 Beranda", "📝 Tugas", "📌 PR", "📝 Hasil Penilaian", "📈 Riwayat Belajar"],
+            ["🏠 Beranda", "📝 Tugas", "📌 PR", "📝 Hasil Penilaian", "📈 Riwayat Belajar", "🔐 Keamanan"],
             label_visibility="visible",
             key="menu_navigasi_siswa"
         )
@@ -3852,6 +4082,25 @@ if peran == "🎓 Siswa":
                     st.divider()
             else:
                 st.info("Belum ada hasil penilaian dari Tutor.")
+
+        elif menu_siswa == "🔐 Keamanan":
+            st.markdown("### 🔐 Keamanan Akun")
+            st.caption("Ubah PIN akunmu sendiri. ID Siswa tidak berubah. Jangan bagikan PIN kepada siapa pun.")
+            akun_siswa_aktif = None
+            if st.session_state.get("siswa_akun_baris"):
+                akun_siswa_aktif = next((
+                    r for r in baca_records_aman(get_worksheet("Akun_Pengguna"))
+                    if int(r.get("_baris", 0) or 0) == int(st.session_state.siswa_akun_baris)
+                ), None)
+            if akun_siswa_aktif:
+                form_ganti_pin(
+                    get_worksheet("Akun_Pengguna"), akun_siswa_aktif,
+                    "PIN_Password", "siswa",
+                    identity_field="ID_User",
+                    identity_value=st.session_state.get("siswa_user_id", "")
+                )
+            else:
+                st.warning("Data akun belum ditemukan. Silakan logout lalu login kembali.")
 
         elif menu_siswa == "📈 Riwayat Belajar":
             st.markdown("### 📈 Riwayat Belajar")
@@ -4441,8 +4690,13 @@ elif peran == "🔒 Pengajar / Tutor":
                     tutor_form = st.session_state.get("tutor_nama", "")
                     recovery_key = _kunci_autosave_form(id_siswa_form, tutor_form)
                     keputusan_key = f"_nazma_form_recovery_decided_{recovery_key}"
+                    dicek_key = f"_nazma_form_dicek_{recovery_key}"
+                    pekerjaan_aktif = None
                     try:
-                        pekerjaan_aktif = ambil_form_aktif_persisten(id_siswa_form, tutor_form)
+                        if not st.session_state.get(dicek_key) and not st.session_state.get(keputusan_key):
+                            pekerjaan_aktif = ambil_form_aktif_persisten(id_siswa_form, tutor_form)
+                            if not pekerjaan_aktif:
+                                st.session_state[dicek_key] = True
                     except Exception as exc:
                         pekerjaan_aktif = None
                         st.error(f"Status pekerjaan terakhir tidak dapat diperiksa dari Google Sheets: {exc}")
@@ -4473,6 +4727,8 @@ elif peran == "🔒 Pengajar / Tutor":
                         st.session_state["form_n"] = n_pulih
                         k_pulih = f"{selected_siswa}_{n_pulih}"
                         for nama_widget, nilai_widget in (payload_pulih.get("widget_state", {}) or {}).items():
+                            if _kunci_tombol(nama_widget):
+                                continue  # draft lama mungkin memuat kunci tombol; jangan ditulis balik
                             st.session_state[nama_widget] = nilai_widget
                         st.session_state[f"_source_identity_{k_pulih}"] = payload_pulih.get("source_identity", "")
                         st.session_state[f"_autosave_files_{k_pulih}"] = payload_pulih.get("files", []) or []
@@ -4491,6 +4747,9 @@ elif peran == "🔒 Pengajar / Tutor":
                         k = f"{selected_siswa}_{n_form}"
                         if st.session_state.pop(f"_nazma_restored_notice_{k}", False):
                             st.success("Pekerjaan terakhir berhasil dipulihkan. Periksa kembali sebelum melanjutkan.")
+                        notice_bank = st.session_state.pop("_nazma_bank_berkas_notice", None)
+                        if notice_bank:
+                            st.info(notice_bank)
 
                         kategori_label = st.radio("Kategori penugasan:", [KATEGORI_SESI, KATEGORI_PR], key=f"kt_{k}")
                         untuk_pr = kategori_label == KATEGORI_PR
@@ -4498,7 +4757,7 @@ elif peran == "🔒 Pengajar / Tutor":
                         judul_tugas = st.text_input("Judul / topik tugas:", key=f"jd_{k}")
                         sumber_tugas = st.radio(
                             "Sumber materi / soal:",
-                            [SUMBER_BANK, SUMBER_DRIVE, SUMBER_UPLOAD],
+                            [SUMBER_BANK, SUMBER_BERKAS, SUMBER_DRIVE, SUMBER_UPLOAD],
                             key=f"sm_{k}",
                             on_change=reset_mode_pengerjaan_widget,
                             args=(k,)
@@ -4511,6 +4770,8 @@ elif peran == "🔒 Pengajar / Tutor":
                         link_tugas = ""
                         file_tugas = []
                         soal_dipilih = []
+                        berkas_files = []
+                        berkas_template = []
 
                         if sumber_tugas == SUMBER_BANK:
                             try:
@@ -4563,6 +4824,13 @@ elif peran == "🔒 Pengajar / Tutor":
                             )
                             if source_ready:
                                 st.caption("Lembar jawaban online akan dibuat otomatis dari soal yang dipilih.")
+
+                        elif sumber_tugas == SUMBER_BERKAS:
+                            hasil_berkas = pilih_berkas_dari_bank(k, st.session_state.get("tutor_nama", ""))
+                            berkas_files = hasil_berkas["files"]
+                            berkas_template = hasil_berkas["template"]
+                            source_ready = bool(berkas_files)
+                            source_identity = "berkas:" + hasil_berkas["id"]
 
                         elif sumber_tugas == SUMBER_DRIVE:
                             link_tugas = st.text_area(
@@ -4655,7 +4923,8 @@ elif peran == "🔒 Pengajar / Tutor":
                         # Jika sumber diganti, dihapus, atau isinya berubah, pilihan mode dan konfigurasi lama
                         # direset agar tidak tertaut ke lampiran yang berbeda.
                         identity_lama = st.session_state.get(source_identity_key)
-                        if identity_lama != source_identity:
+                        identitas_berubah = identity_lama != source_identity
+                        if identitas_berubah:
                             st.session_state.pop(mode_widget_key, None)
                             st.session_state.pop(f"jumlah_manual_{k}", None)
                             st.session_state.pop(f"konfigurasi_manual_{k}", None)
@@ -4664,6 +4933,10 @@ elif peran == "🔒 Pengajar / Tutor":
                                 if str(widget_key).startswith(f"cfg_{k}_"):
                                     st.session_state.pop(widget_key, None)
                             st.session_state[source_identity_key] = source_identity
+                            if sumber_tugas == SUMBER_BERKAS and berkas_template:
+                                # Template yang melekat pada berkas dimuat otomatis: tidak perlu konfigurasi ulang.
+                                st.session_state[f"_template_awal_{k}"] = berkas_template
+                                st.session_state[f"jumlah_manual_{k}"] = len(berkas_template) or 10
 
                         # Format sumber (Bank, Drive/Flipbook, PDF, JPG, PNG, dll.)
                         # tidak menentukan mode pengerjaan. Tutor memilih Online atau Offline.
@@ -4674,7 +4947,23 @@ elif peran == "🔒 Pengajar / Tutor":
 
                         # Konfigurasi custom memakai kartu per nomor, bukan tabel horizontal.
                         masalah_konfigurasi = []
-                        if sumber_tugas != SUMBER_BANK and source_ready and mode_pengerjaan == TASK_MODE_ONLINE:
+                        gunakan_template_berkas = False
+                        if (sumber_tugas == SUMBER_BERKAS and berkas_template and source_ready
+                                and mode_pengerjaan == TASK_MODE_ONLINE):
+                            ubah_konfigurasi_berkas = st.checkbox(
+                                "Ubah konfigurasi lembar jawaban (opsional)", value=False, key=f"ubah_cfg_{k}"
+                            )
+                            gunakan_template_berkas = not ubah_konfigurasi_berkas
+                            if gunakan_template_berkas:
+                                st.markdown("#### ⚙️ Lembar jawaban dari template berkas")
+                                soal_dipilih = json.loads(json.dumps(berkas_template))
+                                for nomor, satu_soal in enumerate(soal_dipilih, 1):
+                                    masalah = validasi_konfigurasi_soal(satu_soal)
+                                    if masalah:
+                                        masalah_konfigurasi.append(f"Nomor {nomor}: " + "; ".join(masalah))
+                                tampilkan_pratinjau_lembar_jawaban(soal_dipilih)
+                        if (sumber_tugas != SUMBER_BANK and source_ready and mode_pengerjaan == TASK_MODE_ONLINE
+                                and not gunakan_template_berkas):
                             st.markdown("#### ⚙️ Konfigurasi lembar jawaban")
                             st.caption(
                                 "Atur tipe jawaban dan jumlah nomor. Karena sumber soal berasal dari lampiran/link, "
@@ -4804,19 +5093,29 @@ elif peran == "🔒 Pengajar / Tutor":
                             payload_hash = hashlib.sha256(payload_json_form.encode("utf-8")).hexdigest()
                             hash_session_key = f"_nazma_form_autosave_hash_{recovery_key}"
                             if st.session_state.get(hash_session_key) != payload_hash:
-                                try:
-                                    simpan_form_aktif_persisten(
-                                        id_siswa_form, selected_siswa, tutor_form, payload_form
-                                    )
-                                    st.session_state[hash_session_key] = payload_hash
-                                    st.session_state[recovery_key] = payload_form
-                                    st.caption("✓ Pekerjaan sementara tersimpan otomatis.")
-                                except Exception as exc:
-                                    st.error(f"Pekerjaan belum aman tersimpan. Periksa koneksi Google Sheets: {exc}")
+                                ts_key = f"_nazma_form_autosave_ts_{recovery_key}"
+                                sisa_jeda = JEDA_AUTOSAVE_DETIK - (time.time() - float(st.session_state.get(ts_key, 0) or 0))
+                                if sisa_jeda > 0:
+                                    st.caption("⏳ Perubahan terbaru akan tersimpan otomatis pada interaksi berikutnya.")
+                                else:
+                                    try:
+                                        simpan_form_aktif_persisten(
+                                            id_siswa_form, selected_siswa, tutor_form, payload_form
+                                        )
+                                        st.session_state[hash_session_key] = payload_hash
+                                        st.session_state[recovery_key] = payload_form
+                                        st.session_state[ts_key] = time.time()
+                                        st.caption("✓ Pekerjaan sementara tersimpan otomatis.")
+                                    except Exception as exc:
+                                        st.error(f"Pekerjaan belum aman tersimpan. Periksa koneksi Google Sheets: {exc}")
                             else:
                                 st.caption("✓ Pekerjaan tersimpan.")
                         elif st.session_state.get(recovery_key):
                             st.caption("Pekerjaan sebelumnya masih tersimpan sampai Ibu memilih mulai baru atau memindahkannya ke daftar draft.")
+
+                        simpan_bank_pilihan = None
+                        if sumber_tugas == SUMBER_UPLOAD and source_ready:
+                            simpan_bank_pilihan = form_simpan_ke_bank(k, judul_tugas, mapel_tugas)
 
                         tambah_draft = st.button("Tambahkan ke daftar tugas", key=f"tambah_{k}")
 
@@ -4837,6 +5136,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.error("Tanggal dan jam tenggat harus lebih besar dari waktu sekarang.")
                             elif sumber_tugas == SUMBER_BANK and not soal_dipilih:
                                 st.error("Pilih minimal satu soal dari Bank Soal Master.")
+                            elif sumber_tugas == SUMBER_BERKAS and not berkas_files:
+                                st.error("Pilih berkas soal dari Bank Berkas Soal.")
                             elif sumber_tugas != SUMBER_BANK and mode_pengerjaan is None:
                                 st.error("Pilih cara siswa mengerjakan: lembar jawaban online atau upload hasil tulisan tangan.")
                             elif sumber_tugas == SUMBER_DRIVE and not link_list:
@@ -4855,7 +5156,12 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.error("Konfigurasi lembar jawaban belum valid. Periksa kartu soal yang ditandai.")
                             else:
                                 # Lampiran sudah diamankan di Google Drive saat dipilih agar form aktif dapat dipulihkan.
-                                files = list(files_form) if sumber_tugas == SUMBER_UPLOAD else []
+                                if sumber_tugas == SUMBER_UPLOAD:
+                                    files = list(files_form)
+                                elif sumber_tugas == SUMBER_BERKAS:
+                                    files = list(berkas_files)
+                                else:
+                                    files = []
                                 st.session_state[draft_key].append({
                                     "Mapel": mapel_tugas, "Judul": judul_tugas.strip(),
                                     # Kategori PR disimpan di Jenis_Tugas: "PR Online" / "PR Offline"
@@ -4880,6 +5186,24 @@ elif peran == "🔒 Pengajar / Tutor":
                                     st.warning(f"Tugas masuk daftar draft, tetapi status pekerjaan sementara belum diperbarui: {exc}")
                                 st.session_state.pop(f"_nazma_form_autosave_hash_{recovery_key}", None)
                                 st.session_state.pop(f"_autosave_files_{k}", None)
+                                if simpan_bank_pilihan:
+                                    try:
+                                        hasil_bank = simpan_berkas_ke_bank(
+                                            simpan_bank_pilihan["judul"] or judul_tugas.strip(),
+                                            simpan_bank_pilihan["mapel"], simpan_bank_pilihan["kelas"],
+                                            simpan_bank_pilihan["topik"], files,
+                                            soal_dipilih if mode_pengerjaan == TASK_MODE_ONLINE else [],
+                                            st.session_state.get("tutor_nama", ""), simpan_bank_pilihan["dibagikan"]
+                                        )
+                                        st.session_state["_nazma_bank_berkas_notice"] = (
+                                            "📚 Berkas " + ("diperbarui di" if hasil_bank["aksi"] == "diperbarui" else "disimpan ke")
+                                            + " Bank Berkas Soal"
+                                            + (" beserta template jawabannya." if hasil_bank["template"] else " (tanpa template jawaban).")
+                                        )
+                                    except Exception as exc:
+                                        st.session_state["_nazma_bank_berkas_notice"] = (
+                                            f"⚠️ Tugas sudah masuk draft, tetapi berkas belum tersimpan ke bank: {exc}"
+                                        )
                                 st.session_state["form_n"] = n_form + 1  # kosongkan isian, siap menambah tugas berikutnya
                                 st.success("Masuk ke daftar draft. Anda bisa menambah tugas atau PR lain (mapel lain / jenis lain), lalu tekan Simpan & Kirim.")
                                 st.rerun()
@@ -5197,14 +5521,45 @@ elif peran == "🔒 Pengajar / Tutor":
         elif menu_tutor == "📊 Portofolio Siswa":
                 st.header("📊 Portofolio & Pemeriksaan Jawaban Siswa")
                 st.subheader("📈 Ringkasan perkembangan siswa")
+                tutor_id_portofolio = str(st.session_state.get("tutor_id", "")).strip()
+                tutor_nama_portofolio = str(st.session_state.get("tutor_nama", "")).strip().casefold()
+
+                def _tugas_milik_tutor_login(t):
+                    # Tugas baru wajib cocok ID tutor; tugas lama hanya cocok lewat nama tutor tersimpan.
+                    pemilik_id = str(t.get("ID_Tutor", "")).strip()
+                    if pemilik_id:
+                        return bool(tutor_id_portofolio) and pemilik_id == tutor_id_portofolio
+                    return bool(tutor_nama_portofolio) and str(t.get("Tutor", "")).strip().casefold() == tutor_nama_portofolio
+
                 try:
-                    nama_siswa_laporan = st.selectbox(
-                        "Pilih siswa untuk melihat ringkasan:",
-                        ["— Pilih siswa —"] + get_siswa_aktif(),
-                        key="pilih_siswa_laporan_736"
-                    )
+                    st.caption("Ringkasan hanya menampilkan tugas yang Anda berikan sendiri.")
+                    kata_cari_siswa = st.text_input(
+                        "Ketik nama siswa (minimal 3 huruf):",
+                        key="cari_siswa_laporan_736"
+                    ).strip()
+                    nama_siswa_laporan = "— Pilih siswa —"
+                    if kata_cari_siswa:
+                        if len(kata_cari_siswa) < 3:
+                            st.caption("Ketik minimal 3 huruf untuk mencari.")
+                        else:
+                            cocok_nama = sorted({
+                                n for n in get_siswa_aktif()
+                                if kata_cari_siswa.casefold() in n.casefold()
+                            })
+                            if not cocok_nama:
+                                st.info("Tidak ada siswa aktif dengan nama tersebut.")
+                            elif len(cocok_nama) == 1:
+                                nama_siswa_laporan = cocok_nama[0]
+                            else:
+                                nama_siswa_laporan = st.selectbox(
+                                    "Ada beberapa nama yang cocok, pilih salah satu:",
+                                    ["— Pilih siswa —"] + cocok_nama[:8],
+                                    key=f"pilih_cocok_laporan_736_{kata_cari_siswa.casefold()}"
+                                )
+                                if len(cocok_nama) > 8:
+                                    st.caption("Hanya 8 nama pertama yang ditampilkan. Ketik nama lebih lengkap untuk mempersempit.")
                     if nama_siswa_laporan != "— Pilih siswa —":
-                        semua_tugas_laporan = get_student_tasks()
+                        semua_tugas_laporan = [x for x in get_student_tasks() if _tugas_milik_tutor_login(x)]
                         semua_jawaban_laporan = baca_jawaban_tergabung(get_worksheet("DB_Jawaban_Siswa"))
                         semua_nilai_laporan = baca_nilai_tugas_terpadu()
                         tampilkan_laporan_perkembangan(
