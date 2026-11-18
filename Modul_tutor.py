@@ -48,7 +48,7 @@ MAPEL_OPTIONS = [
 # KONFIGURASI HALAMAN
 # =========================================================
 st.set_page_config(
-    page_title="Portal Bimbel Rumah Nazma - Tahap 7.46",
+    page_title="Portal Bimbel Rumah Nazma - Tahap 7.47",
     layout="wide",
     page_icon="🎓",
     initial_sidebar_state="expanded"
@@ -3720,8 +3720,9 @@ if peran == "🎓 Siswa":
 
         try:
             nilai_records = baca_nilai_tugas_terpadu()
-        except Exception:
+        except Exception as exc_nilai:
             nilai_records = []
+            st.warning(f"Data nilai belum dapat dibaca: {exc_nilai}")
         nilai_ids = {kunci_nilai_penugasan(n) for n in nilai_records if all(kunci_nilai_penugasan(n))}
 
         tugas_pr = sorted([t for t in tugas_anak if adalah_pr(t)], key=lambda x: str(x.get("Tenggat", "")) or "9999")
@@ -3830,14 +3831,24 @@ if peran == "🎓 Siswa":
         elif menu_siswa == "📝 Hasil Penilaian":
             st.markdown("### 📝 Hasil Penilaian Tutor")
             info_tugas = {str(t.get("ID_Tugas", "")).strip(): t for t in tugas_anak}
-            hasil_nilai = [n for n in nilai_records if str(n.get("ID_Tugas", "")).strip() in info_tugas]
+            def _id_tugas_nilai(n):
+                # Skema nilai aktif memakai ID_Penugasan; ID_Tugas dipertahankan untuk data lama.
+                return str(n.get("ID_Penugasan", n.get("ID_Tugas", ""))).strip()
+            hasil_nilai = [
+                n for n in nilai_records
+                if _id_tugas_nilai(n) in info_tugas
+                and str(n.get("ID_Siswa", "")).strip().casefold() == siswa_id_aktif.casefold()
+            ]
             if hasil_nilai:
                 for n in reversed(hasil_nilai):
-                    tg = info_tugas.get(str(n.get("ID_Tugas", "")).strip(), {})
-                    st.markdown(f"**{tg.get('Mapel', 'Tugas')} — {tg.get('Judul_Tugas') or n.get('ID_Tugas', '')}**")
+                    tg = info_tugas.get(_id_tugas_nilai(n), {})
+                    st.markdown(f"**{tg.get('Mapel', 'Tugas')} — {tg.get('Judul_Tugas') or _id_tugas_nilai(n)}**")
                     st.metric("Nilai", n.get("Nilai", "-"))
-                    st.write(f"Catatan Tutor: {n.get('Catatan', '-')}")
-                    st.caption(f"Diperiksa oleh {n.get('Tutor', '-')} · {n.get('Waktu_Penilaian', '-')}")
+                    umpan_balik = str(n.get("Umpan_Balik", n.get("Catatan", "")) or "").strip()
+                    st.write(f"Catatan Tutor: {umpan_balik or '-'}")
+                    nama_tutor_nilai = tg.get("Tutor") or n.get("Tutor") or "-"
+                    waktu_nilai = n.get("Tanggal_Penilaian", n.get("Waktu_Penilaian", "-"))
+                    st.caption(f"Diperiksa oleh {nama_tutor_nilai} · {waktu_nilai}")
                     st.divider()
             else:
                 st.info("Belum ada hasil penilaian dari Tutor.")
@@ -6355,7 +6366,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                         "Aktivitas": tugas.get("Judul_Tugas", id_tugas_nilai or "-"),
                         "Nilai": n.get("Nilai", "-"),
                         "Evaluasi Tutor": n.get("Umpan_Balik", n.get("Catatan", "-")),
-                        "Tutor": n.get("ID_Tutor_Penilai", n.get("Tutor", "-"))
+                        "Tutor": tugas.get("Tutor") or n.get("Tutor") or n.get("ID_Tutor_Penilai", "-")
                     })
             except Exception as exc:
                 st.warning(f"Nilai anak belum dapat dibaca dari sistem: {exc}")
