@@ -48,7 +48,7 @@ MAPEL_OPTIONS = [
 # KONFIGURASI HALAMAN
 # =========================================================
 st.set_page_config(
-    page_title="Portal Bimbel Rumah Nazma - Tahap 7.51",
+    page_title="Portal Bimbel Rumah Nazma - Tahap 7.53",
     layout="wide",
     page_icon="🎓",
     initial_sidebar_state="expanded"
@@ -657,6 +657,22 @@ def get_siswa_aktif():
         if str(s.get("Status", "Aktif")).strip().lower() not in ["nonaktif", "tidak aktif"]
         and str(s.get("Nama_Lengkap", "")).strip()
     ]
+
+
+def cari_siswa_terbatas(kata, daftar, minimal=3, maksimal=8):
+    """Cari nama siswa dengan ketikan. Mengembalikan (hasil, pesan); daftar penuh tidak pernah ditampilkan."""
+    kata = str(kata or "").strip().casefold()
+    if not kata:
+        return [], ""
+    if len(kata) < minimal:
+        return [], f"Ketik minimal {minimal} huruf untuk mencari."
+    cocok = sorted({str(n).strip() for n in (daftar or []) if str(n).strip() and kata in str(n).casefold()},
+                   key=str.casefold)
+    if not cocok:
+        return [], "Siswa aktif tidak ditemukan."
+    if len(cocok) > maksimal:
+        return cocok[:maksimal], f"Hanya {maksimal} nama pertama yang ditampilkan. Ketik nama lebih lengkap untuk mempersempit."
+    return cocok, ""
 
 
 def get_siswa_record_by_nama(nama):
@@ -1956,6 +1972,226 @@ def tampilkan_panel_offline_tutor(tutor_id, tutor_nama, daftar_tugas, jawaban_re
                     st.error(f"Sesi belum dapat dibuka ulang: {exc}")
 
 
+# =========================================================
+# EVALUASI SUSULAN: mengisi jurnal/evaluasi sesi yang terlewat
+# Memakai sheet dan tata letak kolom yang sama dengan form "Jurnal dan Evaluasi Sesi".
+# =========================================================
+JURNAL_SESI_HEADERS = ["ID_Sesi", "Tanggal", "Nama_Siswa", "Tutor", "Kondisi_Siswa", "Keaktifan",
+                       "Kendala_Umum", "Rekomendasi", "Handover", "Dokumentasi"]
+EVALUASI_MAPEL_HEADERS = ["ID_Evaluasi", "ID_Sesi", "Tanggal", "Nama_Siswa", "Tutor", "Mapel", "Materi",
+                          "Target", "Capaian", "Penguatan", "Nilai"]
+BATAS_HARI_SUSULAN = 30
+
+
+def _tanggal_dari_teks(teks):
+    try:
+        return datetime.strptime(str(teks or "").strip()[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def sesi_belum_dievaluasi(id_tutor, nama_tutor, hari_ini, batas_hari=BATAS_HARI_SUSULAN):
+    """Sesi 'Hadir' milik tutor dalam batas_hari terakhir yang belum memiliki jurnal sesi."""
+    # Hanya membaca: memakai worksheet ber-cache agar pengingat di Beranda tidak membebani API.
+    hadir = baca_records_aman(get_or_create_worksheet("Kehadiran_Sesi", KEHADIRAN_HEADERS, rows="3000", cols="12"))
+    nama_by_id = {
+        str(s.get("ID_Siswa", "")).strip(): str(s.get("Nama_Lengkap", "")).strip()
+        for s in baca_records_aman(get_worksheet("Data_Siswa"))
+    }
+    jurnal = baca_records_aman(get_or_create_worksheet("Jurnal_Sesi_Tutor_v2", JURNAL_SESI_HEADERS))
+    nama_login = str(nama_tutor or "").strip().casefold()
+    sudah = {
+        (str(j.get("Tanggal", "")).strip()[:10], str(j.get("Nama_Siswa", "")).strip().casefold())
+        for j in jurnal if str(j.get("Tutor", "")).strip().casefold() == nama_login
+    }
+    batas = hari_ini - timedelta(days=batas_hari)
+    hasil, terlihat = [], set()
+    for r in hadir:
+        if str(r.get("ID_Tutor", "")).strip() != str(id_tutor or "").strip() or not str(id_tutor or "").strip():
+            continue
+        if str(r.get("Status_Kehadiran", "")).strip().casefold() != "hadir":
+            continue
+        tgl = _tanggal_dari_teks(r.get("Tanggal_Sesi"))
+        nama = nama_by_id.get(str(r.get("ID_Siswa", "")).strip(), "")
+        if not tgl or not nama or tgl < batas or tgl > hari_ini:
+            continue
+        kunci = (tgl.strftime("%Y-%m-%d"), nama.casefold())
+        if kunci in sudah or kunci in terlihat:
+            continue
+        terlihat.add(kunci)
+        hasil.append({"tanggal": tgl, "nama": nama, "id_siswa": str(r.get("ID_Siswa", "")).strip()})
+    return sorted(hasil, key=lambda x: (-x["tanggal"].toordinal(), x["nama"].casefold()))
+
+
+def simpan_jurnal_evaluasi_sesi(tanggal, nama_siswa, tutor, kondisi, keaktifan, kendala,
+                                rekomendasi, handover, dokumentasi, evaluasi_mapel):
+    """Simpan jurnal sesi dan evaluasi per mapel. Menolak jurnal ganda pada siswa, tanggal, dan tutor yang sama."""
+    tgl = tanggal.strftime("%Y-%m-%d")
+    ws_sesi = get_or_create_worksheet("Jurnal_Sesi_Tutor_v2", JURNAL_SESI_HEADERS)
+    for j in baca_records_aman(ws_sesi, refresh=True):
+        if (str(j.get("Tanggal", "")).strip()[:10] == tgl
+                and str(j.get("Nama_Siswa", "")).strip().casefold() == str(nama_siswa).strip().casefold()
+                and str(j.get("Tutor", "")).strip().casefold() == str(tutor).strip().casefold()):
+            raise ValueError("Jurnal untuk siswa dan tanggal ini sudah ada, jadi tidak disimpan ganda.")
+    id_sesi = "SES-" + uuid.uuid4().hex[:10].upper()
+    ws_sesi.append_row([id_sesi, tgl, nama_siswa, tutor, kondisi, keaktifan, kendala,
+                        rekomendasi, handover, dokumentasi])
+    gagal_evaluasi = None
+    try:
+        ws_eval = get_or_create_worksheet("Evaluasi_Mapel_Tutor_v2", EVALUASI_MAPEL_HEADERS)
+        baris = [
+            ["EVL-" + uuid.uuid4().hex[:10].upper(), id_sesi, tgl, nama_siswa, tutor, mp,
+             ev.get("Materi", ""), ev.get("Target", ""), ev.get("Capaian", ""),
+             ev.get("Penguatan", ""), ev.get("Nilai", "")]
+            for mp, ev in (evaluasi_mapel or {}).items()
+        ]
+        if baris:
+            ws_eval.append_rows(baris, value_input_option="RAW")
+    except Exception as exc:
+        gagal_evaluasi = exc
+    _baca_values_cache.clear()
+    return id_sesi, gagal_evaluasi
+
+
+def unggah_dokumentasi_evaluasi(daftar_file):
+    """Unggah foto/video dokumentasi ke Drive. Mengembalikan (entri 'jenis::url', daftar peringatan)."""
+    entri, peringatan = [], []
+    for file_doc in list(daftar_file or []):
+        if len(file_doc.getvalue()) > 30 * 1024 * 1024:
+            peringatan.append(f"{file_doc.name} melebihi batas 30 MB dan tidak diunggah.")
+            continue
+        try:
+            url_doc = upload_lampiran_ke_drive(
+                file_doc.getvalue(), file_doc.name, file_doc.type or "application/octet-stream"
+            )
+            entri.append(f"{jenis_dari_mime(file_doc.type, file_doc.name)}::{url_doc}")
+        except Exception as exc:
+            peringatan.append(f"Lampiran {file_doc.name} gagal diunggah: {exc}")
+    return entri, peringatan
+
+
+def _form_evaluasi_susulan(nama_siswa, tanggal, tutor):
+    kunci = f"{nama_siswa}_{tanggal.strftime('%Y%m%d')}"
+    st.markdown(f"#### Evaluasi sesi {nama_siswa} · {tanggal.strftime('%d-%m-%Y')}")
+    mapel = st.multiselect("Mata pelajaran yang diajarkan:", MAPEL_OPTIONS, key=f"evs_mapel_{kunci}")
+    with st.form(f"evs_form_{kunci}"):
+        evaluasi_mapel = {}
+        for idx, mp in enumerate(mapel):
+            st.markdown(f"**{mp}**")
+            materi = st.text_input(f"Materi {mp}", key=f"evs_materi_{kunci}_{idx}")
+            target = st.text_input(f"Target belajar {mp}", key=f"evs_target_{kunci}_{idx}")
+            capaian = st.text_area(f"Kompetensi yang dikuasai / hasil belajar {mp}", key=f"evs_capaian_{kunci}_{idx}")
+            penguatan = st.text_area(f"Bagian yang perlu penguatan {mp}", key=f"evs_penguatan_{kunci}_{idx}")
+            nilai = st.text_input(f"Nilai latihan (opsional) {mp}", key=f"evs_nilai_{kunci}_{idx}")
+            evaluasi_mapel[mp] = {"Materi": materi, "Target": target, "Capaian": capaian,
+                                  "Penguatan": penguatan, "Nilai": nilai}
+        kondisi = st.selectbox("Kondisi siswa:", ["Baik", "Cukup", "Kurang fokus", "Lelah", "Perlu perhatian khusus"],
+                               key=f"evs_kondisi_{kunci}")
+        keaktifan = st.selectbox("Keaktifan siswa:", ["Sangat aktif", "Aktif", "Cukup aktif", "Pasif"],
+                                 key=f"evs_aktif_{kunci}")
+        kendala = st.text_area("Kendala selama sesi:", key=f"evs_kendala_{kunci}")
+        rekomendasi = st.text_area("Rekomendasi / tindak lanjut:", key=f"evs_rekom_{kunci}")
+        handover = st.text_area("Catatan untuk tutor berikutnya (handover):", key=f"evs_handover_{kunci}")
+        dokumentasi = st.text_input("Link dokumentasi (opsional):", key=f"evs_dok_{kunci}")
+        file_dok = st.file_uploader(
+            "Lampiran evaluasi tutor (foto/video):",
+            type=["jpg", "jpeg", "png", "webp", "mp4", "mov", "webm", "m4v"],
+            accept_multiple_files=True, key=f"evs_file_{kunci}"
+        )
+        kirim = st.form_submit_button("💾 Simpan Evaluasi Susulan")
+    if not kirim:
+        return
+    if not mapel:
+        st.error("Pilih minimal satu mata pelajaran yang diajarkan pada sesi ini.")
+        return
+    try:
+        daftar_dok = [dokumentasi.strip()] if dokumentasi.strip() else []
+        entri, peringatan = unggah_dokumentasi_evaluasi(file_dok)
+        daftar_dok += entri
+        id_sesi, gagal = simpan_jurnal_evaluasi_sesi(
+            tanggal, nama_siswa, tutor, kondisi, keaktifan, kendala, rekomendasi, handover,
+            " | ".join(daftar_dok), evaluasi_mapel
+        )
+        pesan = f"✅ Evaluasi susulan {nama_siswa} tanggal {tanggal.strftime('%d-%m-%Y')} tersimpan (ID sesi {id_sesi})."
+        if gagal:
+            pesan += f" ⚠️ Evaluasi per mapel belum seluruhnya tersimpan ({gagal}). Jangan kirim ulang; catat ID sesi ini."
+        if peringatan:
+            pesan += " " + " ".join(peringatan)
+        st.session_state["_evs_notice"] = pesan
+        st.rerun()
+    except ValueError as exc:
+        st.error(str(exc))
+    except Exception as exc:
+        if exc.__class__.__name__ in ("RerunException", "StopException"):
+            raise
+        st.error(f"Evaluasi belum tersimpan: {exc}. Periksa riwayat sebelum mencoba lagi.")
+
+
+def tampilkan_evaluasi_susulan(id_tutor, nama_tutor):
+    st.subheader("🗓️ Evaluasi Susulan")
+    st.caption(
+        f"Isi lembar evaluasi sesi yang terlewat, sampai {BATAS_HARI_SUSULAN} hari ke belakang. "
+        "Hasilnya tersimpan sama seperti jurnal dan evaluasi sesi biasa."
+    )
+    notice = st.session_state.pop("_evs_notice", None)
+    if notice:
+        st.success(notice)
+    hari_ini = waktu_lokal().date()
+    try:
+        tertunda = sesi_belum_dievaluasi(id_tutor, nama_tutor, hari_ini)
+    except Exception as exc:
+        st.error(f"Daftar sesi belum dapat dibaca: {exc}")
+        tertunda = []
+    cara = st.radio(
+        "Pilih sesi dari:", ["Daftar kehadiran yang belum dievaluasi", "Pilih manual (siswa dan tanggal)"],
+        horizontal=True, key="evs_cara"
+    )
+    nama_target, tanggal_target = None, None
+    if cara.startswith("Daftar"):
+        if not tertunda:
+            st.info(f"Semua sesi hadir dalam {BATAS_HARI_SUSULAN} hari terakhir sudah punya evaluasi.")
+        else:
+            peta = {f"{x['tanggal'].strftime('%d-%m-%Y')} · {x['nama']}": x for x in tertunda}
+            st.caption(f"{len(tertunda)} sesi belum dievaluasi.")
+            pilih = st.selectbox("Pilih sesi:", list(peta.keys()), key="evs_pilih")
+            nama_target, tanggal_target = peta[pilih]["nama"], peta[pilih]["tanggal"]
+    else:
+        kata = st.text_input("Ketik nama siswa (minimal 3 huruf):", key="evs_cari").strip()
+        if kata and len(kata) < 3:
+            st.caption("Ketik minimal 3 huruf untuk mencari.")
+        elif kata:
+            try:
+                cocok = sorted({n for n in get_siswa_aktif() if kata.casefold() in n.casefold()})
+            except Exception as exc:
+                st.error(f"Daftar siswa belum dapat dibaca: {exc}")
+                cocok = []
+            if not cocok:
+                st.info("Tidak ada siswa aktif dengan nama tersebut.")
+            else:
+                nama_target = cocok[0] if len(cocok) == 1 else st.selectbox(
+                    "Ada beberapa nama yang cocok, pilih salah satu:", cocok[:8], key=f"evs_cocok_{kata.casefold()}"
+                )
+        if nama_target:
+            tanggal_target = st.date_input(
+                "Tanggal sesi:", value=hari_ini - timedelta(days=1),
+                min_value=hari_ini - timedelta(days=BATAS_HARI_SUSULAN), max_value=hari_ini, key="evs_tanggal"
+            )
+    if nama_target and tanggal_target:
+        _form_evaluasi_susulan(nama_target, tanggal_target, nama_tutor)
+
+
+def baca_evaluasi_mapel_anak(nama_anak, batas=50):
+    """Evaluasi per mapel untuk satu anak, terbaru dulu. Catatan internal (handover, kendala) tidak ikut."""
+    try:
+        rows = baca_records_aman(get_worksheet("Evaluasi_Mapel_Tutor_v2"))
+    except gspread.WorksheetNotFound:
+        return []
+    target = str(nama_anak or "").strip().casefold()
+    cocok = [r for r in rows if target and str(r.get("Nama_Siswa", "")).strip().casefold() == target]
+    cocok.sort(key=lambda r: str(r.get("Tanggal", "")), reverse=True)
+    return cocok[:batas]
+
+
 def rekonsiliasi_sesi_aktif_siswa(siswa_id, status_by_task, nilai_ids):
     """Tutup hanya sesi aktif yang tugasnya sudah terbukti terkirim atau dinilai.
 
@@ -2817,6 +3053,112 @@ def simpan_berkas_ke_bank(judul, mapel, kelas, topik, lampiran, konfigurasi, tut
     _baca_values_cache.clear()
     st.session_state.pop("_nazma_bank_berkas_cache", None)
     return {"aksi": "diperbarui" if ada else "baru", "template": template_ok, "id": data[0]}
+
+
+def daftar_berkas_milik(tutor):
+    """Semua berkas bank milik tutor (aktif dan nonaktif), terbaru dulu."""
+    ws = _sheet_v2("DB_Bank_Berkas_Soal", BANK_BERKAS_HEADERS)
+    nama = str(tutor or "").strip()
+    milik = [r for r in baca_records_aman(ws, refresh=True) if str(r.get("Pemilik_Tutor", "")).strip() == nama]
+    return sorted(milik, key=lambda r: str(r.get("Diperbarui_Pada", "")), reverse=True)
+
+
+def perbarui_berkas_bank(id_berkas, tutor, judul, mapel, kelas, topik, dibagikan, aktif, hapus_template=False):
+    """Ubah data berkas bank. Hanya pemilik yang boleh; berkas tidak pernah dihapus, hanya dinonaktifkan."""
+    judul = str(judul or "").strip()
+    if not judul:
+        raise ValueError("Judul berkas wajib diisi.")
+    ws = _sheet_v2("DB_Bank_Berkas_Soal", BANK_BERKAS_HEADERS)
+    rec = next((r for r in baca_records_aman(ws, refresh=True)
+                if str(r.get("ID_Berkas", "")).strip() == str(id_berkas).strip()), None)
+    if not rec:
+        raise ValueError("Berkas tidak ditemukan.")
+    if str(rec.get("Pemilik_Tutor", "")).strip() != str(tutor or "").strip():
+        raise ValueError("Hanya pemilik berkas yang dapat mengubahnya.")
+    nilai = dict(rec)
+    nilai.update({
+        "Judul": judul, "Mapel": str(mapel or ""), "Kelas_Jenjang": str(kelas or ""),
+        "Bab_Atau_Topik": str(topik or "").strip(), "Dibagikan": "Ya" if dibagikan else "Tidak",
+        "Status": "Aktif" if aktif else "Nonaktif",
+        "Diperbarui_Pada": waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    if hapus_template:
+        nilai["Konfigurasi_JSON"], nilai["Jumlah_Soal"] = "[]", 0
+    data = [nilai.get(h, "") for h in BANK_BERKAS_HEADERS]
+    ws.update(f"A{rec['_baris']}:O{rec['_baris']}", [data], value_input_option="RAW")
+    _baca_values_cache.clear()
+    st.session_state.pop("_nazma_bank_berkas_cache", None)
+    return True
+
+
+def tampilkan_kelola_bank_berkas(tutor):
+    st.subheader("📚 Bank Berkas Saya")
+    st.caption(
+        "Berkas yang Anda simpan ke bank. Berkas yang dinonaktifkan tidak muncul saat memilih sumber soal, "
+        "sedangkan tugas yang sudah dibuat tidak terpengaruh."
+    )
+    notice = st.session_state.pop("_bbs_notice", None)
+    if notice:
+        st.success(notice)
+    try:
+        milik = daftar_berkas_milik(tutor)
+    except Exception as exc:
+        st.error(f"Bank Berkas belum dapat dibaca: {exc}")
+        return
+    if not milik:
+        st.info("Anda belum menyimpan berkas ke bank. Saat membuat tugas dari 'Upload dari perangkat', "
+                "buka bagian 'Simpan ke Bank Berkas Soal'.")
+        return
+    peta = {}
+    for r in milik:
+        status = "Aktif" if str(r.get("Status", "")).strip() == "Aktif" else "Nonaktif"
+        label = f"{status} | {r.get('Judul', '')} | {r.get('Mapel', '')} | {r.get('Kelas_Jenjang', '')} | {r.get('ID_Berkas', '')}"
+        peta[label] = r
+    pilih = st.selectbox("Pilih berkas:", list(peta.keys()), key="bbs_pilih")
+    r = peta[pilih]
+    id_berkas = str(r.get("ID_Berkas", "")).strip()
+    for lb in _json_aman(r.get("Lampiran_JSON", ""), []):
+        if isinstance(lb, dict) and str(lb.get("url", "")).startswith(("http://", "https://")):
+            st.markdown(f"📎 [{lb.get('name', 'berkas')}]({lb['url']})")
+    try:
+        jumlah_template = int(r.get("Jumlah_Soal", 0) or 0)
+    except (ValueError, TypeError):
+        jumlah_template = 0
+    st.caption(f"Template lembar jawaban: {jumlah_template} soal" if jumlah_template else "Template lembar jawaban: belum ada")
+    mapel_sekarang = str(r.get("Mapel", "")).strip()
+    opsi_mapel = list(MAPEL_OPTIONS)
+    if mapel_sekarang and mapel_sekarang not in opsi_mapel:
+        opsi_mapel = [mapel_sekarang] + opsi_mapel
+    kelas_sekarang = str(r.get("Kelas_Jenjang", "")).strip()
+    opsi_kelas = list(KELAS_BANK_OPTIONS)
+    if kelas_sekarang and kelas_sekarang not in opsi_kelas:
+        opsi_kelas = [kelas_sekarang] + opsi_kelas
+    with st.form(f"bbs_form_{id_berkas}"):
+        judul = st.text_input("Judul:", value=str(r.get("Judul", "")), key=f"bbs_judul_{id_berkas}")
+        mapel = st.selectbox("Mapel:", opsi_mapel, index=opsi_mapel.index(mapel_sekarang) if mapel_sekarang in opsi_mapel else 0,
+                             key=f"bbs_mapel_{id_berkas}")
+        kelas = st.selectbox("Kelas / jenjang:", opsi_kelas, index=opsi_kelas.index(kelas_sekarang) if kelas_sekarang in opsi_kelas else 0,
+                             key=f"bbs_kelas_{id_berkas}")
+        topik = st.text_input("Bab / topik:", value=str(r.get("Bab_Atau_Topik", "")), key=f"bbs_topik_{id_berkas}")
+        dibagikan = st.checkbox("Bagikan ke tutor lain", value=str(r.get("Dibagikan", "")).strip().casefold() == "ya",
+                                key=f"bbs_bagikan_{id_berkas}")
+        aktif = st.checkbox("Aktif (tampil di pilihan sumber soal)", value=str(r.get("Status", "")).strip() == "Aktif",
+                            key=f"bbs_aktif_{id_berkas}")
+        hapus_tpl = False
+        if jumlah_template:
+            hapus_tpl = st.checkbox("Hapus template lembar jawaban dari berkas ini", value=False, key=f"bbs_hapus_{id_berkas}")
+        simpan = st.form_submit_button("💾 Simpan perubahan")
+    if simpan:
+        try:
+            perbarui_berkas_bank(id_berkas, tutor, judul, mapel, kelas, topik, dibagikan, aktif, hapus_tpl)
+            st.session_state["_bbs_notice"] = f"✅ Perubahan pada berkas '{judul.strip()}' tersimpan."
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            if exc.__class__.__name__ in ("RerunException", "StopException"):
+                raise
+            st.error(f"Perubahan belum tersimpan: {exc}")
 
 
 def pilih_berkas_dari_bank(k, tutor):
@@ -4485,9 +4827,11 @@ elif peran == "🔒 Pengajar / Tutor":
             [
                 "🏠 Beranda",
                 "📝 Persiapan Sesi & Bank Soal",
+                "📚 Bank Berkas Saya",
                 "📋 Pantau Tugas & PR",
                 "📊 Portofolio Siswa",
                 "🕒 Kehadiran Siswa",
+                "🗓️ Evaluasi Susulan",
                 "📨 Pesan Orang Tua",
                 "⚙️ Pengaturan Akun"
             ],
@@ -4507,6 +4851,14 @@ elif peran == "🔒 Pengajar / Tutor":
         # BERANDA TUTOR - ruang kerja pribadi (sidebar tetap)
         # -------------------------------------------------
         if menu_tutor == "🏠 Beranda":
+            try:
+                jumlah_tertunda = len(sesi_belum_dievaluasi(
+                    st.session_state.get("tutor_id", ""), st.session_state.get("tutor_nama", ""), waktu_lokal().date()
+                ))
+                if jumlah_tertunda:
+                    st.info(f"🗓️ Ada {jumlah_tertunda} sesi yang belum dievaluasi. Buka menu **Evaluasi Susulan** untuk melengkapinya.")
+            except Exception:
+                pass
             id_user_aktif = str(st.session_state.get("tutor_user_id", "")).strip()
             id_tutor_aktif = str(st.session_state.get("tutor_id", "")).strip()
 
@@ -4924,14 +5276,15 @@ elif peran == "🔒 Pengajar / Tutor":
                 siswa_aktif = get_siswa_aktif()
 
                 search_query = st.text_input("🔍 Cari nama siswa yang sedang diajar:", key="tutor_cari_siswa").strip().lower()
-                hasil_pencarian = [x for x in siswa_aktif if search_query in x.lower()] if search_query else []
+                hasil_pencarian, pesan_cari = cari_siswa_terbatas(search_query, siswa_aktif)
                 selected_siswa = None
-                if search_query:
-                    if hasil_pencarian:
-                        pilihan = st.selectbox("Pilih siswa:", hasil_pencarian, key="tutor_pilih_siswa")
-                        selected_siswa = pilihan
-                    else:
-                        st.warning("Siswa aktif tidak ditemukan.")
+                if hasil_pencarian:
+                    pilihan = st.selectbox("Pilih siswa:", hasil_pencarian, key="tutor_pilih_siswa")
+                    selected_siswa = pilihan
+                    if pesan_cari:
+                        st.caption(pesan_cari)
+                elif search_query:
+                    st.warning(pesan_cari or "Siswa aktif tidak ditemukan.")
                 else:
                     st.info("Ketik nama siswa untuk menyiapkan materi dan tugas.")
 
@@ -5715,6 +6068,9 @@ elif peran == "🔒 Pengajar / Tutor":
             # -------------------------------------------------
             # TAB 2: PORTOFOLIO DAN PENILAIAN JAWABAN
             # -------------------------------------------------
+        elif menu_tutor == "📚 Bank Berkas Saya":
+            tampilkan_kelola_bank_berkas(st.session_state.get("tutor_nama", ""))
+
         elif menu_tutor == "📋 Pantau Tugas & PR":
                 st.header("📋 Pantau Tugas & PR")
                 st.caption("Lihat semua tugas dan PR yang pernah diberikan ke seorang siswa, statusnya, dan tenggatnya.")
@@ -5728,10 +6084,9 @@ elif peran == "🔒 Pengajar / Tutor":
                     key="cari_pantau_siswa",
                     placeholder="Ketik nama siswa..."
                 ).strip().lower()
-                hasil_pantau = [
-                    nama for nama in pilihan_pantau
-                    if cari_pantau and cari_pantau in str(nama).lower()
-                ]
+                hasil_pantau, pesan_pantau = cari_siswa_terbatas(cari_pantau, pilihan_pantau)
+                if hasil_pantau and pesan_pantau:
+                    st.caption(pesan_pantau)
                 if cari_pantau and hasil_pantau:
                     nama_pantau = st.selectbox(
                         "Pilih siswa yang cocok:",
@@ -5799,7 +6154,7 @@ elif peran == "🔒 Pengajar / Tutor":
                     except Exception as e:
                         st.error(f"Pantauan belum dapat ditampilkan: {e}")
                 elif cari_pantau:
-                    st.warning("Siswa aktif tidak ditemukan.")
+                    st.warning(pesan_pantau or "Siswa aktif tidak ditemukan.")
                 else:
                     st.info("Ketik nama siswa untuk melihat tugas dan PR.")
 
@@ -6221,6 +6576,9 @@ elif peran == "🔒 Pengajar / Tutor":
                     except Exception as e:
                         st.error(f"Data relasi tutor-siswa belum dapat dibaca: {e}")
 
+
+        elif menu_tutor == "🗓️ Evaluasi Susulan":
+            tampilkan_evaluasi_susulan(st.session_state.get("tutor_id", ""), st.session_state.get("tutor_nama", ""))
 
         elif menu_tutor == "📨 Pesan Orang Tua":
             st.header("📨 Pesan dari Orang Tua")
@@ -7019,6 +7377,22 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                 st.dataframe(pd.DataFrame(data_tabel_ortu), use_container_width=True, hide_index=True)
             else:
                 st.info("Belum ada nilai yang diterbitkan untuk anak ini.")
+
+            st.subheader("📝 Evaluasi Sesi dari Tutor")
+            try:
+                evaluasi_anak = baca_evaluasi_mapel_anak(nama_anak_aktif)
+            except Exception as exc:
+                evaluasi_anak = []
+                st.warning(f"Evaluasi sesi belum dapat dibaca: {exc}")
+            if evaluasi_anak:
+                st.dataframe(pd.DataFrame([{
+                    "Tanggal": e.get("Tanggal", "-"), "Mapel": e.get("Mapel", "-"), "Materi": e.get("Materi", "-"),
+                    "Target": e.get("Target", "-"), "Dikuasai": e.get("Capaian", "-"),
+                    "Perlu penguatan": e.get("Penguatan", "-"), "Nilai latihan": e.get("Nilai", "-"),
+                    "Tutor": e.get("Tutor", "-")
+                } for e in evaluasi_anak]), use_container_width=True, hide_index=True)
+            else:
+                st.info("Belum ada evaluasi sesi dari tutor untuk anak ini.")
 
 
         elif menu_ortu == "⚙️ Pengaturan Akun":
