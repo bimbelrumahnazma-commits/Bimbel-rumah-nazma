@@ -15,7 +15,16 @@ import re
 import hashlib
 import hmac
 import secrets
+import os
 import streamlit.components.v1 as components
+
+
+# Komponen browser khusus untuk mengirim kejadian Focus Alert ke backend Streamlit.
+# Folder nazma_focus_component harus ikut diunggah ke repository Streamlit Cloud.
+NAZMA_FOCUS_COMPONENT = components.declare_component(
+    "nazma_focus_tracker",
+    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "nazma_focus_component")
+)
 
 
 # Daftar mata pelajaran dan program Bimbel Rumah Nazma
@@ -1875,7 +1884,7 @@ def gerbang_sesi_tugas(t, task_id, siswa_id, sesi_aktif_page, expander_state_key
     except ValueError as exc:
         st.error(str(exc))
         return False
-    tampilkan_nazma_focus_alert(task_id, siswa_id)
+    tampilkan_nazma_focus_alert(task_id, siswa_id, t)
     return True
 
 
@@ -4015,47 +4024,136 @@ def label_status(t, status_by_task, nilai_keys):
 
 
 
-def tampilkan_nazma_focus_alert(task_id, siswa_id):
-    task_safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(task_id or "tugas"))
-    siswa_safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(siswa_id or "siswa"))
-    storage_key = f"nazma_focus_{siswa_safe}_{task_safe}"
-    html = r'''<!doctype html>
-<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:transparent;color:#172033}
-#alert{display:none;border:3px solid #991b1b;border-radius:14px;background:linear-gradient(135deg,#fff1f2,#fee2e2);padding:14px;box-shadow:0 5px 18px rgba(127,29,29,.18);animation:pop .28s ease-out}
-#alert.show{display:block}.top{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
-.tag{font-size:11px;font-weight:800;letter-spacing:.08em;color:#fff;background:#b91c1c;border-radius:20px;padding:5px 9px}
-h2{font-size:22px;line-height:1.1;margin:10px 0 6px;color:#991b1b;text-align:center}
-p{font-size:14px;line-height:1.4;margin:5px 0;text-align:center}
-#count{font-size:27px;font-weight:900;text-align:center;color:#991b1b;margin:8px}
-button{display:block;width:100%;border:0;border-radius:10px;padding:12px;background:#991b1b;color:white;font-size:14px;font-weight:800;cursor:pointer}
-.small{font-size:11px;color:#6b3340}@keyframes pop{from{transform:scale(.96);opacity:.5}to{transform:scale(1);opacity:1}}
-@media(prefers-reduced-motion:reduce){#alert{animation:none}}
-</style></head><body>
-<div id="alert" role="alert" aria-live="assertive">
-<div class="top"><span class="tag">🚨 NAZMA FOCUS ALERT</span><strong>PERHATIAN!</strong></div>
-<h2>🚨 KAMU KELUAR DARI MISI! 🚨</h2><p id="message">Halaman pengerjaan tadi ditinggalkan.</p>
-<div id="count">1 KALI</div><p>Yuk, kembali fokus dan lanjutkan tugasmu.</p>
-<button id="back" type="button">🫡 SAYA KEMBALI KE UJIAN!</button>
-<p class="small">Keluar halaman bukan otomatis berarti menyontek.</p></div>
-<script>
-(function(){
- const KEY=__STORAGE_KEY__,box=document.getElementById('alert'),countEl=document.getElementById('count'),message=document.getElementById('message');
- let count=0,hiddenAt=0,pending=false;
- try{count=Math.max(0,parseInt(localStorage.getItem(KEY)||'0',10)||0)}catch(e){}
- function save(){try{localStorage.setItem(KEY,String(count))}catch(e){}}
- function alarm(){count++;save();countEl.textContent=count+' KALI';
-  message.textContent=count===1?'HALO! Fokus kembali ke soal, ya!':count===2?'PERHATIAN! Kamu sudah dua kali meninggalkan halaman tugas!':'ALARM AKTIVITAS! Tutor dapat memeriksa catatan fokus ini.';
-  box.classList.add('show');pending=false;}
- document.addEventListener('visibilitychange',function(){
-  if(document.visibilityState==='hidden'){hiddenAt=Date.now();pending=true}
-  else if(document.visibilityState==='visible'&&pending&&hiddenAt){const elapsed=(Date.now()-hiddenAt)/1000;hiddenAt=0;if(elapsed>=2)alarm();else pending=false;}
- });
- document.getElementById('back').addEventListener('click',function(){box.classList.remove('show')});
-})();
-</script></body></html>'''.replace("__STORAGE_KEY__", json.dumps(storage_key))
-    components.html(html, height=245, scrolling=False)
+FOCUS_ALERT_HEADERS = [
+    "ID_Event", "Waktu_Server", "ID_Siswa", "ID_Tugas", "Nama_Tugas",
+    "ID_Tutor", "Tutor", "Jumlah_Kejadian", "Jenis_Kejadian", "Status_Telegram"
+]
+
+
+def get_focus_alert_worksheet():
+    """Log Focus Alert terpisah; tidak mengubah struktur sheet tugas/jawaban."""
+    ws = get_or_create_worksheet(
+        "Riwayat_Focus_Alert", FOCUS_ALERT_HEADERS,
+        rows="5000", cols=str(len(FOCUS_ALERT_HEADERS))
+    )
+    actual = [str(x).strip() for x in ws.row_values(1)]
+    if actual != FOCUS_ALERT_HEADERS:
+        raise ValueError(
+            "Header Riwayat_Focus_Alert tidak sesuai. Data tidak ditulis. "
+            "Header yang dibutuhkan: " + ", ".join(FOCUS_ALERT_HEADERS)
+        )
+    return ws
+
+
+def kirim_telegram_focus_alert(evento, task_info=None):
+    """Kirim notifikasi server-side. Token Telegram tidak pernah dikirim ke browser."""
+    try:
+        cfg = st.secrets.get("telegram", {})
+        bot_token = str(cfg.get("bot_token", "")).strip()
+        default_chat_id = str(cfg.get("default_chat_id", "")).strip()
+        if not bot_token:
+            return "BELUM_DIKONFIGURASI"
+
+        task_info = task_info or {}
+        tutor_id = str(task_info.get("ID_Tutor", "")).strip()
+        tutor_nama = str(task_info.get("Tutor", "")).strip() or "Tutor belum tercatat"
+        penerima = default_chat_id
+        try:
+            peta_tutor = cfg.get("tutor_chat_ids", {})
+            if tutor_id and peta_tutor and str(peta_tutor.get(tutor_id, "")).strip():
+                penerima = str(peta_tutor.get(tutor_id, "")).strip()
+        except Exception:
+            pass
+        if not penerima:
+            return "CHAT_ID_BELUM_DIATUR"
+
+        task_id = str(task_info.get("ID_Tugas", evento.get("task_id", ""))).strip()
+        judul = str(task_info.get("Judul_Tugas", "Tugas siswa")).strip() or "Tugas siswa"
+        siswa_id = str(evento.get("student_id", "")).strip()
+        jumlah = int(evento.get("count", 1) or 1)
+        waktu = waktu_lokal().strftime("%d-%m-%Y %H:%M:%S WIB")
+        pesan = (
+            "🚨 NAZMA FOCUS ALERT\n"
+            "Terdeteksi siswa meninggalkan halaman pengerjaan.\n\n"
+            f"ID Siswa: {siswa_id}\n"
+            f"Tugas: {judul}\n"
+            f"ID Tugas: {task_id}\n"
+            f"Tutor: {tutor_nama}\n"
+            f"Jumlah kejadian pada perangkat ini: {jumlah} kali\n"
+            f"Waktu diterima server: {waktu}\n\n"
+            "Catatan: kejadian ini bukan bukti otomatis menyontek; periksa konteksnya."
+        )
+        response = requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            data={"chat_id": penerima, "text": pesan, "disable_web_page_preview": True},
+            timeout=10
+        )
+        response.raise_for_status()
+        result = response.json()
+        if not result.get("ok"):
+            return "GAGAL_TELEGRAM"
+        return "TERKIRIM"
+    except Exception:
+        # Jangan tampilkan detail token, URL bot, atau respons privat ke layar siswa.
+        return "GAGAL_TELEGRAM"
+
+
+def catat_focus_alert_server(evento, task_info=None):
+    """Catat event dahulu, lalu kirim Telegram dan perbarui status notifikasinya."""
+    task_info = task_info or {}
+    ws = get_focus_alert_worksheet()
+    hasil_append = ws.append_row([
+        str(evento.get("event_id", "")),
+        waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"),
+        str(evento.get("student_id", "")),
+        str(task_info.get("ID_Tugas", evento.get("task_id", ""))),
+        str(task_info.get("Judul_Tugas", "")),
+        str(task_info.get("ID_Tutor", "")),
+        str(task_info.get("Tutor", "")),
+        int(evento.get("count", 1) or 1),
+        str(evento.get("event_type", "tab_hidden_return")),
+        "MENUNGGU"
+    ], value_input_option="RAW")
+    status_telegram = kirim_telegram_focus_alert(evento, task_info)
+    try:
+        updated_range = str((hasil_append or {}).get("updates", {}).get("updatedRange", ""))
+        match = re.search(r"![A-Z]+(\d+):", updated_range)
+        if match:
+            ws.update_cell(int(match.group(1)), len(FOCUS_ALERT_HEADERS), status_telegram)
+    except Exception:
+        # Log tetap tersimpan sebagai MENUNGGU bila status akhir gagal diperbarui.
+        pass
+    try:
+        _baca_values_cache.clear()
+    except Exception:
+        pass
+    return status_telegram
+
+
+def tampilkan_nazma_focus_alert(task_id, siswa_id, task_info=None):
+    """Focus Alert browser -> event component -> backend -> Telegram + Google Sheets."""
+    task_info = task_info or {}
+    event = NAZMA_FOCUS_COMPONENT(
+        task_id=str(task_id),
+        student_id=str(siswa_id),
+        enabled=True,
+        key=f"nazma_focus_{re.sub(r'[^A-Za-z0-9_-]', '_', str(siswa_id))}_{re.sub(r'[^A-Za-z0-9_-]', '_', str(task_id))}",
+        default=None
+    )
+    if isinstance(event, dict):
+        event_id = str(event.get("event_id", "")).strip()
+        if event_id:
+            seen_key = "_nazma_focus_events_processed"
+            seen = st.session_state.setdefault(seen_key, [])
+            if event_id not in seen:
+                # Tandai sebelum I/O agar rerun tidak mengirim notifikasi ganda.
+                seen.append(event_id)
+                st.session_state[seen_key] = seen[-200:]
+                try:
+                    catat_focus_alert_server(event, task_info)
+                except Exception:
+                    # Kegagalan pencatatan tidak mengganggu timer atau pengerjaan siswa.
+                    pass
 
 def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_aktif_page=None):
     """Satu kartu tugas/PR untuk siswa. Setiap tugas menyimpan jawabannya sendiri
@@ -4142,7 +4240,7 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                 if timer_txt not in ("", "0"):
                     sisa_timer = hitung_sisa_waktu_sesi(sesi_aktif, timer_txt)
                     tampilkan_timer_sisa(sisa_timer, task_id)
-                tampilkan_nazma_focus_alert(task_id, siswa_id)
+                tampilkan_nazma_focus_alert(task_id, siswa_id, t)
             st.markdown("#### 📝 Lembar Jawaban Online")
             file_jawaban = []
             lampiran_lama = baca_lampiran_jawaban(task_id, siswa_id) if terkunci else []
