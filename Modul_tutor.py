@@ -21,10 +21,22 @@ import streamlit.components.v1 as components
 
 # Komponen browser khusus untuk mengirim kejadian Focus Alert ke backend Streamlit.
 # Folder nazma_focus_component harus ikut diunggah ke repository Streamlit Cloud.
-NAZMA_FOCUS_COMPONENT = components.declare_component(
-    "nazma_focus_tracker",
-    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "nazma_focus_component")
-)
+try:
+    NAZMA_FOCUS_COMPONENT = components.declare_component(
+        "nazma_focus_tracker",
+        path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "nazma_focus_component")
+    )
+except Exception:
+    NAZMA_FOCUS_COMPONENT = None  # folder komponen belum diunggah: aplikasi tetap jalan tanpa Focus Alert
+
+
+def _komponen_fokus_aman(**kwargs):
+    if NAZMA_FOCUS_COMPONENT is None:
+        return None
+    try:
+        return NAZMA_FOCUS_COMPONENT(**kwargs)
+    except Exception:
+        return None
 
 
 # Daftar mata pelajaran dan program Bimbel Rumah Nazma
@@ -57,7 +69,7 @@ MAPEL_OPTIONS = [
 # KONFIGURASI HALAMAN
 # =========================================================
 st.set_page_config(
-    page_title="Portal Bimbel Rumah Nazma - Tahap 7.53",
+    page_title="Portal Bimbel Rumah Nazma - Tahap 7.55",
     layout="wide",
     page_icon="🎓",
     initial_sidebar_state="expanded"
@@ -358,9 +370,60 @@ def pastikan_koneksi():
     return sheet
 
 
+BATAS_UNGGAH_BYTES = 10 * 1024 * 1024   # batas di Apps Script; foto dikecilkan otomatis agar lolos
+AMBANG_KOMPRES_BYTES = 1_000_000
+SISI_MAKS_GAMBAR = 1800
+KUALITAS_JPEG = 82
+_EKSTENSI_FOTO = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
+
+
+def kompres_gambar_untuk_unggah(data, nama, mime):
+    """Kecilkan foto (maks. 1800 px, JPEG) agar lolos batas 10 MB. Berkas non-foto dikembalikan apa adanya."""
+    nama_l = str(nama or "").lower()
+    mime_l = str(mime or "").lower()
+    if not (mime_l.startswith("image/") or nama_l.endswith(_EKSTENSI_FOTO)):
+        return data, nama, mime
+    heic = nama_l.endswith((".heic", ".heif")) or "heic" in mime_l or "heif" in mime_l
+    if len(data) <= AMBANG_KOMPRES_BYTES and not heic:
+        return data, nama, mime
+    if heic:
+        try:
+            from pillow_heif import register_heif_opener
+            register_heif_opener()
+        except Exception:
+            raise ValueError(
+                f"Foto {nama} berformat HEIC belum bisa diproses. Di iPhone: Pengaturan, Kamera, Format, "
+                "pilih 'Paling Kompatibel', atau kirim ulang sebagai JPG."
+            )
+    try:
+        import io
+        from PIL import Image, ImageOps
+        gambar = ImageOps.exif_transpose(Image.open(io.BytesIO(data)))
+        gambar.thumbnail((SISI_MAKS_GAMBAR, SISI_MAKS_GAMBAR))
+        if gambar.mode not in ("RGB", "L"):
+            rgba = gambar.convert("RGBA")
+            latar = Image.new("RGB", rgba.size, (255, 255, 255))
+            latar.paste(rgba, mask=rgba.split()[-1])
+            gambar = latar
+        keluar = io.BytesIO()
+        gambar.save(keluar, "JPEG", quality=KUALITAS_JPEG, optimize=True)
+        baru = keluar.getvalue()
+    except Exception:
+        return data, nama, mime  # gambar tidak terbaca: biarkan apa adanya, batas ukuran tetap diperiksa
+    if len(baru) >= len(data) and not heic:
+        return data, nama, mime
+    return baru, os.path.splitext(str(nama))[0] + ".jpg", "image/jpeg"
+
+
 def upload_lampiran_ke_drive(file_bytes, file_name, mime_type):
     """Unggah lampiran ke Google Drive melalui Apps Script milik akun Bimbel."""
     try:
+        file_bytes, file_name, mime_type = kompres_gambar_untuk_unggah(file_bytes, file_name, mime_type)
+        if len(file_bytes) > BATAS_UNGGAH_BYTES:
+            raise ValueError(
+                "ukuran lebih dari 10 MB. Foto dikecilkan otomatis; untuk video atau audio, "
+                "kompres dulu lalu unggah ulang."
+            )
         cfg = st.secrets["drive_upload"]
         endpoint = str(cfg["web_app_url"]).strip()
         token = str(cfg["token"]).strip()
@@ -1792,15 +1855,32 @@ def sesi_kedaluwarsa_tugas(siswa_id, task_id):
     )
 
 
-def lepas_sesi_kedaluwarsa(siswa_id, daftar_tugas):
-    """Lepas kunci sesi yang waktunya sudah lewat (durasi + masa unggah). Riwayat sesi tetap disimpan."""
-    sesi = baca_sesi_aktif_siswa(siswa_id)
-    if not sesi:
-        return False
-    tid = str(sesi.get("ID_Tugas", "")).strip()
-    tugas = next((t for t in (daftar_tugas or []) if str(t.get("ID_Tugas", "")).strip() == tid), None)
-    if not tugas:
-        return False
+def kirim_otomatis_draft(siswa_id, task_id):
+    """Ubah semua jawaban Draft pada tugas ini menjadi terkirim. Tidak menyentuh pengiriman yang sudah ada."""
+    ws = get_answers_worksheet()
+    sid, tid = str(siswa_id or "").strip(), str(task_id or "").strip()
+    baris_pair = [
+        r for r in baca_records_aman(ws, refresh=True)
+        if str(r.get("ID_Penugasan", "")).strip() == tid and str(r.get("ID_Siswa", "")).strip() == sid
+    ]
+    if not baris_pair:
+        return 0
+    for r in baris_pair:
+        status = str(r.get("Status_Jawaban", "")).strip().lower()
+        if "dikirim" in status or "menunggu" in status or "dinilai" in status:
+            return 0  # sudah pernah dikirim atau dinilai
+    sekarang = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
+    pembaruan = [
+        {"range": f"F{int(r['_baris'])}:H{int(r['_baris'])}",
+         "values": [["Dikirim - Menunggu Penilaian", r.get("Waktu_Tersimpan", "") or sekarang, sekarang]]}
+        for r in baris_pair
+    ]
+    ws.batch_update(pembaruan, value_input_option="RAW")
+    _baca_values_cache.clear()
+    return len(pembaruan)
+
+
+def _sesi_sudah_habis(sesi, tugas):
     durasi = _durasi_menit(tugas)
     if durasi <= 0:
         return False
@@ -1808,14 +1888,47 @@ def lepas_sesi_kedaluwarsa(siswa_id, daftar_tugas):
         sisa = hitung_sisa_waktu_sesi(sesi, durasi + masa_tambahan_menit(tugas))
     except ValueError:
         return False
-    if sisa is None or sisa > 0:
-        return False
+    return sisa is not None and sisa <= 0
+
+
+def _akhiri_sesi_kedaluwarsa(sesi, tugas):
     ws = get_active_task_worksheet()
     baris = int(sesi["_baris"])
     selesai = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
     ws.update(f"D{baris}:E{baris}", [["Kedaluwarsa", selesai]], value_input_option="RAW")
     _baca_values_cache.clear()
+    if mode_tugas(tugas) == TASK_MODE_ONLINE:
+        try:
+            kirim_otomatis_draft(sesi.get("ID_Siswa", ""), sesi.get("ID_Tugas", ""))
+        except Exception:
+            pass  # sesi tetap dilepas; draft bisa dikirim ulang pada pemeriksaan berikutnya
+
+
+def lepas_sesi_kedaluwarsa(siswa_id, daftar_tugas):
+    """Lepas kunci sesi aktif milik siswa bila waktunya lewat; jawaban draft tugas Online ikut terkirim."""
+    sesi = baca_sesi_aktif_siswa(siswa_id)
+    if not sesi:
+        return False
+    tid = str(sesi.get("ID_Tugas", "")).strip()
+    tugas = next((t for t in (daftar_tugas or []) if str(t.get("ID_Tugas", "")).strip() == tid), None)
+    if not tugas or not _sesi_sudah_habis(sesi, tugas):
+        return False
+    _akhiri_sesi_kedaluwarsa(sesi, tugas)
     return True
+
+
+def lepas_semua_sesi_kedaluwarsa(daftar_tugas, segarkan=False):
+    """Dipakai halaman tutor: proses semua sesi aktif yang waktunya habis, walau siswa tidak membuka portal lagi."""
+    peta = {str(t.get("ID_Tugas", "")).strip(): t for t in (daftar_tugas or [])}
+    jumlah = 0
+    for sesi in baca_records_aman(get_active_task_worksheet(), refresh=segarkan):
+        if str(sesi.get("Status", "")).strip().lower() != "aktif":
+            continue
+        tugas = peta.get(str(sesi.get("ID_Tugas", "")).strip())
+        if tugas and _sesi_sudah_habis(sesi, tugas):
+            _akhiri_sesi_kedaluwarsa(sesi, tugas)
+            jumlah += 1
+    return jumlah
 
 
 def buka_ulang_sesi(siswa_id, task_id):
@@ -1906,15 +2019,16 @@ def tampilkan_panel_offline_tutor(tutor_id, tutor_nama, daftar_tugas, jawaban_re
     }
     kandidat = [
         t for t in tugas_milik
-        if mode_tugas(t) == TASK_MODE_OFFLINE and unggah_oleh_tugas(t) == "tutor"
+        if mode_tugas(t) == TASK_MODE_OFFLINE
         and (str(t.get("ID_Tugas", "")).strip(), str(t.get("ID_Siswa", "")).strip()) not in sudah
     ]
-    with st.expander(f"🗒️ Hasil tugas offline yang menunggu diunggah Tutor ({len(kandidat)})", expanded=bool(kandidat)):
+    with st.expander(f"🗒️ Tugas offline yang belum ada hasilnya: input oleh Tutor ({len(kandidat)})", expanded=bool(kandidat)):
         if not kandidat:
-            st.caption("Tidak ada tugas offline (Tutor yang mengunggah) yang menunggu hasil.")
+            st.caption("Semua tugas offline sudah memiliki hasil.")
         else:
             peta = {
-                f"{t.get('Nama_Siswa', '')} | {t.get('Mapel', '')} - {t.get('Judul_Tugas', '')} | {t.get('ID_Tugas', '')}": t
+                f"{t.get('Nama_Siswa', '')} | {t.get('Mapel', '')} - {t.get('Judul_Tugas', '')}"
+                f"{' (siswa belum mengirim)' if unggah_oleh_tugas(t) == 'siswa' else ''} | {t.get('ID_Tugas', '')}": t
                 for t in kandidat
             }
             pilih = st.selectbox("Pilih tugas offline:", list(peta.keys()), key="off_tutor_pilih")
@@ -1923,19 +2037,20 @@ def tampilkan_panel_offline_tutor(tutor_id, tutor_nama, daftar_tugas, jawaban_re
             id_siswa = str(t_pilih.get("ID_Siswa", "")).strip()
             catatan = st.text_area("Catatan Tutor (opsional):", key=f"off_tutor_cat_{id_tugas}")
             berkas = st.file_uploader(
-                "Unggah foto atau PDF hasil pekerjaan siswa:",
+                "Unggah foto atau PDF hasil pekerjaan siswa (opsional bila catatan diisi):",
                 type=["jpg", "jpeg", "png", "webp", "pdf"], accept_multiple_files=True,
                 key=f"off_tutor_file_{id_tugas}"
             )
             if st.button("📤 Kirim hasil untuk diperiksa", key=f"off_tutor_kirim_{id_tugas}"):
-                if not berkas:
-                    st.error("Unggah minimal satu foto atau PDF hasil pekerjaan.")
+                if not berkas and not catatan.strip():
+                    st.error("Unggah foto atau PDF hasil pekerjaan, atau isi catatan Tutor.")
                 elif not id_siswa:
                     st.error("ID siswa pada tugas ini tidak ditemukan. Hubungi pengelola.")
                 else:
                     try:
-                        simpan_lampiran_jawaban(id_tugas, id_siswa, berkas)
-                        teks = "Hasil pekerjaan offline diunggah Tutor"
+                        if berkas:
+                            simpan_lampiran_jawaban(id_tugas, id_siswa, berkas)
+                        teks = "Hasil pekerjaan offline diinput Tutor"
                         if catatan.strip():
                             teks += " — " + catatan.strip()
                         simpan_pengiriman_jawaban(id_tugas, id_siswa, {"0": teks}, lewati_validasi_waktu=True)
@@ -2380,27 +2495,32 @@ def get_lampiran_jawaban_worksheet():
 
 
 def simpan_lampiran_jawaban(task_id, student_id, uploaded_files):
-    """Upload lampiran siswa ke Drive lalu simpan metadata dan URL-nya."""
+    """Upload lampiran siswa ke Drive lalu simpan metadata dan URL-nya. Foto dikecilkan otomatis."""
     if not uploaded_files:
         return []
-    total_bytes = sum(len(f.getvalue()) for f in uploaded_files)
-    if total_bytes > 40 * 1024 * 1024:
+    siap = []
+    for file_item in uploaded_files:
+        data, nama, mime = kompres_gambar_untuk_unggah(
+            file_item.getvalue(), file_item.name, file_item.type or "application/octet-stream"
+        )
+        if len(data) > BATAS_UNGGAH_BYTES:
+            raise ValueError(
+                f"File {nama} melebihi batas 10 MB. Foto dikecilkan otomatis; kompres video/audio lebih dulu."
+            )
+        siap.append((data, nama, mime))
+    if sum(len(d) for d, _, _ in siap) > 40 * 1024 * 1024:
         raise ValueError("Total lampiran satu pengiriman maksimal 40 MB.")
     ws = get_lampiran_jawaban_worksheet()
     now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
     rows = []
     hasil = []
-    for file_item in uploaded_files:
-        file_bytes = file_item.getvalue()
-        if len(file_bytes) > 10 * 1024 * 1024:
-            raise ValueError(f"File {file_item.name} melebihi batas 10 MB.")
-        mime = file_item.type or "application/octet-stream"
-        url = upload_lampiran_ke_drive(file_bytes, file_item.name, mime)
+    for data, nama, mime in siap:
+        url = upload_lampiran_ke_drive(data, nama, mime)
         rows.append([
             "LMP-" + uuid.uuid4().hex[:10].upper(), task_id, student_id,
-            file_item.name, mime, url, now, "Terkirim"
+            nama, mime, url, now, "Terkirim"
         ])
-        hasil.append({"Nama_File": file_item.name, "URL_Drive": url, "Mime_Type": mime})
+        hasil.append({"Nama_File": nama, "URL_Drive": url, "Mime_Type": mime})
     if rows:
         ws.append_rows(rows, value_input_option="RAW")
     return hasil
@@ -2507,9 +2627,9 @@ def tampilkan_media_url(url, mime="", nama="Lampiran"):
         st.link_button(f"📎 Buka {nama}", url, use_container_width=True)
 
 
-def baca_jawaban_tergabung(ws):
+def baca_jawaban_tergabung(ws, segarkan=False):
     """Gabungkan baris per-soal menjadi format internal yang dipakai tampilan siswa/tutor."""
-    rows = baca_records_aman(ws)
+    rows = baca_records_aman(ws, refresh=segarkan)
     grouped = {}
     for r in rows:
         task_id = str(r.get("ID_Penugasan", "")).strip()
@@ -2540,6 +2660,87 @@ def baca_jawaban_tergabung(ws):
         result.append(item)
     return result
 
+
+
+INTERVAL_PENYEGARAN_TUTOR = 30  # detik
+
+
+def tugas_milik_tutor(t, tutor_id, tutor_nama):
+    """Tugas baru wajib cocok ID tutor; tugas lama hanya lewat nama tutor yang tersimpan."""
+    pemilik_id = str(t.get("ID_Tutor", "")).strip()
+    tid = str(tutor_id or "").strip()
+    if pemilik_id:
+        return bool(tid) and pemilik_id == tid
+    nama = str(tutor_nama or "").strip().casefold()
+    return bool(nama) and str(t.get("Tutor", "")).strip().casefold() == nama
+
+
+def ambil_jawaban_menunggu_milik(tutor_id, tutor_nama, segarkan=False):
+    """Jawaban berstatus menunggu pemeriksaan pada tugas milik tutor, terbaru dulu, dengan nama yang pasti terisi."""
+    tugas = {str(t.get("ID_Tugas", "")).strip(): t for t in get_student_tasks()}
+    hasil = []
+    for j in baca_jawaban_tergabung(get_answers_worksheet(), segarkan=segarkan):
+        if "menunggu" not in str(j.get("Status", "")).casefold():
+            continue
+        tg = tugas.get(str(j.get("ID_Tugas", "")).strip())
+        if not tg or not tugas_milik_tutor(tg, tutor_id, tutor_nama):
+            continue
+        id_siswa = str(j.get("ID_Siswa", "")).strip()
+        nama = str(j.get("Nama_Siswa", "")).strip()
+        if not nama or nama == id_siswa:
+            nama = str(tg.get("Nama_Siswa", "")).strip() or id_siswa
+        x = dict(j)
+        x.update({
+            "Nama_Tampil": nama,
+            "Judul": str(tg.get("Judul_Tugas", "")).strip() or str(j.get("ID_Tugas", "")),
+            "Mapel": str(tg.get("Mapel", "")).strip(),
+            "Kategori": "PR" if adalah_pr(tg) else "Tugas sesi",
+        })
+        hasil.append(x)
+    hasil.sort(key=lambda x: str(x.get("Waktu_Kirim", "")), reverse=True)
+    return hasil
+
+
+def tampilkan_daftar_pemeriksaan(tutor_id, tutor_nama, interval_detik=INTERVAL_PENYEGARAN_TUTOR):
+    """Daftar jawaban yang perlu diperiksa: nama jelas, tombol Periksa, dan penyegaran otomatis."""
+    def _isi():
+        try:
+            tugas_milik = [t for t in get_student_tasks() if tugas_milik_tutor(t, tutor_id, tutor_nama)]
+            lepas_semua_sesi_kedaluwarsa(tugas_milik, segarkan=True)
+            daftar = ambil_jawaban_menunggu_milik(tutor_id, tutor_nama, segarkan=True)
+        except Exception as exc:
+            st.error(f"Daftar pemeriksaan belum dapat dibaca: {exc}")
+            return
+        kiri, kanan = st.columns([4, 1])
+        kiri.markdown(f"**📥 {len(daftar)} jawaban menunggu pemeriksaan**")
+        kanan.button("🔄 Muat ulang", key="periksa_muat_ulang")
+        if not daftar:
+            st.info("Tidak ada jawaban yang menunggu pemeriksaan.")
+            return
+        kata = st.text_input("Cari nama siswa atau tugas:", key="periksa_cari").strip().casefold()
+        tampil = [x for x in daftar if not kata or kata in f"{x['Nama_Tampil']} {x['Judul']} {x['Mapel']}".casefold()]
+        if not tampil:
+            st.caption("Tidak ada yang cocok dengan pencarian.")
+        for x in tampil[:30]:
+            id_tugas = str(x.get("ID_Tugas", "")).strip()
+            id_siswa = str(x.get("ID_Siswa", "")).strip()
+            teks, tombol = st.columns([4, 1])
+            teks.markdown(f"**{x['Nama_Tampil']}** · {x['Kategori']} {x['Mapel']} — {x['Judul']}")
+            teks.caption(f"Dikirim: {x.get('Waktu_Kirim') or '-'}")
+            if tombol.button("Periksa", key=f"periksa_{id_tugas}_{id_siswa}"):
+                st.session_state["_periksa_terpilih"] = f"{id_tugas}|{id_siswa}"
+                _baca_values_cache.clear()
+                st.rerun()
+        if len(tampil) > 30:
+            st.caption(f"Menampilkan 30 dari {len(tampil)}. Gunakan pencarian untuk mempersempit.")
+
+    if hasattr(st, "fragment"):
+        try:
+            st.fragment(run_every=f"{int(interval_detik)}s")(_isi)()
+            return
+        except TypeError:
+            pass  # versi Streamlit tanpa run_every: tombol Muat ulang tetap tersedia
+    _isi()
 
 
 def _panggil_sheets_dengan_retry_429(func, *args, **kwargs):
@@ -4004,7 +4205,7 @@ def parse_tanggal(teks):
         return None
 
 
-def label_status(t, status_by_task, nilai_keys):
+def label_status(t, status_by_task, nilai_keys, sesi_by_task=None):
     """Kembalikan status tugas; nilai dicocokkan dengan ID penugasan + ID siswa."""
     tid = str(t.get("ID_Tugas", "")).strip()
     sid = str(t.get("ID_Siswa", "")).strip()
@@ -4020,6 +4221,11 @@ def label_status(t, status_by_task, nilai_keys):
     terlambat = tgl is not None and tgl < waktu_lokal().date()
     if s == "draft":
         return "draft", ("⚠️ Terlambat (draft)" if terlambat else "✏️ Draft")
+    sesi = str((sesi_by_task or {}).get(tid, "")).strip().lower()
+    if sesi == "aktif":
+        return "berjalan", "⏳ Sedang mengerjakan"
+    if sesi == "kedaluwarsa":
+        return "habis", "⏰ Waktu habis, belum mengirim"
     return "belum", ("⚠️ Terlambat" if terlambat else "🆕 Belum dikerjakan")
 
 
@@ -4045,95 +4251,176 @@ def get_focus_alert_worksheet():
     return ws
 
 
-def kirim_telegram_focus_alert(evento, task_info=None):
-    """Kirim notifikasi server-side. Token Telegram tidak pernah dikirim ke browser."""
+def _konfigurasi_telegram(tutor_id):
+    """(token, chat_id, alasan_gagal). Token tidak pernah ditampilkan ke layar."""
+    cfg = st.secrets.get("telegram", {})
+    bot_token = str(cfg.get("bot_token", "")).strip()
+    if not bot_token:
+        return "", "", "BELUM_DIKONFIGURASI"
+    penerima = str(cfg.get("default_chat_id", "")).strip()
     try:
-        cfg = st.secrets.get("telegram", {})
-        bot_token = str(cfg.get("bot_token", "")).strip()
-        default_chat_id = str(cfg.get("default_chat_id", "")).strip()
-        if not bot_token:
-            return "BELUM_DIKONFIGURASI"
+        peta_tutor = cfg.get("tutor_chat_ids", {})
+        tid = str(tutor_id or "").strip()
+        if tid and peta_tutor and str(peta_tutor.get(tid, "")).strip():
+            penerima = str(peta_tutor.get(tid, "")).strip()
+    except Exception:
+        pass
+    if not penerima:
+        return bot_token, "", "CHAT_ID_BELUM_DIATUR"
+    return bot_token, penerima, ""
 
-        task_info = task_info or {}
-        tutor_id = str(task_info.get("ID_Tutor", "")).strip()
-        tutor_nama = str(task_info.get("Tutor", "")).strip() or "Tutor belum tercatat"
-        penerima = default_chat_id
-        try:
-            peta_tutor = cfg.get("tutor_chat_ids", {})
-            if tutor_id and peta_tutor and str(peta_tutor.get(tutor_id, "")).strip():
-                penerima = str(peta_tutor.get(tutor_id, "")).strip()
-        except Exception:
-            pass
-        if not penerima:
-            return "CHAT_ID_BELUM_DIATUR"
 
-        task_id = str(task_info.get("ID_Tugas", evento.get("task_id", ""))).strip()
-        judul = str(task_info.get("Judul_Tugas", "Tugas siswa")).strip() or "Tugas siswa"
-        siswa_id = str(evento.get("student_id", "")).strip()
-        jumlah = int(evento.get("count", 1) or 1)
-        waktu = waktu_lokal().strftime("%d-%m-%Y %H:%M:%S WIB")
-        pesan = (
-            "🚨 NAZMA FOCUS ALERT\n"
-            "Terdeteksi siswa meninggalkan halaman pengerjaan.\n\n"
-            f"ID Siswa: {siswa_id}\n"
-            f"Tugas: {judul}\n"
-            f"ID Tugas: {task_id}\n"
-            f"Tutor: {tutor_nama}\n"
-            f"Jumlah kejadian pada perangkat ini: {jumlah} kali\n"
-            f"Waktu diterima server: {waktu}\n\n"
-            "Catatan: kejadian ini bukan bukti otomatis menyontek; periksa konteksnya."
-        )
-        response = requests.post(
+def kirim_telegram_pesan(bot_token, chat_id, teks):
+    """(berhasil, keterangan). Keterangan hanya berisi respons Telegram, tidak pernah token."""
+    try:
+        r = requests.post(
             f"https://api.telegram.org/bot{bot_token}/sendMessage",
-            data={"chat_id": penerima, "text": pesan, "disable_web_page_preview": True},
+            data={"chat_id": chat_id, "text": teks, "disable_web_page_preview": True, "disable_notification": False},
             timeout=10
         )
-        response.raise_for_status()
-        result = response.json()
-        if not result.get("ok"):
-            return "GAGAL_TELEGRAM"
-        return "TERKIRIM"
-    except Exception:
-        # Jangan tampilkan detail token, URL bot, atau respons privat ke layar siswa.
-        return "GAGAL_TELEGRAM"
+    except requests.exceptions.RequestException as exc:
+        return False, f"koneksi gagal ({exc.__class__.__name__})"
+    try:
+        hasil = r.json()
+    except ValueError:
+        hasil = {}
+    if r.ok and hasil.get("ok"):
+        return True, "TERKIRIM"
+    return False, f"HTTP {r.status_code}: {str(hasil.get('description', 'tanpa keterangan'))[:120]}"
+
+
+def kirim_telegram_focus_alert(evento, task_info=None):
+    """Kirim notifikasi server-side. Mengembalikan status singkat untuk dicatat di log."""
+    try:
+        task_info = task_info or {}
+        bot_token, penerima, alasan = _konfigurasi_telegram(task_info.get("ID_Tutor", ""))
+        if alasan:
+            return alasan
+        siswa_id = str(evento.get("student_id", "")).strip()
+        nama = str(task_info.get("Nama_Siswa", "")).strip() or siswa_id
+        judul = str(task_info.get("Judul_Tugas", "Tugas siswa")).strip() or "Tugas siswa"
+        task_id = str(task_info.get("ID_Tugas", evento.get("task_id", ""))).strip()
+        jumlah = int(evento.get("count", 1) or 1)
+        pesan = (
+            "🚨 NAZMA FOCUS ALERT\n"
+            "Siswa meninggalkan halaman pengerjaan.\n\n"
+            f"Siswa: {nama} ({siswa_id})\n"
+            f"Tugas: {judul}\n"
+            f"ID Tugas: {task_id}\n"
+            f"Jumlah kejadian pada perangkat ini: {jumlah} kali\n"
+            f"Waktu: {waktu_lokal().strftime('%d-%m-%Y %H:%M:%S')} WIB\n\n"
+            "Catatan: ini bukan bukti otomatis menyontek; periksa konteksnya."
+        )
+        ok, ket = kirim_telegram_pesan(bot_token, penerima, pesan)
+        return "TERKIRIM" if ok else f"GAGAL_TELEGRAM: {ket}"[:150]
+    except Exception as exc:
+        return f"GAGAL_TELEGRAM: {exc.__class__.__name__}"
+
+
+def uji_telegram_tutor(tutor_id, tutor_nama):
+    """Kirim pesan uji dan jelaskan penyebab bila gagal. Mengembalikan (berhasil, pesan)."""
+    try:
+        bot_token, penerima, alasan = _konfigurasi_telegram(tutor_id)
+    except Exception as exc:
+        return False, f"Konfigurasi Secrets tidak terbaca: {exc.__class__.__name__}"
+    if alasan == "BELUM_DIKONFIGURASI":
+        return False, "Bagian [telegram] dengan bot_token belum ada di Secrets Streamlit."
+    if alasan == "CHAT_ID_BELUM_DIATUR":
+        return False, "Chat ID belum diatur: isi default_chat_id atau tutor_chat_ids di Secrets untuk ID tutor Anda."
+    ok, ket = kirim_telegram_pesan(
+        bot_token, penerima,
+        f"✅ Tes notifikasi Nazma untuk {tutor_nama or 'tutor'}. Jika pesan ini masuk, Focus Alert siap dipakai."
+    )
+    if ok:
+        return True, "Pesan uji terkirim. Periksa Telegram Anda."
+    petunjuk = ""
+    k = ket.lower()
+    if "unauthorized" in k or "401" in k:
+        petunjuk = " Token bot salah atau sudah dicabut."
+    elif "chat not found" in k or "400" in k:
+        petunjuk = " Chat ID salah, atau Anda belum menekan Start pada bot."
+    elif "blocked" in k or "403" in k:
+        petunjuk = " Bot diblokir atau belum di-Start oleh penerima."
+    elif "koneksi" in k:
+        petunjuk = " Server tidak dapat menjangkau Telegram."
+    return False, f"Pesan uji gagal ({ket})." + petunjuk
 
 
 def catat_focus_alert_server(evento, task_info=None):
-    """Catat event dahulu, lalu kirim Telegram dan perbarui status notifikasinya."""
+    """Kirim Telegram lebih dulu, lalu catat log. Kegagalan log tidak boleh menahan notifikasi."""
     task_info = task_info or {}
-    ws = get_focus_alert_worksheet()
-    hasil_append = ws.append_row([
-        str(evento.get("event_id", "")),
-        waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"),
-        str(evento.get("student_id", "")),
-        str(task_info.get("ID_Tugas", evento.get("task_id", ""))),
-        str(task_info.get("Judul_Tugas", "")),
-        str(task_info.get("ID_Tutor", "")),
-        str(task_info.get("Tutor", "")),
-        int(evento.get("count", 1) or 1),
-        str(evento.get("event_type", "tab_hidden_return")),
-        "MENUNGGU"
-    ], value_input_option="RAW")
     status_telegram = kirim_telegram_focus_alert(evento, task_info)
     try:
-        updated_range = str((hasil_append or {}).get("updates", {}).get("updatedRange", ""))
-        match = re.search(r"![A-Z]+(\d+):", updated_range)
-        if match:
-            ws.update_cell(int(match.group(1)), len(FOCUS_ALERT_HEADERS), status_telegram)
-    except Exception:
-        # Log tetap tersimpan sebagai MENUNGGU bila status akhir gagal diperbarui.
-        pass
-    try:
-        _baca_values_cache.clear()
-    except Exception:
-        pass
+        ws = get_focus_alert_worksheet()
+        ws.append_row([
+            str(evento.get("event_id", "")),
+            waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"),
+            str(evento.get("student_id", "")),
+            str(task_info.get("ID_Tugas", evento.get("task_id", ""))),
+            str(task_info.get("Judul_Tugas", "")),
+            str(task_info.get("ID_Tutor", "")),
+            str(task_info.get("Tutor", "")),
+            int(evento.get("count", 1) or 1),
+            str(evento.get("event_type", "tab_hidden_return")),
+            status_telegram
+        ], value_input_option="RAW")
+    except Exception as exc:
+        st.session_state["_focus_log_galat"] = str(exc)[:160]
     return status_telegram
+
+
+def tampilkan_peringatan_fokus(tutor_id, tutor_nama, interval_detik=INTERVAL_PENYEGARAN_TUTOR, menit=120):
+    """Riwayat peringatan fokus terbaru untuk tutor, juga bila Telegram gagal. Menyegar otomatis."""
+    def _isi():
+        try:
+            ws = get_or_create_worksheet("Riwayat_Focus_Alert", FOCUS_ALERT_HEADERS, rows="5000", cols=str(len(FOCUS_ALERT_HEADERS)))
+            rows = baca_records_aman(ws, refresh=True)
+            tugas = {str(t.get("ID_Tugas", "")).strip(): t for t in get_student_tasks()}
+        except Exception as exc:
+            st.caption(f"Riwayat peringatan fokus belum dapat dibaca: {exc}")
+            return
+        batas = waktu_lokal().replace(tzinfo=None) - timedelta(minutes=menit)
+        tid = str(tutor_id or "").strip()
+        tampil = []
+        for r in rows:
+            try:
+                waktu = datetime.strptime(str(r.get("Waktu_Server", "")).strip()[:19], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            tg = tugas.get(str(r.get("ID_Tugas", "")).strip(), {})
+            pemilik = str(r.get("ID_Tutor", "")).strip() or str(tg.get("ID_Tutor", "")).strip()
+            if waktu < batas or not tid or pemilik != tid:
+                continue
+            tampil.append({
+                "Waktu": waktu.strftime("%H:%M:%S"),
+                "Siswa": str(tg.get("Nama_Siswa", "")).strip() or str(r.get("ID_Siswa", "")),
+                "Tugas": r.get("Nama_Tugas", "") or tg.get("Judul_Tugas", ""),
+                "Kejadian": r.get("Jumlah_Kejadian", ""),
+                "Telegram": r.get("Status_Telegram", ""),
+            })
+        tampil.sort(key=lambda x: x["Waktu"], reverse=True)
+        judul = f"🚨 Peringatan fokus dalam {menit // 60} jam terakhir ({len(tampil)})"
+        with st.expander(judul, expanded=bool(tampil)):
+            if tampil:
+                st.dataframe(pd.DataFrame(tampil[:10]), use_container_width=True, hide_index=True)
+            else:
+                st.caption("Belum ada siswa yang meninggalkan halaman pengerjaan.")
+            if NAZMA_FOCUS_COMPONENT is None:
+                st.warning("Pendeteksi keluar halaman tidak aktif: folder komponen nazma_focus_component tidak ditemukan di aplikasi.")
+
+    if hasattr(st, "fragment"):
+        try:
+            st.fragment(run_every=f"{int(interval_detik)}s")(_isi)()
+            return
+        except TypeError:
+            pass
+    _isi()
 
 
 def tampilkan_nazma_focus_alert(task_id, siswa_id, task_info=None):
     """Focus Alert browser -> event component -> backend -> Telegram + Google Sheets."""
     task_info = task_info or {}
-    event = NAZMA_FOCUS_COMPONENT(
+    event = _komponen_fokus_aman(
         task_id=str(task_id),
         student_id=str(siswa_id),
         enabled=True,
@@ -4382,12 +4669,12 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                 if not terkunci:
                     file_jawaban = st.file_uploader(
                         "Unggah foto jawaban esai (wajib):",
-                        type=["jpg", "jpeg", "png", "webp"],
+                        type=["jpg", "jpeg", "png", "webp", "heic", "heif"],
                         accept_multiple_files=True,
                         key=f"lampiran_online_{task_id}"
                     ) or []
                     if file_jawaban:
-                        st.caption(f"{len(file_jawaban)} foto dipilih. Maksimal 10 MB per foto dan 40 MB total.")
+                        st.caption(f"{len(file_jawaban)} foto dipilih. Foto dikecilkan otomatis saat dikirim; maksimal 40 MB total.")
                 else:
                     if not lampiran_lama:
                         st.warning("Tidak ditemukan lampiran foto untuk pengumpulan ini.")
@@ -4426,6 +4713,16 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                         key=f"yakin_{task_id}"
                     )
                     boleh_kirim = boleh_kirim and konfirmasi_kosong
+                if not boleh_kirim:
+                    alasan_kirim = []
+                    if data_soal_tidak_lengkap:
+                        alasan_kirim.append("data soal belum lengkap (hubungi tutor)")
+                    if ada_soal_esai and not file_jawaban:
+                        alasan_kirim.append("unggah foto jawaban esai")
+                    if belum and not st.session_state.get(f"yakin_{task_id}", False):
+                        alasan_kirim.append("jawab semua soal atau centang konfirmasi soal yang dikosongkan")
+                    if alasan_kirim:
+                        st.info("Tombol Kirim belum aktif. Yang perlu dilakukan: " + "; ".join(alasan_kirim) + ".")
                 if st.button("📤 Kirim Jawaban", key=f"submit_{task_id}", disabled=(not boleh_kirim)):
                     try:
                         # Validasi timer dilakukan sebelum unggah lampiran maupun simpan jawaban.
@@ -4465,13 +4762,13 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                 catatan_siswa = st.text_area("Catatan untuk Tutor (opsional):", key=f"cat_{task_id}")
                 file_jawaban_offline = st.file_uploader(
                     "Unggah foto, PDF, audio, atau video hasil pekerjaan:",
-                    type=["jpg", "jpeg", "png", "webp", "pdf", "mp4", "mov", "webm", "m4v",
+                    type=["jpg", "jpeg", "png", "webp", "heic", "heif", "pdf", "mp4", "mov", "webm", "m4v",
                           "mp3", "wav", "m4a", "ogg", "aac"],
                     accept_multiple_files=True,
                     key=f"lampiran_offline_{task_id}"
                 )
                 if file_jawaban_offline:
-                    st.caption("Maksimal 20 MB per file. Pastikan video/audio dapat diputar dan suaranya jelas.")
+                    st.caption("Foto dikecilkan otomatis. Video/audio maksimal 10 MB per file. Pastikan video/audio dapat diputar dan suaranya jelas.")
                 if st.button("📤 Kirim Hasil Pekerjaan", key=f"selesai_{task_id}"):
                     try:
                         teks = "Sudah dikerjakan (offline)"
@@ -4957,6 +5254,14 @@ elif peran == "🔒 Pengajar / Tutor":
                     st.info(f"🗓️ Ada {jumlah_tertunda} sesi yang belum dievaluasi. Buka menu **Evaluasi Susulan** untuk melengkapinya.")
             except Exception:
                 pass
+            try:
+                jumlah_menunggu_nilai = len(ambil_jawaban_menunggu_milik(
+                    st.session_state.get("tutor_id", ""), st.session_state.get("tutor_nama", "")
+                ))
+                if jumlah_menunggu_nilai:
+                    st.warning(f"📥 {jumlah_menunggu_nilai} jawaban siswa menunggu pemeriksaan. Buka menu **Portofolio Siswa**.")
+            except Exception:
+                pass
             id_user_aktif = str(st.session_state.get("tutor_user_id", "")).strip()
             id_tutor_aktif = str(st.session_state.get("tutor_id", "")).strip()
 
@@ -5368,6 +5673,15 @@ elif peran == "🔒 Pengajar / Tutor":
                     )
                 else:
                     st.warning("Data akun tutor belum ditemukan. Silakan logout lalu login kembali.")
+                with st.expander("🔔 Notifikasi Telegram (Focus Alert)", expanded=False):
+                    st.caption("Kirim pesan uji untuk memastikan peringatan siswa meninggalkan halaman sampai ke Telegram Anda.")
+                    if st.button("Kirim pesan uji Telegram", key="tes_telegram_tutor"):
+                        ok_tg, pesan_tg = uji_telegram_tutor(
+                            st.session_state.get("tutor_id", ""), st.session_state.get("tutor_nama", "")
+                        )
+                        (st.success if ok_tg else st.error)(pesan_tg)
+                    if NAZMA_FOCUS_COMPONENT is None:
+                        st.warning("Folder komponen nazma_focus_component tidak ditemukan, jadi pendeteksi keluar halaman belum aktif.")
 
         elif menu_tutor == "📝 Persiapan Sesi & Bank Soal":
                 st.header("📖 Persiapan Sesi Pembelajaran")
@@ -6196,11 +6510,27 @@ elif peran == "🔒 Pengajar / Tutor":
                         semua_tugas = [t for t in get_student_tasks()
                                        if str(t.get("Nama_Siswa", "")).strip().lower() == nama_pantau.strip().lower()
                                        and not adalah_materi(t)]  # Materi lama diarsipkan, bukan ditampilkan.
+                        # Status dicocokkan lewat pasangan ID tugas + ID siswa pada baris tugas itu sendiri,
+                        # bukan lewat pencarian nama (nama ganda atau ID kosong membuat status salah).
+                        pasangan_pantau = {
+                            (str(t.get("ID_Tugas", "")).strip(),
+                             str(t.get("ID_Siswa", "")).strip() or str(sid_pantau or "").strip())
+                            for t in semua_tugas
+                        }
                         try:
                             jwb_pantau = [x for x in baca_jawaban_tergabung(get_answers_worksheet())
-                                          if str(x.get("ID_Siswa", "")).strip() == sid_pantau]
+                                          if (str(x.get("ID_Tugas", "")).strip(), str(x.get("ID_Siswa", "")).strip()) in pasangan_pantau]
                         except Exception:
                             jwb_pantau = []
+                        sesi_pantau = {}
+                        try:
+                            for s in baca_records_aman(get_active_task_worksheet()):
+                                st_s = str(s.get("Status", "")).strip().lower()
+                                pasang_s = (str(s.get("ID_Tugas", "")).strip(), str(s.get("ID_Siswa", "")).strip())
+                                if st_s in ("aktif", "kedaluwarsa") and pasang_s in pasangan_pantau:
+                                    sesi_pantau[pasang_s[0]] = st_s
+                        except Exception:
+                            sesi_pantau = {}
                         status_pantau = {str(x.get("ID_Tugas", "")): str(x.get("Status", "")) for x in jwb_pantau}
                         try:
                             nilai_pantau = {kunci_nilai_penugasan(n)
@@ -6219,7 +6549,7 @@ elif peran == "🔒 Pengajar / Tutor":
                             if "batal" in str(t.get("Status_Tugas", "")).lower():
                                 label = "🚫 Dibatalkan"
                             else:
-                                label = label_status(t, status_pantau, nilai_pantau)[1]
+                                label = label_status(t, status_pantau, nilai_pantau, sesi_pantau)[1]
                             baris.append({
                                 "Kategori": "PR" if adalah_pr(t) else "Tugas sesi",
                                 "Mapel": t.get("Mapel"), "Judul": t.get("Judul_Tugas"),
@@ -6341,11 +6671,14 @@ elif peran == "🔒 Pengajar / Tutor":
                 except gspread.WorksheetNotFound:
                     jawaban_records = []
 
+                tampilkan_peringatan_fokus(
+                    st.session_state.get("tutor_id", ""), st.session_state.get("tutor_nama", "")
+                )
+                tampilkan_panel_offline_tutor(
+                    st.session_state.get("tutor_id", ""), st.session_state.get("tutor_nama", ""),
+                    get_student_tasks(), jawaban_records
+                )
                 if jawaban_records:
-                    tampilkan_panel_offline_tutor(
-                        st.session_state.get("tutor_id", ""), st.session_state.get("tutor_nama", ""),
-                        get_student_tasks(), jawaban_records
-                    )
                     st.subheader("Jawaban yang menunggu pemeriksaan")
                     tutor_id_login = str(st.session_state.get("tutor_id", "")).strip()
                     tutor_nama_login = str(st.session_state.get("tutor_nama", "")).strip().casefold()
@@ -6362,20 +6695,38 @@ elif peran == "🔒 Pengajar / Tutor":
                         milik_tutor = (pemilik_id == tutor_id_login and bool(tutor_id_login)) if pemilik_id else (bool(tutor_nama_login) and pemilik_nama == tutor_nama_login)
                         if milik_tutor:
                             menunggu.append(jawaban)
-                    if menunggu:
+                    try:
+                        info_tgs = {str(t.get("ID_Tugas", "")).strip(): t for t in get_student_tasks()}
+                    except Exception:
+                        info_tgs = {}
+                    opsi_jwb = {f"{x.get('ID_Tugas', '')}|{x.get('ID_Siswa', '')}": x for x in menunggu}
+                    kunci_terpilih = st.session_state.get("_periksa_terpilih", "")
+                    item = opsi_jwb.get(kunci_terpilih)
+                    if kunci_terpilih and item is None:
+                        st.session_state.pop("_periksa_terpilih", None)  # sudah dinilai atau tidak ada lagi
+                    if item is None:
+                        tampilkan_daftar_pemeriksaan(
+                            st.session_state.get("tutor_id", ""), st.session_state.get("tutor_nama", "")
+                        )
+                    else:
+                        tg_item = info_tgs.get(str(item.get("ID_Tugas", "")).strip(), {})
+                        nama_tampil_item = str(item.get("Nama_Siswa", "")).strip()
+                        if not nama_tampil_item or nama_tampil_item == str(item.get("ID_Siswa", "")).strip():
+                            nama_tampil_item = str(tg_item.get("Nama_Siswa", "")).strip() or str(item.get("ID_Siswa", ""))
+                        st.markdown(
+                            f"### 📝 Sedang diperiksa: {nama_tampil_item} · "
+                            f"{tg_item.get('Mapel', '')} — {tg_item.get('Judul_Tugas', '')}"
+                        )
                         try:
-                            info_tgs = {str(t.get("ID_Tugas", "")).strip(): t for t in get_student_tasks()}
+                            if sesi_kedaluwarsa_tugas(item.get("ID_Siswa", ""), item.get("ID_Tugas", "")):
+                                st.caption("⏰ Jawaban ini terkirim otomatis karena waktu pengerjaan habis.")
                         except Exception:
-                            info_tgs = {}
-
-                        def _label_jwb(x):
-                            tg = info_tgs.get(str(x.get("ID_Tugas", "")).strip(), {})
-                            kat = "PR" if adalah_pr(tg) else "Tugas"
-                            return f"{x.get('Nama_Siswa')} | {kat} {tg.get('Mapel', '')} - {tg.get('Judul_Tugas', x.get('ID_Tugas'))} | {x.get('ID_Jawaban')}"
-                        opsi_jwb = {_label_jwb(x): x for x in menunggu}
-                        pilih_jwb = st.selectbox("Pilih jawaban siswa:", list(opsi_jwb.keys()))
-                        item = opsi_jwb[pilih_jwb]
-                        st.write(f"**Siswa:** {item.get('Nama_Siswa')}")
+                            pass
+                        if st.button("← Kembali ke daftar", key="periksa_kembali"):
+                            st.session_state.pop("_periksa_terpilih", None)
+                            st.rerun()
+                    if item is not None:
+                        st.write(f"**Siswa:** {nama_tampil_item}")
                         lampiran_item = baca_lampiran_jawaban(item.get("ID_Tugas", ""), item.get("ID_Siswa", ""))
                         if lampiran_item:
                             st.markdown("**📎 Lampiran jawaban siswa:**")
@@ -6390,12 +6741,10 @@ elif peran == "🔒 Pengajar / Tutor":
                         st.write("**Jawaban siswa:**")
                         st.json(jawaban_dict)
                         tugas_terpilih = info_tgs.get(str(item.get("ID_Tugas", "")).strip(), {})
-                        try:
-                            soal_untuk_nilai = json.loads(tugas_terpilih.get("Soal_JSON", "") or "[]")
-                            if not isinstance(soal_untuk_nilai, list):
-                                soal_untuk_nilai = []
-                        except (ValueError, TypeError):
-                            soal_untuk_nilai = []
+                        # Metadata mode di elemen pertama Soal_JSON harus dibuang agar nomor soal tidak bergeser.
+                        soal_untuk_nilai, _mode_review = buka_soal_dan_mode(
+                            tugas_terpilih.get("Soal_JSON", ""), tugas_terpilih.get("Jenis_Tugas", "")
+                        )
                         hasil_otomatis = hitung_nilai_objektif(soal_untuk_nilai, jawaban_dict) if soal_untuk_nilai else {
                             "skor_objektif": None, "jumlah_objektif": 0,
                             "jumlah_benar_penuh": 0, "soal_manual": [], "rincian": []
@@ -6546,8 +6895,6 @@ elif peran == "🔒 Pengajar / Tutor":
                                         st.info("Nilai untuk pasangan siswa dan penugasan ini sudah ada; tidak dibuat nilai duplikat.")
                                     st.rerun()
 
-                    else:
-                        st.info("Tidak ada jawaban yang menunggu pemeriksaan.")
                 else:
                     st.info("Belum ada jawaban online dari siswa.")
 
