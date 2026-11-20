@@ -2741,7 +2741,7 @@ def baca_jawaban_tergabung(ws, segarkan=False):
 
 
 
-INTERVAL_PENYEGARAN_TUTOR = 30  # detik
+INTERVAL_PENYEGARAN_TUTOR = 5  # detik; polling cepat untuk antrean tutor
 
 
 def tugas_milik_tutor(t, tutor_id, tutor_nama):
@@ -4368,8 +4368,56 @@ def get_focus_alert_worksheet():
     return ws
 
 
+TELEGRAM_TUTOR_HEADERS = ["ID_Tutor", "Chat_ID", "Waktu_Diperbarui"]
+
+
+def simpan_chat_id_tutor(tutor_id, chat_id):
+    """Simpan Chat ID pribadi tutor berdasarkan ID_Tutor; token bot tetap di Secrets."""
+    tid = str(tutor_id or "").strip()
+    cid = str(chat_id or "").strip()
+    if not tid:
+        return False, "ID tutor tidak ditemukan. Silakan login ulang."
+    if not cid or not re.fullmatch(r"-?\d+", cid):
+        return False, "Chat ID harus berupa angka."
+    try:
+        ws = get_or_create_worksheet(
+            "Telegram_Tutor", TELEGRAM_TUTOR_HEADERS,
+            rows="500", cols=str(len(TELEGRAM_TUTOR_HEADERS))
+        )
+        headers = [str(x).strip() for x in ws.row_values(1)]
+        if headers != TELEGRAM_TUTOR_HEADERS:
+            return False, "Header sheet Telegram_Tutor tidak sesuai. Jangan ubah data otomatis."
+        records = baca_records_aman(ws, refresh=True)
+        baris = next((int(r.get("_baris", 0)) for r in records
+                      if str(r.get("ID_Tutor", "")).strip() == tid), 0)
+        values = [tid, cid, waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")]
+        if baris >= 2:
+            ws.update(f"A{baris}:C{baris}", [values], value_input_option="RAW")
+        else:
+            ws.append_row(values, value_input_option="RAW")
+        _baca_values_cache.clear()
+        return True, "Chat ID tersimpan. Silakan kirim pesan uji."
+    except Exception as exc:
+        return False, f"Gagal menyimpan Chat ID: {exc.__class__.__name__}"
+
+
+def ambil_chat_id_tutor_sheet(tutor_id):
+    tid = str(tutor_id or "").strip()
+    if not tid:
+        return ""
+    try:
+        ws = get_worksheet("Telegram_Tutor")
+        rows = baca_records_aman(ws, refresh=True)
+        rec = next((r for r in rows if str(r.get("ID_Tutor", "")).strip() == tid), None)
+        return str((rec or {}).get("Chat_ID", "")).strip()
+    except gspread.WorksheetNotFound:
+        return ""
+    except Exception:
+        return ""
+
+
 def _konfigurasi_telegram(tutor_id):
-    """(token, chat_id, alasan_gagal). Token tidak pernah ditampilkan ke layar."""
+    """Konfigurasi notifikasi umum; perilaku lama dipertahankan."""
     cfg = st.secrets.get("telegram", {})
     bot_token = str(cfg.get("bot_token", "")).strip()
     if not bot_token:
@@ -4384,6 +4432,26 @@ def _konfigurasi_telegram(tutor_id):
         pass
     if not penerima:
         return bot_token, "", "CHAT_ID_BELUM_DIATUR"
+    return bot_token, penerima, ""
+
+
+def _konfigurasi_telegram_focus(tutor_id):
+    """Focus Alert wajib memakai Chat ID pribadi tutor, tanpa fallback ke chat default."""
+    cfg = st.secrets.get("telegram", {})
+    bot_token = str(cfg.get("bot_token", "")).strip()
+    if not bot_token:
+        return "", "", "BELUM_DIKONFIGURASI"
+    tid = str(tutor_id or "").strip()
+    penerima = ambil_chat_id_tutor_sheet(tid) if tid else ""
+    if not penerima:
+        try:
+            peta_tutor = cfg.get("tutor_chat_ids", {})
+            if tid and peta_tutor:
+                penerima = str(peta_tutor.get(tid, "")).strip()
+        except Exception:
+            pass
+    if not penerima:
+        return bot_token, "", "CHAT_ID_TUTOR_BELUM_DIDAFTARKAN"
     return bot_token, penerima, ""
 
 
@@ -4410,7 +4478,9 @@ def kirim_telegram_focus_alert(evento, task_info=None):
     """Kirim notifikasi server-side. Mengembalikan status singkat untuk dicatat di log."""
     try:
         task_info = task_info or {}
-        bot_token, penerima, alasan = _konfigurasi_telegram(task_info.get("ID_Tutor", ""))
+        bot_token, penerima, alasan = _konfigurasi_telegram_focus(
+            task_info.get("ID_Tutor", "")
+        )
         if alasan:
             return alasan
         siswa_id = str(evento.get("student_id", "")).strip()
@@ -4434,16 +4504,52 @@ def kirim_telegram_focus_alert(evento, task_info=None):
         return f"GAGAL_TELEGRAM: {exc.__class__.__name__}"
 
 
+def kirim_telegram_notifikasi_pengiriman(task_id, student_id, jenis="jawaban"):
+    """Beritahu tutor saat siswa berhasil mengirim jawaban/lampiran; gagal notifikasi tidak membatalkan kiriman."""
+    try:
+        try:
+            tugas_rows = baca_records_aman(get_worksheet("Tugas_Sesi_Siswa_v2"), refresh=True)
+        except gspread.WorksheetNotFound:
+            tugas_rows = get_student_tasks()
+        tugas = next((
+            t for t in tugas_rows
+            if str(t.get("ID_Tugas", "")).strip() == str(task_id or "").strip()
+        ), None)
+        if not tugas:
+            return False, "Data tugas tidak ditemukan untuk notifikasi."
+        tutor_id = str(tugas.get("ID_Tutor", "")).strip()
+        tutor_nama = str(tugas.get("Tutor", "")).strip()
+        bot_token, chat_id, alasan = _konfigurasi_telegram(tutor_id)
+        if alasan:
+            return False, alasan
+        siswa_id = str(student_id or "").strip()
+        nama_siswa = str(tugas.get("Nama_Siswa", "")).strip() or siswa_id
+        judul = str(tugas.get("Judul_Tugas", "Tugas siswa")).strip() or "Tugas siswa"
+        pesan = (
+            "🔔 NAZMA — JAWABAN BARU MASUK\n\n"
+            f"Siswa: {nama_siswa} ({siswa_id})\n"
+            f"Tugas: {judul}\n"
+            f"Jenis kiriman: {jenis}\n"
+            f"Tutor: {tutor_nama or tutor_id}\n"
+            f"Waktu: {waktu_lokal().strftime('%d-%m-%Y %H:%M:%S')} WIB\n\n"
+            "Silakan buka Portal Tutor → Portofolio Siswa → Jawaban yang menunggu pemeriksaan."
+        )
+        # disable_notification=False meminta notifikasi normal Telegram.
+        return kirim_telegram_pesan(bot_token, chat_id, pesan)
+    except Exception as exc:
+        return False, f"Notifikasi gagal: {exc.__class__.__name__}"
+
+
 def uji_telegram_tutor(tutor_id, tutor_nama):
     """Kirim pesan uji dan jelaskan penyebab bila gagal. Mengembalikan (berhasil, pesan)."""
     try:
-        bot_token, penerima, alasan = _konfigurasi_telegram(tutor_id)
+        bot_token, penerima, alasan = _konfigurasi_telegram_focus(tutor_id)
     except Exception as exc:
         return False, f"Konfigurasi Secrets tidak terbaca: {exc.__class__.__name__}"
     if alasan == "BELUM_DIKONFIGURASI":
         return False, "Bagian [telegram] dengan bot_token belum ada di Secrets Streamlit."
-    if alasan == "CHAT_ID_BELUM_DIATUR":
-        return False, "Chat ID belum diatur: isi default_chat_id atau tutor_chat_ids di Secrets untuk ID tutor Anda."
+    if alasan == "CHAT_ID_TUTOR_BELUM_DIDAFTARKAN":
+        return False, "Chat ID pribadi belum didaftarkan. Isi Chat ID pada Pengaturan Akun lalu tekan Simpan Chat ID."
     ok, ket = kirim_telegram_pesan(
         bot_token, penerima,
         f"✅ Tes notifikasi Nazma untuk {tutor_nama or 'tutor'}. Jika pesan ini masuk, Focus Alert siap dipakai."
@@ -4696,12 +4802,22 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                     st.image(img_url(soal["Url_Gambar"]), use_container_width=True)
                 tampilkan_media_soal(soal)
 
-                # Callback hanya menampung perubahan di session; fragment akan mengirim batch berkala.
+                # Simpan segera setelah perubahan jawaban. Batch berkala tetap menjadi
+                # jalur pemulihan jika penyimpanan langsung gagal.
                 def _simpan_satu(nilai, question_no=i, tid=task_id):
+                    sid_callback = str(st.session_state.get("siswa_id", "")).strip()
                     _tampung_jawaban_draft(
-                        tid, st.session_state.get("siswa_id", ""),
-                        {str(question_no): nilai}
+                        tid, sid_callback, {str(question_no): nilai}
                     )
+                    ok_simpan, pesan_simpan = _flush_draft_task(
+                        tid, sid_callback, paksa=True
+                    )
+                    if ok_simpan:
+                        st.session_state.setdefault("_draft_status_by_task", {})[tid] = "Tersimpan"
+                        st.session_state.pop("_galat_simpan", None)
+                    else:
+                        st.session_state.setdefault("_draft_status_by_task", {})[tid] = "Menunggu penyimpanan"
+                        st.session_state["_galat_simpan"] = pesan_simpan
 
                 def _update_answer(question_no=i, widget_key=qkey, tid=task_id):
                     _simpan_satu(st.session_state.get(widget_key, ""), question_no, tid)
@@ -4852,6 +4968,11 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                         if ok:
                             st.session_state.get("_draft_pending_by_task", {}).pop(task_id, None)
                             st.session_state.setdefault("_draft_status_by_task", {})[task_id] = "Terkirim"
+                            # Notifikasi hanya dikirim setelah penyimpanan jawaban berhasil.
+                            kirim_telegram_notifikasi_pengiriman(
+                                task_id, siswa_id,
+                                "jawaban online" + (" + lampiran foto" if file_jawaban else "")
+                            )
                         st.success("Jawaban berhasil dikirim. Tutor akan memeriksanya." if ok
                                    else "Jawaban untuk tugas ini sudah dikirim sebelumnya.")
                         st.rerun()
@@ -4901,6 +5022,11 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                             ok = simpan_pengiriman_jawaban(task_id, siswa_id, {"0": teks})
                             # Tutup sesi walau sistem mengenali pengiriman yang sudah tersimpan sebelumnya.
                             akhiri_sesi_online(siswa_id, task_id)
+                            if ok:
+                                kirim_telegram_notifikasi_pengiriman(
+                                    task_id, siswa_id,
+                                    "hasil pekerjaan upload mandiri" + (" + lampiran" if file_jawaban_offline else "")
+                                )
                             st.success("Hasil pekerjaan berhasil dikirim. Tutor akan memeriksanya." if ok
                                        else "Tugas ini sudah dikirim sebelumnya.")
                             st.rerun()
@@ -5816,10 +5942,22 @@ elif peran == "🔒 Pengajar / Tutor":
                 else:
                     st.warning("Data akun tutor belum ditemukan. Silakan logout lalu login kembali.")
                 with st.expander("🔔 Notifikasi Telegram (Focus Alert)", expanded=False):
-                    st.caption("Kirim pesan uji untuk memastikan peringatan siswa meninggalkan halaman sampai ke Telegram Anda.")
+                    tutor_id_notif = str(st.session_state.get("tutor_id", "")).strip()
+                    chat_id_tersimpan = ambil_chat_id_tutor_sheet(tutor_id_notif)
+                    st.caption("Daftarkan Chat ID Telegram pribadi agar Focus Alert tugas yang Anda berikan masuk ke chat Anda sendiri.")
+                    chat_id_input = st.text_input(
+                        "Chat ID Telegram pribadi",
+                        value=chat_id_tersimpan,
+                        key=f"chat_id_telegram_tutor_{tutor_id_notif}",
+                        placeholder="Contoh: 123456789",
+                        help="Ambil Chat ID dengan BotNazmaAntiCurang setelah Anda mengirim /start atau pesan ke bot tersebut. Jangan masukkan token bot."
+                    )
+                    if st.button("Simpan Chat ID", key="simpan_chat_id_telegram_tutor"):
+                        ok_simpan, pesan_simpan = simpan_chat_id_tutor(tutor_id_notif, chat_id_input)
+                        (st.success if ok_simpan else st.error)(pesan_simpan)
                     if st.button("Kirim pesan uji Telegram", key="tes_telegram_tutor"):
                         ok_tg, pesan_tg = uji_telegram_tutor(
-                            st.session_state.get("tutor_id", ""), st.session_state.get("tutor_nama", "")
+                            tutor_id_notif, st.session_state.get("tutor_nama", "")
                         )
                         (st.success if ok_tg else st.error)(pesan_tg)
                     if NAZMA_FOCUS_COMPONENT is None:
