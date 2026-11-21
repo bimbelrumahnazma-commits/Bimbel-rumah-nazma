@@ -4587,6 +4587,47 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
                 st.error(f"Soal belum tersimpan: {exc}")
 
 
+def tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif):
+    """Pilih beberapa siswa untuk tugas yang sama: ketik nama, tekan tombol ➕ pada hasil, ulangi.
+    Memakai tombol dengan callback (bukan multiselect) agar mudah ditekan di HP dan pilihan tidak hilang."""
+    kunci = f"_siswa_tambahan_{selected_siswa}"
+    terpilih = list(st.session_state.get(kunci, []))
+
+    def _tambah(nama):
+        daftar = list(st.session_state.get(kunci, []))
+        if nama not in daftar:
+            daftar.append(nama)
+        st.session_state[kunci] = daftar
+
+    def _hapus(nama):
+        st.session_state[kunci] = [x for x in st.session_state.get(kunci, []) if x != nama]
+
+    with st.expander(
+        f"👥 Beri tugas yang sama ke siswa lain (opsional) — {len(terpilih)} dipilih",
+        expanded=bool(terpilih)
+    ):
+        st.caption(
+            f"Siswa utama: {selected_siswa}. Ketik nama siswa lain, tekan Enter, lalu tekan tombol ➕ pada nama yang cocok. "
+            "Ulangi untuk menambah siswa lain. Setiap siswa mendapat tugas, timer, jawaban, dan nilai sendiri."
+        )
+        cari = st.text_input(
+            "Ketik nama siswa lalu tekan Enter (minimal 3 huruf):", key=f"cari_tambahan_{selected_siswa}"
+        )
+        hasil, pesan = cari_siswa_terbatas(
+            cari,
+            [n for n in siswa_aktif
+             if str(n).strip().casefold() != str(selected_siswa).strip().casefold() and n not in terpilih]
+        )
+        if pesan:
+            st.caption(pesan)
+        for nama in hasil:
+            st.button(f"➕ {nama}", key=f"tbh_tambah_{selected_siswa}_{nama}", on_click=_tambah, args=(nama,))
+        if terpilih:
+            st.markdown("**Sudah dipilih (tekan untuk menghapus):**")
+            for nama in terpilih:
+                st.button(f"✖ {nama}", key=f"tbh_hapus_{selected_siswa}_{nama}", on_click=_hapus, args=(nama,))
+
+
 def tampilkan_laporan_perkembangan(nama_siswa, tugas, jawaban, nilai):
     """Ringkasan perkembangan dengan relasi nilai berdasarkan penugasan dan siswa."""
     tugas_siswa = [
@@ -6557,6 +6598,8 @@ elif peran == "🔒 Pengajar / Tutor":
                     st.markdown("---")
                     st.subheader(f"📚 Rencana tugas untuk: {selected_siswa}")
                     st.caption("Setiap tugas disimpan sebagai catatan tersendiri sehingga satu siswa dapat menerima beberapa tugas dari beberapa mata pelajaran.")
+                    # FITUR BARU: pilih beberapa siswa untuk tugas yang sama (di bagian atas)
+                    tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif)
 
                     # Draft tugas disimpan di session state sampai tutor menekan tombol simpan.
                     draft_key = f"draft_tugas_{selected_siswa}"
@@ -7164,34 +7207,13 @@ elif peran == "🔒 Pengajar / Tutor":
                                     except Exception as exc:
                                         st.warning(f"Salinan ada di sesi ini tetapi belum tersinkron: {exc}")
                                     st.rerun()
-                        # FITUR BARU: kirim tugas yang sama juga ke siswa lain
-                        kunci_tambahan = f"_siswa_tambahan_{selected_siswa}"
-                        terpilih_tambahan = list(st.session_state.get(kunci_tambahan, []))
-                        with st.expander(
-                            f"👥 Kirim tugas yang sama ke siswa lain (opsional) — {len(terpilih_tambahan)} dipilih",
-                            expanded=bool(terpilih_tambahan)
-                        ):
-                            st.caption(
-                                "Semua tugas di daftar ini akan dikirim juga ke siswa yang dipilih di sini. "
-                                "Setiap siswa menerima tugas sendiri dengan ID berbeda, timer, jawaban, dan nilai terpisah."
+                        # FITUR BARU: ringkasan siswa tambahan (dipilih di bagian atas halaman)
+                        _tambahan_dipilih = list(st.session_state.get(f"_siswa_tambahan_{selected_siswa}", []))
+                        if _tambahan_dipilih:
+                            st.info(
+                                f"👥 Semua tugas di daftar ini juga akan dikirim ke {len(_tambahan_dipilih)} siswa lain: "
+                                + ", ".join(_tambahan_dipilih) + ". Ubah pilihan di bagian atas halaman."
                             )
-                            cari_tambahan = st.text_input(
-                                "Cari nama siswa tambahan (minimal 3 huruf):", key=f"cari_tambahan_{selected_siswa}"
-                            )
-                            hasil_tambahan, pesan_tambahan = cari_siswa_terbatas(
-                                cari_tambahan,
-                                [n for n in siswa_aktif if str(n).strip().casefold() != str(selected_siswa).strip().casefold()]
-                            )
-                            if pesan_tambahan:
-                                st.caption(pesan_tambahan)
-                            opsi_tambahan = sorted(set(terpilih_tambahan) | set(hasil_tambahan), key=str.casefold)
-                            if opsi_tambahan:
-                                pilihan_tambahan = st.multiselect(
-                                    "Siswa tambahan:", opsi_tambahan, default=terpilih_tambahan
-                                )
-                                st.session_state[kunci_tambahan] = list(pilihan_tambahan)
-                            else:
-                                st.caption("Ketik nama untuk mencari siswa. Siswa yang sudah dipilih tetap tersimpan di sini.")
                         col_kirim, col_hapus = st.columns(2)
                         with col_kirim:
                             if st.button(f"📤 Simpan & Kirim Semua ({len(daftar_draft)})", type="primary", key=f"kirim_semua_{selected_siswa}"):
