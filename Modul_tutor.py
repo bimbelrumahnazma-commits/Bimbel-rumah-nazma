@@ -2810,9 +2810,10 @@ def tugas_milik_tutor(t, tutor_id, tutor_nama=""):
     return bool(tid and pemilik_id and pemilik_id == tid)
 
 
-def ambil_jawaban_menunggu_milik(tutor_id, tutor_nama, segarkan=False):
-    """Jawaban berstatus menunggu pemeriksaan pada tugas milik tutor, terbaru dulu, dengan nama yang pasti terisi."""
-    tugas = {str(t.get("ID_Tugas", "")).strip(): t for t in get_student_tasks()}
+def ambil_jawaban_menunggu_milik(tutor_id, tutor_nama, segarkan=False, daftar_tugas=None):
+    """Jawaban menunggu pemeriksaan; gunakan snapshot tugas bila sudah tersedia."""
+    sumber_tugas = daftar_tugas if daftar_tugas is not None else get_student_tasks()
+    tugas = {str(t.get("ID_Tugas", "")).strip(): t for t in sumber_tugas}
     hasil = []
     for j in baca_jawaban_tergabung(get_answers_worksheet(), segarkan=segarkan):
         if "menunggu" not in str(j.get("Status", "")).casefold():
@@ -2842,14 +2843,24 @@ def tampilkan_daftar_pemeriksaan(tutor_id, tutor_nama, interval_detik=INTERVAL_P
         try:
             semua_tugas = get_student_tasks()
             tugas_milik = [t for t in semua_tugas if tugas_milik_tutor(t, tutor_id)]
-            lepas_semua_sesi_kedaluwarsa(tugas_milik, segarkan=True)
-            daftar = ambil_jawaban_menunggu_milik(tutor_id, tutor_nama, segarkan=True)
+            # Tampilan polling memakai cache bersama; pembacaan paksa tiap fragment
+            # menyebabkan lonjakan Read requests saat beberapa tutor aktif bersamaan.
+            lepas_semua_sesi_kedaluwarsa(tugas_milik, segarkan=False)
+            daftar = ambil_jawaban_menunggu_milik(
+                tutor_id, tutor_nama, segarkan=False, daftar_tugas=semua_tugas
+            )
         except Exception as exc:
-            st.error(f"Daftar pemeriksaan belum dapat dibaca: {exc}")
+            pesan = str(exc).lower()
+            if "429" in pesan or "quota exceeded" in pesan or "resource_exhausted" in pesan:
+                st.warning("Google Sheets sedang membatasi pembacaan. Data daftar pemeriksaan belum diperbarui; coba Muat ulang beberapa saat lagi.")
+            else:
+                st.error(f"Daftar pemeriksaan belum dapat dibaca: {exc.__class__.__name__}")
             return
         kiri, kanan = st.columns([4, 1])
         kiri.markdown(f"**📥 {len(daftar)} jawaban menunggu pemeriksaan**")
-        kanan.button("🔄 Muat ulang", key="periksa_muat_ulang")
+        if kanan.button("🔄 Muat ulang", key="periksa_muat_ulang"):
+            _baca_values_cache.clear()
+            st.rerun()
         if not daftar:
             st.info("Tidak ada jawaban yang menunggu pemeriksaan.")
             return
@@ -4532,7 +4543,12 @@ def kirim_telegram_pesan(bot_token, chat_id, teks):
         hasil = {}
     if r.ok and hasil.get("ok"):
         return True, "TERKIRIM"
-    return False, f"HTTP {r.status_code}: {str(hasil.get('description', 'tanpa keterangan'))[:120]}"
+    deskripsi = str(hasil.get("description", "tanpa keterangan"))[:120]
+    if r.status_code == 404:
+        return False, "HTTP 404: endpoint/token bot tidak ditemukan. Periksa ulang telegram.bot_token di Streamlit Secrets; jangan ubah Chat ID dulu."
+    if r.status_code == 401:
+        return False, "HTTP 401: token bot ditolak. Periksa token dari BotFather di Streamlit Secrets."
+    return False, f"HTTP {r.status_code}: {deskripsi}"
 
 
 def kirim_telegram_focus_alert(evento, task_info=None):
@@ -4619,7 +4635,9 @@ def uji_telegram_tutor(tutor_id, tutor_nama):
         return True, "Pesan uji terkirim. Periksa Telegram Anda."
     petunjuk = ""
     k = ket.lower()
-    if "unauthorized" in k or "401" in k:
+    if "404" in k or "endpoint/token bot tidak ditemukan" in k:
+        petunjuk = " Periksa token bot pada Streamlit Secrets: pastikan tidak terpotong, tidak ada karakter tambahan, dan berasal dari BotFather. Chat ID bukan penyebab utama HTTP 404."
+    elif "unauthorized" in k or "401" in k:
         petunjuk = " Token bot salah atau sudah dicabut."
     elif "chat not found" in k or "400" in k:
         petunjuk = " Chat ID salah, atau Anda belum menekan Start pada bot."
@@ -7508,11 +7526,64 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.session_state.owner_logged_in = False
             st.rerun()
         st.success("Akses diizinkan.")
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "🎁 Undian Hadiah", "👥 Kelola Status Akun", "📚 Arsip Bank Soal",
             "🔑 Reset PIN", "🔐 Keamanan Owner", "➕ Tambah Siswa",
-            "🧪 Audit Data Sistem"
+            "🧪 Audit Data Sistem", "🧩 Pulihkan Tugas Historis"
         ])
+
+        with tab8:
+            st.header("🧩 Pemulihan Kepemilikan Tugas Historis")
+            st.caption("Tugas tanpa ID_Tutor tetap disembunyikan dari tutor sampai pengelola memverifikasi dan menetapkan pemiliknya. Tidak ada tugas atau jawaban yang dihapus.")
+            try:
+                ws_tugas_legacy = get_worksheet("Tugas_Sesi_Siswa_v2")
+                tugas_legacy = baca_records_aman(ws_tugas_legacy, refresh=False)
+                tutor_legacy = baca_records_aman(get_worksheet("Data_Tutor"), refresh=False)
+                pilihan_tutor = {}
+                for tr in tutor_legacy:
+                    tid = str(tr.get("ID_Tutor", "")).strip()
+                    nama_t = str(tr.get("Nama_Tutor", "")).strip()
+                    if tid and nama_t:
+                        pilihan_tutor[f"{nama_t} · {tid}"] = tid
+                tanpa = [t for t in tugas_legacy if not str(t.get("ID_Tutor", "")).strip()]
+                st.metric("Tugas historis tanpa ID_Tutor", len(tanpa))
+                if not tanpa:
+                    st.success("Tidak ada tugas historis tanpa pemilik.")
+                elif not pilihan_tutor:
+                    st.error("Data_Tutor belum menyediakan pasangan ID_Tutor dan Nama_Tutor yang valid.")
+                else:
+                    opsi_tugas = {
+                        f"{str(t.get('Nama_Siswa','(tanpa nama)'))} | {str(t.get('Judul_Tugas','(tanpa judul)'))} | {str(t.get('ID_Tugas',''))}": t
+                        for t in tanpa if str(t.get("ID_Tugas", "")).strip()
+                    }
+                    if opsi_tugas:
+                        label_tugas = st.selectbox("Pilih satu tugas yang sudah diverifikasi", list(opsi_tugas), key="legacy_task_owner_select")
+                        label_tutor = st.selectbox("Tetapkan tutor pemilik", list(pilihan_tutor), key="legacy_task_tutor_select")
+                        konfirmasi_owner = st.checkbox("Saya sudah memverifikasi bahwa tutor tersebut memang pemilik tugas ini.", key="legacy_task_owner_confirm")
+                        if st.button("Simpan pemilik tugas", key="legacy_task_owner_save", disabled=not konfirmasi_owner):
+                            target = opsi_tugas[label_tugas]
+                            id_tutor_target = pilihan_tutor[label_tutor]
+                            headers_tugas = [str(x).strip() for x in ws_tugas_legacy.row_values(1)]
+                            if "ID_Tutor" not in headers_tugas:
+                                st.error("Kolom ID_Tutor tidak ditemukan. Tidak ada perubahan yang dilakukan.")
+                            else:
+                                baris_target = int(target.get("_baris", 0) or 0)
+                                if baris_target < 2:
+                                    st.error("Nomor baris tugas tidak valid. Tidak ada perubahan yang dilakukan.")
+                                else:
+                                    col_tutor = headers_tugas.index("ID_Tutor") + 1
+                                    ws_tugas_legacy.update_cell(baris_target, col_tutor, id_tutor_target)
+                                    _baca_values_cache.clear()
+                                    st.success("ID_Tutor berhasil ditetapkan untuk satu tugas. Periksa kembali daftar sebelum memulihkan tugas berikutnya.")
+                                    st.rerun()
+                    st.dataframe(pd.DataFrame([{
+                        "Nama Siswa": t.get("Nama_Siswa", ""),
+                        "Judul Tugas": t.get("Judul_Tugas", ""),
+                        "ID Tugas": t.get("ID_Tugas", ""),
+                        "Tutor lama (referensi saja)": t.get("Tutor", ""),
+                    } for t in tanpa]), use_container_width=True, hide_index=True)
+            except Exception as exc:
+                st.error(f"Daftar tugas historis belum dapat dibaca: {exc.__class__.__name__}")
 
         with tab7:
             st.header("🧪 Audit Data Sistem")
