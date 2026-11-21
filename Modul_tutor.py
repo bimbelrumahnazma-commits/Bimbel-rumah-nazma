@@ -166,16 +166,53 @@ def init_spreadsheet():
     return gc.open_by_key("17JI1x966HfVG4YpfzCz_bssBwOmUTIJFbRutl0qyIZE")
 
 
+# ---------------------------------------------------------
+# DAFTAR TAB RESMI
+# Kode memakai nama logis (kiri); yang dibuka di Google Sheets adalah nama tab asli (kanan).
+# Untuk berpindah tab, ubah di sini saja.
+# ---------------------------------------------------------
+TAB_RESMI = {
+    "Data_Siswa": "Data_Siswa_Rapi",
+}
+# Tab lama yang TIDAK BOLEH dibaca atau dibuat lagi oleh kode (nama asli di Google Sheets).
+TAB_USANG = {
+    "Data_Siswa": "tab lama (struktur awal); data siswa yang benar ada di Data_Siswa_Rapi",
+}
+
+
+def nama_tab_asli(worksheet_title):
+    """Ubah nama logis di kode menjadi nama tab asli di Google Sheets."""
+    return TAB_RESMI.get(worksheet_title, worksheet_title)
+
+
+def _tolak_tab_usang(worksheet_title):
+    if worksheet_title in TAB_USANG:
+        raise RuntimeError(
+            f"Tab '{worksheet_title}' sudah tidak dipakai: {TAB_USANG[worksheet_title]}."
+        )
+
+
 @st.cache_resource
 def _worksheet_cached(spreadsheet_id, worksheet_title):
     """Cache handle worksheet agar pemanggilan sheet.worksheet tidak meminta metadata berulang."""
+    _tolak_tab_usang(worksheet_title)
     return init_spreadsheet().worksheet(worksheet_title)
 
 
 def get_worksheet(worksheet_title):
-    """Ambil handle worksheet dari cache proses."""
+    """Ambil handle worksheet dari cache proses, lewat daftar tab resmi."""
     book = init_spreadsheet()
-    return _worksheet_cached(book.id, worksheet_title)
+    asli = nama_tab_asli(worksheet_title)
+    try:
+        return _worksheet_cached(book.id, asli)
+    except gspread.WorksheetNotFound:
+        if worksheet_title in TAB_RESMI:
+            # Tab resmi tidak boleh dibuat otomatis; jangan diam-diam membuat tab kosong.
+            tersedia = ", ".join(ws.title for ws in book.worksheets())
+            raise RuntimeError(
+                f"Tab resmi '{asli}' tidak ditemukan di spreadsheet. Tab yang ada: {tersedia}"
+            )
+        raise
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -204,7 +241,7 @@ def buat_paket_audit_sistem():
     }
 
     target = [
-        "Data_Siswa", "Akun_Pengguna", "Bank_Soal_Master",
+        nama_tab_asli("Data_Siswa"), "Akun_Pengguna", "Bank_Soal_Master",
         "Tugas_Sesi_Siswa_v2", "DB_Jawaban_Siswa", "DB_Nilai_Tugas",
         "Relasi_Orangtua_Siswa", "Relasi_Tutor_Siswa",
         "Status_Sesi_Tugas", "Riwayat_Latihan",
@@ -286,7 +323,7 @@ def buat_paket_audit_sistem():
         if nama not in sheet_map:
             cek(nama, "SHEET_TIDAK_ADA", None, "Worksheet tidak ditemukan.")
 
-    siswa = records.get("Data_Siswa", [])
+    siswa = records.get(nama_tab_asli("Data_Siswa"), [])
     id_siswa = [str(r.get("ID_SISWA") or r.get("ID_Siswa") or "").strip() for r in siswa]
     id_isi = [x for x in id_siswa if x]
     duplikat_id = len(id_isi) - len(set(id_isi))
@@ -461,6 +498,7 @@ def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
     """Ambil worksheet tanpa membaca seluruh isi setiap rerun.
     Header ditulis saat worksheet baru dibuat; worksheet lama dipertahankan apa adanya.
     """
+    _tolak_tab_usang(title)
     try:
         return get_worksheet(title)
     except gspread.WorksheetNotFound:
@@ -472,6 +510,7 @@ def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
 @st.cache_data(ttl=180, show_spinner=False)
 def _baca_values_cache(spreadsheet_id, worksheet_title):
     """Cache nilai sheet 3 menit; memakai objek spreadsheet yang sudah di-cache."""
+    _tolak_tab_usang(worksheet_title)
     ws_cached = init_spreadsheet().worksheet(worksheet_title)
     return ws_cached.get_all_values()
 
@@ -510,6 +549,10 @@ def baca_records_aman(ws, refresh=False):
             rec["Nama_Lengkap"] = rec["Nama_Siswa"]
         elif "Nama_Lengkap" in rec and "Nama_Siswa" not in rec:
             rec["Nama_Siswa"] = rec["Nama_Lengkap"]
+
+        # Tab Data_Siswa_Rapi memakai Status_Siswa; kode memakai Status. Sediakan keduanya.
+        if "Status_Siswa" in rec and "Status" not in rec:
+            rec["Status"] = rec["Status_Siswa"]
 
         # Header ID siswa bisa tertulis ID_Siswa atau ID_SISWA: sediakan keduanya.
         if "ID_SISWA" in rec and "ID_Siswa" not in rec:
@@ -6600,6 +6643,7 @@ elif peran == "🔒 Pengajar / Tutor":
                             vals_dx = ws_dx.get_all_values()  # baca langsung, tanpa cache
                             hdr_dx = [str(h).strip() for h in (vals_dx[0] if vals_dx else [])]
                             st.write(f"Spreadsheet: {init_spreadsheet().title} | Tab: {ws_dx.title}")
+                            st.write("Tab di spreadsheet: " + ", ".join(w.title for w in init_spreadsheet().worksheets()))
                             st.write(f"Baris data di tab (baca langsung): {max(len(vals_dx) - 1, 0)}")
                             st.write("Header: " + " | ".join(hdr_dx))
                             st.write(f"Jumlah nama yang dibaca aplikasi (setelah cache dan filter): {len(siswa_aktif)}")
@@ -8294,7 +8338,9 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                 kolom_pin = "PIN_Siswa" if "PIN_Siswa" in headers_daftar else None
                 kolom_jenjang = "Jenjang" if "Jenjang" in headers_daftar else None
                 kolom_kelas = "Kelas" if "Kelas" in headers_daftar else None
-                kolom_status = "Status" if "Status" in headers_daftar else None
+                kolom_status = "Status" if "Status" in headers_daftar else (
+                    "Status_Siswa" if "Status_Siswa" in headers_daftar else None
+                )
                 kolom_poin = "Poin" if "Poin" in headers_daftar else None
                 kolom_tanggal = next((c for c in ("Tanggal_Daftar", "Tanggal_Masuk", "Tanggal") if c in headers_daftar), None)
 
@@ -8524,8 +8570,9 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     status_baru = st.selectbox("Status:", ["Aktif", "Nonaktif"])
                     if st.form_submit_button("Update Status"):
                         headers = ws_siswa.row_values(1)
-                        if "Status" in headers:
-                            ws_siswa.update_cell(opsi_status[pilih_nama]["_baris"], headers.index("Status") + 1, status_baru)
+                        kolom_status_owner = "Status" if "Status" in headers else ("Status_Siswa" if "Status_Siswa" in headers else None)
+                        if kolom_status_owner:
+                            ws_siswa.update_cell(opsi_status[pilih_nama]["_baris"], headers.index(kolom_status_owner) + 1, status_baru)
                             st.success("Status berhasil diperbarui.")
                             st.rerun()
                         else:
