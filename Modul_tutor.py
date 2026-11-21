@@ -1908,13 +1908,19 @@ def kirim_otomatis_draft(siswa_id, task_id):
 
 
 def _sesi_sudah_habis(sesi, tugas):
-    durasi = _durasi_menit(tugas)
+    raw_durasi = str((tugas or {}).get("Timer_Menit", "") or "").strip()
+    if not raw_durasi:
+        return False  # tugas tanpa timer
+    try:
+        durasi = float(raw_durasi.replace(",", "."))
+    except (TypeError, ValueError):
+        return None  # status timer tidak diketahui; jangan dianggap aktif atau kedaluwarsa
     if durasi <= 0:
         return False
     try:
         sisa = hitung_sisa_waktu_sesi(sesi, durasi + masa_tambahan_menit(tugas))
     except ValueError:
-        return False
+        return None
     return sisa is not None and sisa <= 0
 
 
@@ -1938,7 +1944,7 @@ def lepas_sesi_kedaluwarsa(siswa_id, daftar_tugas):
         return False
     tid = str(sesi.get("ID_Tugas", "")).strip()
     tugas = next((t for t in (daftar_tugas or []) if str(t.get("ID_Tugas", "")).strip() == tid), None)
-    if not tugas or not _sesi_sudah_habis(sesi, tugas):
+    if not tugas or _sesi_sudah_habis(sesi, tugas) is not True:
         return False
     _akhiri_sesi_kedaluwarsa(sesi, tugas)
     return True
@@ -1952,7 +1958,7 @@ def lepas_semua_sesi_kedaluwarsa(daftar_tugas, segarkan=False):
         if str(sesi.get("Status", "")).strip().lower() != "aktif":
             continue
         tugas = peta.get(str(sesi.get("ID_Tugas", "")).strip())
-        if tugas and _sesi_sudah_habis(sesi, tugas):
+        if tugas and _sesi_sudah_habis(sesi, tugas) is True:
             _akhiri_sesi_kedaluwarsa(sesi, tugas)
             jumlah += 1
     return jumlah
@@ -2031,15 +2037,18 @@ def gerbang_sesi_tugas(t, task_id, siswa_id, sesi_aktif_page, expander_state_key
 def tampilkan_panel_offline_tutor(tutor_id, tutor_nama, daftar_tugas, jawaban_records):
     """Panel tutor: unggah hasil tugas Offline (variasi 'Tutor yang mengunggah') dan kelola sesi siswa."""
     tid_login = str(tutor_id or "").strip()
-    nama_login = str(tutor_nama or "").strip().casefold()
-
-    def _milik(t):
-        pemilik_id = str(t.get("ID_Tutor", "")).strip()
-        if pemilik_id:
-            return bool(tid_login) and pemilik_id == tid_login
-        return bool(nama_login) and str(t.get("Tutor", "")).strip().casefold() == nama_login
-
-    tugas_milik = [t for t in (daftar_tugas or []) if _milik(t)]
+    tugas_semua = list(daftar_tugas or [])
+    tugas_milik = [t for t in tugas_semua if tugas_milik_tutor(t, tid_login)]
+    legacy_tanpa_id = sum(
+        1 for t in tugas_semua
+        if not str(t.get("ID_Tutor", "")).strip()
+        and str(t.get("Tutor", "")).strip().casefold() == str(tutor_nama or "").strip().casefold()
+    )
+    if legacy_tanpa_id:
+        st.warning(
+            f"{legacy_tanpa_id} tugas historis belum memiliki ID_Tutor sehingga disembunyikan demi keamanan. "
+            "Pengelola perlu memverifikasi dan menetapkan pemiliknya sebelum tugas dapat diakses kembali."
+        )
     sudah = {
         (str(j.get("ID_Tugas", "")).strip(), str(j.get("ID_Siswa", "")).strip())
         for j in (jawaban_records or [])
@@ -2074,13 +2083,17 @@ def tampilkan_panel_offline_tutor(tutor_id, tutor_nama, daftar_tugas, jawaban_re
                 elif not id_siswa:
                     st.error("ID siswa pada tugas ini tidak ditemukan. Hubungi pengelola.")
                 else:
+                    urls_lampiran_tutor = []
                     try:
                         if berkas:
-                            simpan_lampiran_jawaban(id_tugas, id_siswa, berkas, oleh_tutor=True)
+                            hasil_lampiran_tutor = simpan_lampiran_jawaban(id_tugas, id_siswa, berkas, oleh_tutor=True)
+                            urls_lampiran_tutor = [x.get("URL_Drive", "") for x in hasil_lampiran_tutor]
                         teks = "Hasil pekerjaan offline diinput Tutor"
                         if catatan.strip():
                             teks += " — " + catatan.strip()
-                        simpan_pengiriman_jawaban(id_tugas, id_siswa, {"0": teks}, lewati_validasi_waktu=True)
+                        ok_kirim = simpan_pengiriman_jawaban(id_tugas, id_siswa, {"0": teks}, lewati_validasi_waktu=True)
+                        if not ok_kirim:
+                            raise RuntimeError("Pengiriman tidak tersimpan atau tugas sudah terkunci. Periksa status tugas sebelum mencoba lagi.")
                         try:
                             akhiri_sesi_online(id_siswa, id_tugas)
                         except Exception:
@@ -2088,7 +2101,8 @@ def tampilkan_panel_offline_tutor(tutor_id, tutor_nama, daftar_tugas, jawaban_re
                         st.success("Hasil terkirim. Sekarang muncul di daftar pemeriksaan di bawah.")
                         st.rerun()
                     except Exception as exc:
-                        st.error(f"Hasil belum terkirim: {exc}")
+                        catat_log_gagal_pengiriman(id_tugas, id_siswa, "input_hasil_offline_tutor", exc, urls_lampiran_tutor)
+                        st.error(f"Hasil belum terkirim: {exc.__class__.__name__}. Periksa log pengiriman sebelum mencoba ulang.")
 
     peta_tugas = {str(t.get("ID_Tugas", "")).strip(): t for t in tugas_milik}
     try:
@@ -2108,7 +2122,16 @@ def tampilkan_panel_offline_tutor(tutor_id, tutor_nama, daftar_tugas, jawaban_re
             opsi = {}
             for r in bermasalah:
                 tg = peta_tugas.get(str(r.get("ID_Tugas", "")).strip(), {})
-                status_txt = "Waktu habis" if str(r.get("Status", "")).strip().lower() == "kedaluwarsa" else "Sedang berjalan"
+                status_db = str(r.get("Status", "")).strip().lower()
+                status_timer = _sesi_sudah_habis(r, tg) if status_db == "aktif" else False
+                if status_db == "kedaluwarsa":
+                    status_txt = "Waktu habis"
+                elif status_timer is None:
+                    status_txt = "Perlu pemeriksaan timer"
+                elif status_timer is True:
+                    status_txt = "Waktu habis (belum diproses)"
+                else:
+                    status_txt = "Sedang berjalan"
                 label = f"{status_txt} | {tg.get('Nama_Siswa', '')} | {tg.get('Mapel', '')} - {tg.get('Judul_Tugas', '')} | mulai {r.get('Waktu_Mulai', '')}"
                 opsi[label] = r
             pilih_sesi = st.selectbox("Pilih sesi:", list(opsi.keys()), key="off_tutor_sesi")
@@ -2521,6 +2544,36 @@ def get_lampiran_jawaban_worksheet():
     return ws
 
 
+LOG_GAGAL_PENGIRIMAN_HEADERS = [
+    "ID_Log", "Waktu", "ID_Tugas", "ID_Siswa", "Tahap", "Jenis_Gagal",
+    "Jumlah_File", "Referensi_File_Drive"
+]
+
+
+def catat_log_gagal_pengiriman(task_id, student_id, tahap, exc, url_drive=()):
+    """Catat kegagalan tanpa menyimpan PIN, token, isi jawaban, atau data sensitif lain."""
+    try:
+        ws = get_or_create_worksheet(
+            "Log_Gagal_Pengiriman", LOG_GAGAL_PENGIRIMAN_HEADERS,
+            rows="1000", cols=str(len(LOG_GAGAL_PENGIRIMAN_HEADERS))
+        )
+        headers = [str(x).strip() for x in ws.row_values(1)]
+        if headers != LOG_GAGAL_PENGIRIMAN_HEADERS:
+            return False
+        urls = [str(x).strip() for x in (url_drive or ()) if str(x).strip()]
+        ws.append_row([
+            "ERR-" + uuid.uuid4().hex[:10].upper(),
+            waktu_lokal().strftime("%Y-%m-%d %H:%M:%S"),
+            str(task_id or ""), str(student_id or ""), str(tahap or ""),
+            exc.__class__.__name__ if isinstance(exc, BaseException) else str(exc)[:80],
+            len(urls), json.dumps(urls, ensure_ascii=False)
+        ], value_input_option="RAW")
+        _baca_values_cache.clear()
+        return True
+    except Exception:
+        return False
+
+
 def simpan_lampiran_jawaban(task_id, student_id, uploaded_files, oleh_tutor=False):
     """Upload lampiran setelah memastikan akun siswa/tutor berhak atas tugas tersebut."""
     if not uploaded_files:
@@ -2590,18 +2643,24 @@ def simpan_lampiran_jawaban(task_id, student_id, uploaded_files, oleh_tutor=Fals
     now = waktu_lokal().strftime("%Y-%m-%d %H:%M:%S")
     rows = []
     hasil = []
-    for data, nama, mime in siap:
-        url = upload_lampiran_ke_drive(data, nama, mime)
-        rows.append([
-            "LMP-" + uuid.uuid4().hex[:10].upper(), task_id, student_id,
-            nama, mime, url, now, "Terkirim"
-        ])
-        hasil.append({"Nama_File": nama, "URL_Drive": url, "Mime_Type": mime})
-    if rows:
-        ws.append_rows(rows, value_input_option="RAW")
-        # Lampiran baru harus langsung terbaca pada Portofolio dan halaman pemeriksaan.
-        _baca_values_cache.clear()
-    return hasil
+    urls_terunggah = []
+    try:
+        for data, nama, mime in siap:
+            url = upload_lampiran_ke_drive(data, nama, mime)
+            urls_terunggah.append(url)
+            rows.append([
+                "LMP-" + uuid.uuid4().hex[:10].upper(), task_id, student_id,
+                nama, mime, url, now, "Terkirim"
+            ])
+            hasil.append({"Nama_File": nama, "URL_Drive": url, "Mime_Type": mime})
+        if rows:
+            ws.append_rows(rows, value_input_option="RAW")
+            _baca_values_cache.clear()
+        return hasil
+    except Exception as exc:
+        # File Drive tidak dihapus; URL dicatat agar dapat direkonsiliasi tanpa upload ulang buta.
+        catat_log_gagal_pengiriman(task_id, student_id, "unggah_lampiran_atau_catat_sheet", exc, urls_terunggah)
+        raise
 
 
 def baca_lampiran_jawaban(task_id, student_id, refresh=False):
@@ -2741,17 +2800,14 @@ def baca_jawaban_tergabung(ws, segarkan=False):
 
 
 
-INTERVAL_PENYEGARAN_TUTOR = 5  # detik; polling cepat untuk antrean tutor
+INTERVAL_PENYEGARAN_TUTOR = 20  # detik; mengurangi pembacaan berulang Google Sheets
 
 
-def tugas_milik_tutor(t, tutor_id, tutor_nama):
-    """Tugas baru wajib cocok ID tutor; tugas lama hanya lewat nama tutor yang tersimpan."""
-    pemilik_id = str(t.get("ID_Tutor", "")).strip()
+def tugas_milik_tutor(t, tutor_id, tutor_nama=""):
+    """Akses tugas hanya diberikan jika ID_Tutor cocok; nama bukan bukti kepemilikan."""
+    pemilik_id = str((t or {}).get("ID_Tutor", "")).strip()
     tid = str(tutor_id or "").strip()
-    if pemilik_id:
-        return bool(tid) and pemilik_id == tid
-    nama = str(tutor_nama or "").strip().casefold()
-    return bool(nama) and str(t.get("Tutor", "")).strip().casefold() == nama
+    return bool(tid and pemilik_id and pemilik_id == tid)
 
 
 def ambil_jawaban_menunggu_milik(tutor_id, tutor_nama, segarkan=False):
@@ -2784,7 +2840,8 @@ def tampilkan_daftar_pemeriksaan(tutor_id, tutor_nama, interval_detik=INTERVAL_P
     """Daftar jawaban yang perlu diperiksa: nama jelas, tombol Periksa, dan penyegaran otomatis."""
     def _isi():
         try:
-            tugas_milik = [t for t in get_student_tasks() if tugas_milik_tutor(t, tutor_id, tutor_nama)]
+            semua_tugas = get_student_tasks()
+            tugas_milik = [t for t in semua_tugas if tugas_milik_tutor(t, tutor_id)]
             lepas_semua_sesi_kedaluwarsa(tugas_milik, segarkan=True)
             daftar = ambil_jawaban_menunggu_milik(tutor_id, tutor_nama, segarkan=True)
         except Exception as exc:
@@ -2878,8 +2935,8 @@ def _flush_draft_task(task_id, student_id, paksa=False):
         return True, "Draft berhasil disimpan."
     except Exception as exc:
         st.session_state.setdefault("_draft_status_by_task", {})[task_id] = "Gagal menyimpan"
-        st.session_state["_galat_simpan"] = str(exc)
-        return False, str(exc)
+        st.session_state["_galat_simpan"] = exc.__class__.__name__
+        return False, f"Gagal menyimpan ({exc.__class__.__name__}). Periksa koneksi dan coba lagi."
 
 
 if hasattr(st, "fragment"):
@@ -2938,10 +2995,12 @@ def _otorisasi_simpan_jawaban(task_id, student_id):
     return tugas
 
 
-def simpan_jawaban_per_soal(task_id, student_id, answers, submitted=False):
+def simpan_jawaban_per_soal(task_id, student_id, answers, submitted=False, _otorisasi_sudah=False):
     """Simpan jawaban dengan indeks baris sesi; satu pembacaan awal, lalu update langsung."""
     # Otorisasi identitas dan kepemilikan wajib berlaku untuk draft maupun submit.
-    _otorisasi_simpan_jawaban(task_id, student_id)
+    # Jalur submit boleh meneruskan hasil validasi server yang baru saja dilakukan.
+    if not _otorisasi_sudah:
+        _otorisasi_simpan_jawaban(task_id, student_id)
     # Validasi waktu hanya untuk draft di sini; submit siswa sudah divalidasi
     # oleh simpan_pengiriman_jawaban sebelum masuk ke fungsi ini.
     if not submitted:
@@ -3034,15 +3093,17 @@ def simpan_jawaban_per_soal(task_id, student_id, answers, submitted=False):
 
 
 def simpan_pengiriman_jawaban(task_id, student_id, answers, lewati_validasi_waktu=False):
-    # Otorisasi identitas selalu dilakukan, termasuk pada pengiriman oleh tutor.
-    _otorisasi_simpan_jawaban(task_id, student_id)
-    # Hanya jalur tutor yang boleh melewati timer siswa untuk input hasil offline.
+    # Validasi waktu siswa sekaligus memverifikasi identitas dan kepemilikan tugas.
+    # Jalur tutor offline memakai pemeriksaan kepemilikan terpisah.
     if lewati_validasi_waktu:
         if not st.session_state.get("tutor_logged_in"):
             raise ValueError("Hanya Tutor yang berwenang melewati validasi timer.")
+        _otorisasi_simpan_jawaban(task_id, student_id)
     else:
         validasi_waktu_pengiriman(task_id, student_id)
-    return simpan_jawaban_per_soal(task_id, student_id, answers, submitted=True)
+    return simpan_jawaban_per_soal(
+        task_id, student_id, answers, submitted=True, _otorisasi_sudah=True
+    )
 
 
 def jawaban_kosong(v):
@@ -4519,7 +4580,7 @@ def kirim_telegram_notifikasi_pengiriman(task_id, student_id, jenis="jawaban"):
             return False, "Data tugas tidak ditemukan untuk notifikasi."
         tutor_id = str(tugas.get("ID_Tutor", "")).strip()
         tutor_nama = str(tugas.get("Tutor", "")).strip()
-        bot_token, chat_id, alasan = _konfigurasi_telegram(tutor_id)
+        bot_token, chat_id, alasan = _konfigurasi_telegram_focus(tutor_id)
         if alasan:
             return False, alasan
         siswa_id = str(student_id or "").strip()
@@ -4961,7 +5022,8 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                         # Validasi timer dilakukan sebelum unggah lampiran maupun simpan jawaban.
                         validasi_waktu_pengiriman(task_id, siswa_id)
                         if file_jawaban:
-                            simpan_lampiran_jawaban(task_id, siswa_id, file_jawaban)
+                            hasil_lampiran_online = simpan_lampiran_jawaban(task_id, siswa_id, file_jawaban)
+                            urls_lampiran_online = [x.get("URL_Drive", "") for x in hasil_lampiran_online]
                         ok = simpan_pengiriman_jawaban(task_id, siswa_id, current_answers)
                         # Tutup sesi juga bila pengiriman terdeteksi sudah pernah tersimpan (idempoten).
                         akhiri_sesi_online(siswa_id, task_id)
@@ -4977,7 +5039,8 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                                    else "Jawaban untuk tugas ini sudah dikirim sebelumnya.")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Pengiriman jawaban/lampiran gagal: {e}")
+                        catat_log_gagal_pengiriman(task_id, siswa_id, "pengiriman_jawaban_online", e, urls_lampiran_online)
+                        st.error(f"Pengiriman jawaban/lampiran gagal ({e.__class__.__name__}). Periksa koneksi dan status pengiriman sebelum mencoba ulang.")
 
         elif mode_pengerjaan == TASK_MODE_OFFLINE and unggah_oleh_tugas(t) != "siswa":
             if terkunci:
@@ -5009,6 +5072,7 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                 if file_jawaban_offline:
                     st.caption("Foto dikecilkan otomatis. Video/audio maksimal 10 MB per file. Pastikan video/audio dapat diputar dan suaranya jelas.")
                 if st.button("📤 Kirim Hasil Pekerjaan", key=f"selesai_{task_id}"):
+                    urls_lampiran_offline = []
                     try:
                         teks = "Sudah dikerjakan (offline)"
                         if catatan_siswa.strip():
@@ -5018,7 +5082,8 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                         else:
                             validasi_waktu_pengiriman(task_id, siswa_id)
                             if file_jawaban_offline:
-                                simpan_lampiran_jawaban(task_id, siswa_id, file_jawaban_offline)
+                                hasil_lampiran_offline = simpan_lampiran_jawaban(task_id, siswa_id, file_jawaban_offline)
+                                urls_lampiran_offline = [x.get("URL_Drive", "") for x in hasil_lampiran_offline]
                             ok = simpan_pengiriman_jawaban(task_id, siswa_id, {"0": teks})
                             # Tutup sesi walau sistem mengenali pengiriman yang sudah tersimpan sebelumnya.
                             akhiri_sesi_online(siswa_id, task_id)
@@ -5031,7 +5096,8 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                                        else "Tugas ini sudah dikirim sebelumnya.")
                             st.rerun()
                     except Exception as e:
-                        st.error(f"Pengiriman hasil pekerjaan gagal: {e}")
+                        catat_log_gagal_pengiriman(task_id, siswa_id, "pengiriman_hasil_offline_siswa", e, urls_lampiran_offline)
+                        st.error(f"Pengiriman hasil pekerjaan gagal ({e.__class__.__name__}). Periksa status pengiriman sebelum mencoba ulang.")
 
 
 # =========================================================
@@ -6873,11 +6939,7 @@ elif peran == "🔒 Pengajar / Tutor":
                 tutor_nama_portofolio = str(st.session_state.get("tutor_nama", "")).strip().casefold()
 
                 def _tugas_milik_tutor_login(t):
-                    # Tugas baru wajib cocok ID tutor; tugas lama hanya cocok lewat nama tutor tersimpan.
-                    pemilik_id = str(t.get("ID_Tutor", "")).strip()
-                    if pemilik_id:
-                        return bool(tutor_id_portofolio) and pemilik_id == tutor_id_portofolio
-                    return bool(tutor_nama_portofolio) and str(t.get("Tutor", "")).strip().casefold() == tutor_nama_portofolio
+                    return tugas_milik_tutor(t, tutor_id_portofolio)
 
                 try:
                     st.caption("Ringkasan hanya menampilkan tugas yang Anda berikan sendiri.")
@@ -6979,7 +7041,6 @@ elif peran == "🔒 Pengajar / Tutor":
                 )
                 st.subheader("Jawaban yang menunggu pemeriksaan")
                 tutor_id_login = str(st.session_state.get("tutor_id", "")).strip()
-                tutor_nama_login = str(st.session_state.get("tutor_nama", "")).strip().casefold()
                 daftar_tugas_review = get_student_tasks()
                 peta_tugas_review = {str(t.get("ID_Tugas", "")).strip(): t for t in daftar_tugas_review}
                 menunggu = []
@@ -6987,11 +7048,7 @@ elif peran == "🔒 Pengajar / Tutor":
                     if "menunggu" not in str(jawaban.get("Status", "")).casefold():
                         continue
                     tugas_review = peta_tugas_review.get(str(jawaban.get("ID_Tugas", "")).strip(), {})
-                    pemilik_id = str(tugas_review.get("ID_Tutor", "")).strip()
-                    pemilik_nama = str(tugas_review.get("Tutor", "")).strip().casefold()
-                    # Tugas baru: wajib cocok ID. Tugas lama: kompatibilitas terbatas pada nama tutor tersimpan.
-                    milik_tutor = (pemilik_id == tutor_id_login and bool(tutor_id_login)) if pemilik_id else (bool(tutor_nama_login) and pemilik_nama == tutor_nama_login)
-                    if milik_tutor:
+                    if tugas_milik_tutor(tugas_review, tutor_id_login):
                         menunggu.append(jawaban)
                 try:
                     info_tgs = {str(t.get("ID_Tugas", "")).strip(): t for t in get_student_tasks()}
@@ -7132,12 +7189,8 @@ elif peran == "🔒 Pengajar / Tutor":
                         simpan_nilai = st.form_submit_button("Setujui dan Terbitkan Nilai")
                         if simpan_nilai:
                             tugas_target = info_tgs.get(str(item.get("ID_Tugas", "")).strip(), {})
-                            pemilik_id_target = str(tugas_target.get("ID_Tutor", "")).strip()
-                            pemilik_nama_target = str(tugas_target.get("Tutor", "")).strip().casefold()
                             tutor_id_sekarang = str(st.session_state.get("tutor_id", "")).strip()
-                            tutor_nama_sekarang = str(st.session_state.get("tutor_nama", "")).strip().casefold()
-                            izin_menilai = ((pemilik_id_target == tutor_id_sekarang and bool(tutor_id_sekarang))
-                                            if pemilik_id_target else (bool(tutor_nama_sekarang) and pemilik_nama_target == tutor_nama_sekarang))
+                            izin_menilai = tugas_milik_tutor(tugas_target, tutor_id_sekarang)
                             if not izin_menilai:
                                 st.error("Penerbitan ditolak. Hanya tutor pemberi tugas yang dapat menerbitkan nilai.")
                             elif any(not sudah for sudah in konfirmasi_manual_per_soal.values()):
