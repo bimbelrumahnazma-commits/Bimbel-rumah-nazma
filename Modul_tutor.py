@@ -6593,6 +6593,23 @@ elif peran == "🔒 Pengajar / Tutor":
                         st.caption(pesan_cari)
                 elif search_query:
                     st.warning(pesan_cari or "Siswa aktif tidak ditemukan.")
+                    # DIAGNOSTIK SEMENTARA (hanya baca, tanpa nama siswa): hapus blok ini setelah masalah ketemu.
+                    with st.expander("🔧 Diagnostik pencarian (sementara)"):
+                        try:
+                            ws_dx = get_worksheet("Data_Siswa")
+                            vals_dx = ws_dx.get_all_values()  # baca langsung, tanpa cache
+                            hdr_dx = [str(h).strip() for h in (vals_dx[0] if vals_dx else [])]
+                            st.write(f"Spreadsheet: {init_spreadsheet().title} | Tab: {ws_dx.title}")
+                            st.write(f"Baris data di tab (baca langsung): {max(len(vals_dx) - 1, 0)}")
+                            st.write("Header: " + " | ".join(hdr_dx))
+                            st.write(f"Jumlah nama yang dibaca aplikasi (setelah cache dan filter): {len(siswa_aktif)}")
+                            kata_dx = search_query.casefold()
+                            st.write(
+                                f"Baris di sheet yang memuat '{search_query}' di kolom mana pun: "
+                                f"{sum(1 for r in vals_dx[1:] if any(kata_dx in str(c).casefold() for c in r))}"
+                            )
+                        except Exception as exc_dx:
+                            st.error(f"Diagnostik gagal: {exc_dx}")
                 else:
                     st.info("Ketik nama siswa untuk menyiapkan materi dan tugas.")
 
