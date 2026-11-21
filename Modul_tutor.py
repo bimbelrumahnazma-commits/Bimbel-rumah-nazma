@@ -4206,6 +4206,387 @@ def tampilkan_pilih_soal_portofolio(nama_siswa, daftar_tugas):
             _isi_soal_tugas_tutor(opsi[pilih])
 
 
+# =========================================================
+# FITUR BARU (disisipkan): konverter soal otomatis untuk Bank_Soal_Master.
+# Menerima teks soal biasa (Word/WhatsApp/ChatGPT) atau baris tabel yang disalin
+# dari spreadsheet lain, lalu menyusunnya sesuai header Bank_Soal_Master.
+# Kunci jawaban otomatis diubah dari huruf (B) menjadi teks pilihan, karena
+# penilaian otomatis mencocokkan teks pilihan siswa dengan kolom Kunci_Jawaban.
+# =========================================================
+_BANK_RE_NOMOR = re.compile(r"^\s*(\d{1,3})\s*[.)]\s+(.*)$")
+_BANK_RE_OPSI = re.compile(r"^\s*\(?([A-Ha-h])[.)]\s+(.*)$")
+_BANK_RE_KUNCI = re.compile(r"^\s*(?:kunci(?:\s+jawaban)?|jawaban(?:\s+benar)?|answer|key)\s*[:=]\s*(.*)$", re.I)
+_BANK_RE_BAHAS = re.compile(r"^\s*(?:pembahasan|penjelasan|explanation)\s*[:=]\s*(.*)$", re.I)
+_BANK_RE_BENTUK = re.compile(r"^\s*(?:tipe|bentuk|jenis)(?:\s+soal)?\s*[:=]\s*(.*)$", re.I)
+_BANK_RE_LABEL = re.compile(r"^\s*\(?[A-Ha-h][.)]\s+")
+
+_BANK_ALIAS_BENTUK = {
+    "pilihan ganda": "Pilihan ganda", "pg": "Pilihan ganda", "pilgan": "Pilihan ganda",
+    "multiple choice": "Pilihan ganda", "mcq": "Pilihan ganda",
+    "pilihan ganda kompleks": "PGK MCMA", "pgk": "PGK MCMA", "pgk mcma": "PGK MCMA", "mcma": "PGK MCMA",
+    "pgk kategori": "PGK Kategori",
+    "benar salah": "Benar-Salah", "benar-salah": "Benar-Salah", "b/s": "Benar-Salah",
+    "bs": "Benar-Salah", "true false": "Benar-Salah", "true/false": "Benar-Salah",
+    "essay": "Essay", "esai": "Essay", "uraian": "Essay", "isian": "Essay",
+    "isian singkat": "Essay", "jawaban singkat": "Essay",
+    "menjodohkan": "Menjodohkan",
+}
+_BANK_ALIAS_KOLOM = {
+    "teks": ["teks soal", "soal", "pertanyaan", "teks", "question", "butir soal", "teks_soal"],
+    "opsi": ["opsi jawaban", "opsi", "pilihan", "pilihan jawaban", "options", "opsi_jawaban"],
+    "kunci": ["kunci jawaban", "kunci", "jawaban benar", "jawaban", "answer", "key", "kunci_jawaban"],
+    "bentuk": ["bentuk soal", "bentuk", "tipe", "tipe soal", "jenis soal", "jenis", "bentuk_soal"],
+    "pembahasan": ["pembahasan", "penjelasan", "explanation"],
+    "mapel": ["mapel", "mata pelajaran", "pelajaran", "subject"],
+    "jenjang": ["jenjang", "tingkat", "level"],
+    "kelas": ["kelas", "class", "grade"],
+    "topik": ["bab atau topik", "bab_atau_topik", "bab", "topik", "materi", "topic"],
+    "url_gambar": ["url gambar", "url_gambar", "gambar", "link gambar"],
+    "url_audio": ["url audio", "url_audio", "audio", "link audio"],
+    "url_video": ["url video", "url_video", "video", "link video"],
+    "url_bacaan": ["url bacaan", "url_bacaan", "bacaan", "link bacaan"],
+    "bobot": ["bobot", "skor", "poin"],
+}
+
+
+def _bank_hapus_label(teks):
+    return _BANK_RE_LABEL.sub("", str(teks or "")).strip()
+
+
+def bank_parse_teks_soal(teks):
+    """Ubah teks soal biasa menjadi daftar soal mentah. Satu soal diawali nomor (1. / 1))."""
+    teks = str(teks or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not teks:
+        return []
+    baris_all = teks.split("\n")
+    if any(_BANK_RE_NOMOR.match(b) for b in baris_all):
+        blok, sekarang = [], None
+        for b in baris_all:
+            cocok = _BANK_RE_NOMOR.match(b)
+            if cocok and (sekarang is None or not _BANK_RE_OPSI.match(b)):
+                sekarang = [cocok.group(2)]
+                blok.append(sekarang)
+            elif sekarang is not None:
+                sekarang.append(b)
+        blok = [x for x in blok if any(str(y).strip() for y in x)]
+    else:
+        potongan = re.split(r"\n\s*\n\s*\n|\n\s*-{3,}\s*\n", teks)
+        blok = [p.split("\n") for p in potongan if p.strip()]
+
+    hasil = []
+    for baris_blok in blok:
+        item = {"teks": "", "opsi": [], "kunci": "", "bentuk": "", "pembahasan": ""}
+        mode = "teks"
+        for b in baris_blok:
+            if not b.strip():
+                continue
+            m_kunci, m_bahas, m_bentuk, m_opsi = (
+                _BANK_RE_KUNCI.match(b), _BANK_RE_BAHAS.match(b), _BANK_RE_BENTUK.match(b), _BANK_RE_OPSI.match(b)
+            )
+            if m_kunci:
+                item["kunci"], mode = m_kunci.group(1).strip(), "kunci"
+            elif m_bahas:
+                item["pembahasan"], mode = m_bahas.group(1).strip(), "bahas"
+            elif m_bentuk:
+                item["bentuk"], mode = m_bentuk.group(1).strip(), "bentuk"
+            elif m_opsi:
+                item["opsi"].append(m_opsi.group(2).strip())
+                mode = "opsi"
+            elif mode == "opsi" and item["opsi"]:
+                item["opsi"][-1] = (item["opsi"][-1] + " " + b.strip()).strip()
+            elif mode == "kunci":
+                item["kunci"] = (item["kunci"] + " " + b.strip()).strip()
+            elif mode == "bahas":
+                item["pembahasan"] = (item["pembahasan"] + " " + b.strip()).strip()
+            else:
+                item["teks"] = (item["teks"] + "\n" + b.strip()).strip() if item["teks"] else b.strip()
+        hasil.append(item)
+    return hasil
+
+
+def _bank_cocokkan_kolom(nama_kolom):
+    kunci = re.sub(r"\s+", " ", str(nama_kolom or "").strip().casefold().replace("_", " "))
+    for baku, alias in _BANK_ALIAS_KOLOM.items():
+        if kunci in [a.replace("_", " ") for a in alias]:
+            return baku
+    cocok = re.match(r"^(?:opsi|pilihan|jawaban)?\s*([a-h])$", kunci)
+    if cocok:
+        return "opsi_" + cocok.group(1)
+    return ""
+
+
+def bank_parse_tabel(teks):
+    """Baca baris tabel yang disalin dari spreadsheet (tab / koma / titik koma) dengan baris judul kolom."""
+    import csv
+    import io
+    teks = str(teks or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not teks:
+        return [], []
+    baris_pertama = teks.split("\n", 1)[0]
+    pemisah = "\t" if "\t" in baris_pertama else (";" if baris_pertama.count(";") > baris_pertama.count(",") else ",")
+    baris = [r for r in csv.reader(io.StringIO(teks), delimiter=pemisah) if any(str(c).strip() for c in r)]
+    if len(baris) < 2:
+        return [], ["Tabel minimal berisi baris judul kolom dan satu baris soal."]
+    peta = [_bank_cocokkan_kolom(c) for c in baris[0]]
+    masalah = []
+    if "teks" not in peta:
+        masalah.append("Kolom soal tidak ditemukan. Beri judul kolom 'Soal', 'Pertanyaan', atau 'Teks_Soal'.")
+        return [], masalah
+    hasil = []
+    for r in baris[1:]:
+        item = {"teks": "", "opsi": [], "kunci": "", "bentuk": "", "pembahasan": ""}
+        opsi_huruf = {}
+        for idx, sel in enumerate(r):
+            kolom = peta[idx] if idx < len(peta) else ""
+            sel = str(sel or "").strip()
+            if not kolom or not sel:
+                continue
+            if kolom.startswith("opsi_"):
+                opsi_huruf[kolom[-1]] = sel
+            elif kolom == "opsi":
+                bagian = re.split(r"\s*\|\s*|\n|;", sel)
+                item["opsi"] = [x.strip() for x in bagian if x.strip()]
+            else:
+                item[kolom] = sel
+        if opsi_huruf and not item["opsi"]:
+            item["opsi"] = [opsi_huruf[h] for h in sorted(opsi_huruf)]
+        hasil.append(item)
+    return hasil, masalah
+
+
+def _bank_kunci_ke_teks(kunci_raw, opsi):
+    """Ubah kunci huruf (B / A,C) menjadi teks pilihan. Mengembalikan (daftar_teks, masalah)."""
+    mentah = str(kunci_raw or "").strip()
+    if not mentah:
+        return [], "kunci jawaban kosong"
+    peta_teks = {_nilai_normalisasi(o): o for o in opsi}
+    if _nilai_normalisasi(mentah) in peta_teks:
+        return [peta_teks[_nilai_normalisasi(mentah)]], ""
+    if re.match(r"^\(?[A-Ha-h][.)]\s+\S", mentah):
+        mentah = re.match(r"^\(?([A-Ha-h])", mentah).group(1)
+    token = [t for t in re.split(r"\s*(?:[,;|&/]|\bdan\b)\s*|\s+", mentah) if t]
+    hasil = []
+    for t in token:
+        huruf = t.strip(".)(").upper()
+        if len(huruf) == 1 and huruf.isalpha() and 0 <= ord(huruf) - 65 < len(opsi):
+            teks_opsi = opsi[ord(huruf) - 65]
+        elif _nilai_normalisasi(t) in peta_teks:
+            teks_opsi = peta_teks[_nilai_normalisasi(t)]
+        else:
+            return [], f"kunci '{mentah}' tidak cocok dengan pilihan yang ada"
+        if teks_opsi not in hasil:
+            hasil.append(teks_opsi)
+    return hasil, ""
+
+
+def bank_bangun_baris(raw, meta, bentuk_peta=None):
+    """Susun satu soal mentah menjadi baris Bank_Soal_Master. Mengembalikan dict dengan _masalah dan _catatan."""
+    bentuk_peta = bentuk_peta or {}
+    masalah, catatan = [], []
+    teks = str(raw.get("teks", "") or "").strip()
+    if not teks:
+        masalah.append("teks soal kosong")
+    opsi = []
+    for o in raw.get("opsi", []) or []:
+        o = _bank_hapus_label(o)
+        if "|" in o:
+            o = o.replace("|", "/")
+            catatan.append("tanda | dalam pilihan diganti /")
+        if o:
+            opsi.append(o)
+
+    bentuk_sebut = re.sub(r"\s+", " ", str(raw.get("bentuk", "") or "").strip().casefold())
+    bentuk = _BANK_ALIAS_BENTUK.get(bentuk_sebut, "")
+    if bentuk_sebut and not bentuk:
+        masalah.append(f"bentuk soal '{raw.get('bentuk')}' tidak dikenali")
+    kunci_teks = []
+    kunci_raw = str(raw.get("kunci", "") or "").strip()
+
+    if bentuk == "Menjodohkan":
+        masalah.append("soal menjodohkan perlu diisi manual di sheet (format JSON kolom A/B)")
+    else:
+        sinonim_benar = {"b", "benar", "true", "t", "ya"}
+        sinonim_salah = {"s", "salah", "false", "f", "tidak"}
+        bs_otomatis = (not bentuk) and {x.casefold() for x in opsi} == {"benar", "salah"}
+        if bentuk == "Benar-Salah" or bs_otomatis:
+            bentuk = "Benar-Salah"
+            opsi = ["Benar", "Salah"]
+            k = kunci_raw.casefold().strip(". ")
+            if k in sinonim_benar:
+                kunci_teks = ["Benar"]
+            elif k in sinonim_salah:
+                kunci_teks = ["Salah"]
+            else:
+                masalah.append("kunci Benar/Salah tidak jelas")
+        elif opsi or bentuk in ("Pilihan ganda", "PGK MCMA", "PGK Kategori"):
+            if len(opsi) < 2:
+                masalah.append("soal pilihan butuh minimal 2 pilihan")
+            else:
+                kunci_teks, m = _bank_kunci_ke_teks(kunci_raw, opsi)
+                if m:
+                    masalah.append(m)
+                if not bentuk:
+                    bentuk = "PGK MCMA" if len(kunci_teks) > 1 else "Pilihan ganda"
+                    if len(kunci_teks) > 1:
+                        catatan.append("kunci lebih dari satu, dijadikan PGK MCMA")
+                elif bentuk == "Pilihan ganda" and len(kunci_teks) > 1:
+                    masalah.append("pilihan ganda biasa hanya boleh satu kunci")
+        else:
+            bentuk = "Essay"
+            kunci_teks = [kunci_raw] if kunci_raw else []
+            if not kunci_raw:
+                catatan.append("essay tanpa kunci, dinilai manual")
+    bentuk_akhir = bentuk_peta.get(bentuk.casefold(), bentuk)
+
+    bobot = str(raw.get("bobot", "") or "").strip().replace(",", ".")
+    try:
+        bobot = str(float(bobot)).rstrip("0").rstrip(".") if bobot else "1"
+        if float(bobot) <= 0:
+            masalah.append("bobot harus lebih dari 0")
+    except ValueError:
+        masalah.append(f"bobot '{raw.get('bobot')}' bukan angka")
+        bobot = "1"
+
+    def _ambil(kolom, bawaan=""):
+        return str(raw.get(kolom, "") or "").strip() or str(meta.get(kolom, bawaan) or "").strip()
+
+    for kolom_url in ("url_gambar", "url_audio", "url_video", "url_bacaan"):
+        u = str(raw.get(kolom_url, "") or "").strip()
+        if u and not u.lower().startswith(("http://", "https://")):
+            masalah.append(f"{kolom_url} harus diawali http:// atau https://")
+    sep = "|"
+    return {
+        "Kode_Soal": "BS-" + uuid.uuid4().hex[:8].upper(),
+        "Jenjang": _ambil("jenjang"), "Kelas": _ambil("kelas"), "Mapel": _ambil("mapel"),
+        "Bab_Atau_Topik": _ambil("topik"),
+        "Bentuk_Soal": bentuk_akhir, "Teks_Soal": teks,
+        "Opsi_Jawaban": sep.join(opsi) if bentuk != "Essay" else "",
+        "Kunci_Jawaban": sep.join(kunci_teks),
+        "Pembahasan": str(raw.get("pembahasan", "") or "").strip(),
+        "URL_Gambar": str(raw.get("url_gambar", "") or "").strip(),
+        "URL_Audio": str(raw.get("url_audio", "") or "").strip(),
+        "URL_Video": str(raw.get("url_video", "") or "").strip(),
+        "URL_Bacaan": str(raw.get("url_bacaan", "") or "").strip(),
+        "Bobot": bobot, "Status": "Aktif",
+        "_masalah": masalah, "_catatan": catatan,
+    }
+
+
+def bank_susun_sesuai_header(headers, baris):
+    """Letakkan nilai pada kolom sesuai urutan header sheet; kolom yang tidak dikenal dibiarkan kosong."""
+    return [str(baris.get(h, "") if not str(h).startswith("_") else "") for h in headers]
+
+
+def tampilkan_konverter_bank_soal(konteks="owner"):
+    """UI konverter: tempel soal -> periksa hasil konversi -> simpan ke Bank_Soal_Master."""
+    k = f"bk_{konteks}"
+    st.caption(
+        "Tempel soal apa adanya. Aplikasi menyusunnya sesuai kolom Bank_Soal_Master, memindahkan kunci huruf "
+        "(misalnya B) menjadi teks pilihan, lalu menampilkan hasilnya untuk Anda periksa sebelum disimpan."
+    )
+    mode = st.radio(
+        "Bentuk tempelan:", ["Teks soal biasa (Word / WhatsApp / ChatGPT)", "Baris tabel dari spreadsheet lain"],
+        key=f"{k}_mode"
+    )
+    if mode.startswith("Teks"):
+        st.code(
+            "1. Ibu kota Indonesia adalah ...\nA. Bandung\nB. Jakarta\nC. Surabaya\nD. Medan\n"
+            "Kunci: B\nPembahasan: Jakarta adalah ibu kota saat ini.\n\n"
+            "2. Sebutkan dua contoh gaya!\nKunci: gaya dorong dan gaya tarik",
+            language="text"
+        )
+        st.caption(
+            "Satu soal diawali nomor. Pilihan A, B, C, dst. Baris 'Kunci:' dan 'Pembahasan:' opsional. "
+            "Tanpa pilihan dianggap Essay. Pilihan Benar/Salah dikenali otomatis. Boleh menulis 'Bentuk: PGK' untuk "
+            "kunci lebih dari satu (A, C)."
+        )
+    else:
+        st.caption(
+            "Salin baris dari Google Sheets/Excel termasuk baris judul kolom. Judul seperti Soal, Pertanyaan, Opsi, "
+            "Pilihan, A/B/C/D, Kunci, Jawaban, Tipe, Mapel, Kelas dikenali otomatis."
+        )
+    teks_tempel = st.text_area("Tempel di sini:", height=220, key=f"{k}_teks")
+
+    st.markdown("**Data umum untuk soal yang tidak mencantumkannya sendiri:**")
+    kol1, kol2 = st.columns(2)
+    with kol1:
+        jenjang = st.text_input("Jenjang (contoh: SMP)", key=f"{k}_jenjang")
+        kelas = st.text_input("Kelas (contoh: Kelas 7)", key=f"{k}_kelas")
+    with kol2:
+        mapel = st.selectbox("Mapel", [""] + list(MAPEL_OPTIONS), key=f"{k}_mapel")
+        topik = st.text_input("Bab / topik", key=f"{k}_topik")
+    meta = {"jenjang": jenjang.strip(), "kelas": kelas.strip(), "mapel": mapel.strip(), "topik": topik.strip()}
+
+    kunci_hasil = f"{k}_hasil"
+    if st.button("🔄 Konversi dan periksa", key=f"{k}_konversi"):
+        if not teks_tempel.strip():
+            st.warning("Tempel soal terlebih dahulu.")
+        else:
+            try:
+                ws_bank = get_worksheet("Bank_Soal_Master")
+                headers = ws_bank.row_values(1)
+                existing = baca_records_aman(ws_bank, refresh=True)
+                bentuk_peta = {str(x.get("Bentuk_Soal", "")).strip().casefold(): str(x.get("Bentuk_Soal", "")).strip()
+                               for x in existing if str(x.get("Bentuk_Soal", "")).strip()}
+                teks_ada = {re.sub(r"\s+", " ", str(x.get("Teks_Soal", "")).strip()).casefold() for x in existing}
+                if mode.startswith("Teks"):
+                    mentah, masalah_umum = bank_parse_teks_soal(teks_tempel), []
+                else:
+                    mentah, masalah_umum = bank_parse_tabel(teks_tempel)
+                kurang = sorted({"Kode_Soal", "Jenjang", "Kelas", "Mapel", "Bab_Atau_Topik", "Bentuk_Soal",
+                                 "Teks_Soal", "Opsi_Jawaban", "Kunci_Jawaban", "Status"} - set(headers))
+                if kurang:
+                    masalah_umum.append("Kolom Bank_Soal_Master belum lengkap: " + ", ".join(kurang))
+                baris_hasil, dilihat = [], set()
+                for item in mentah:
+                    b = bank_bangun_baris(item, meta, bentuk_peta)
+                    norm = re.sub(r"\s+", " ", b["Teks_Soal"]).casefold()
+                    if norm and (norm in teks_ada or norm in dilihat):
+                        b["_masalah"].append("soal yang sama sudah ada, dilewati")
+                    dilihat.add(norm)
+                    for kolom_wajib, nama_tampil in (("Jenjang", "jenjang"), ("Kelas", "kelas"), ("Mapel", "mapel")):
+                        if not b[kolom_wajib]:
+                            b["_masalah"].append(f"{nama_tampil} belum diisi")
+                    baris_hasil.append(b)
+                st.session_state[kunci_hasil] = {"headers": headers, "baris": baris_hasil, "umum": masalah_umum}
+            except Exception as exc:
+                st.session_state.pop(kunci_hasil, None)
+                st.error(f"Konversi belum dapat dilakukan: {exc}")
+
+    hasil = st.session_state.get(kunci_hasil)
+    if not hasil:
+        return
+    for pesan in hasil["umum"]:
+        st.error(pesan)
+    baris_hasil = hasil["baris"]
+    if not baris_hasil:
+        st.info("Tidak ada soal yang terbaca. Periksa format tempelan.")
+        return
+    siap = [b for b in baris_hasil if not b["_masalah"]]
+    st.markdown(f"**Hasil: {len(siap)} soal siap disimpan dari {len(baris_hasil)} soal terbaca.**")
+    st.dataframe(pd.DataFrame([
+        {
+            "No": i, "Status": "✅ Siap" if not b["_masalah"] else "❌ Perlu diperbaiki",
+            "Bentuk": b["Bentuk_Soal"], "Soal": b["Teks_Soal"][:90],
+            "Pilihan": b["Opsi_Jawaban"], "Kunci": b["Kunci_Jawaban"],
+            "Catatan": "; ".join(b["_masalah"] + b["_catatan"]),
+        } for i, b in enumerate(baris_hasil, 1)
+    ]), use_container_width=True, hide_index=True)
+    if len(siap) < len(baris_hasil):
+        st.caption("Soal bertanda ❌ tidak ikut disimpan. Perbaiki teks tempelan lalu tekan Konversi lagi.")
+    if siap and not hasil["umum"]:
+        if st.button(f"💾 Simpan {len(siap)} soal ke Bank_Soal_Master", type="primary", key=f"{k}_simpan"):
+            try:
+                ws_bank = get_worksheet("Bank_Soal_Master")
+                baris_tulis = [bank_susun_sesuai_header(hasil["headers"], b) for b in siap]
+                _panggil_sheets_dengan_retry_429(ws_bank.append_rows, baris_tulis, value_input_option="RAW")
+                _baca_values_cache.clear()
+                st.session_state.pop(kunci_hasil, None)
+                st.success(f"{len(siap)} soal tersimpan di Bank_Soal_Master dan siap dipilih saat membuat tugas.")
+            except Exception as exc:
+                st.error(f"Soal belum tersimpan: {exc}")
+
+
 def tampilkan_laporan_perkembangan(nama_siswa, tugas, jawaban, nilai):
     """Ringkasan perkembangan dengan relasi nilai berdasarkan penugasan dan siswa."""
     tugas_siswa = [
@@ -6154,6 +6535,9 @@ elif peran == "🔒 Pengajar / Tutor":
 
         elif menu_tutor == "📝 Persiapan Sesi & Bank Soal":
                 st.header("📖 Persiapan Sesi Pembelajaran")
+                # FITUR BARU: konverter soal otomatis untuk tutor
+                with st.expander("📥 Tambah soal ke Bank Soal (otomatis rapi)", expanded=False):
+                    tampilkan_konverter_bank_soal("tutor")
                 siswa_aktif = get_siswa_aktif()
 
                 search_query = st.text_input("🔍 Cari nama siswa yang sedang diajar:", key="tutor_cari_siswa").strip().lower()
@@ -6629,6 +7013,13 @@ elif peran == "🔒 Pengajar / Tutor":
                         simpan_bank_pilihan = None
                         if sumber_tugas == SUMBER_UPLOAD and source_ready:
                             simpan_bank_pilihan = form_simpan_ke_bank(k, judul_tugas, mapel_tugas)
+                        elif sumber_tugas == SUMBER_DRIVE and source_ready:
+                            # FITUR BARU: link Drive/Flipbook juga bisa disimpan ke bank agar dipakai ulang
+                            st.caption(
+                                "Ingin link ini dipakai lagi untuk siswa lain? Buka kotak di bawah dan centang Simpan. "
+                                "Judul dan mapel terisi otomatis, cukup pilih kelas."
+                            )
+                            simpan_bank_pilihan = form_simpan_ke_bank(k, judul_tugas, mapel_tugas)
 
                         tambah_draft = st.button("Tambahkan ke daftar tugas", key=f"tambah_{k}")
 
@@ -6702,6 +7093,12 @@ elif peran == "🔒 Pengajar / Tutor":
                                     st.warning(f"Tugas masuk daftar draft, tetapi status pekerjaan sementara belum diperbarui: {exc}")
                                 st.session_state.pop(f"_nazma_form_autosave_hash_{recovery_key}", None)
                                 st.session_state.pop(f"_autosave_files_{k}", None)
+                                if simpan_bank_pilihan and sumber_tugas == SUMBER_DRIVE:
+                                    # FITUR BARU: ubah link menjadi entri lampiran bank (tidak mengubah draft yang sudah dibuat)
+                                    files = [
+                                        {"name": f"Link materi {no}", "mime": "text/uri-list", "url": u}
+                                        for no, u in enumerate(link_list, 1)
+                                    ]
                                 if simpan_bank_pilihan:
                                     try:
                                         hasil_bank = simpan_berkas_ke_bank(
@@ -8086,6 +8483,10 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                 st.dataframe(pd.DataFrame(baca_records_aman(ws_bank)).drop(columns=["_baris"], errors="ignore"), use_container_width=True)
             except Exception as e:
                 st.error(f"Bank soal belum dapat dibuka: {e}")
+            # FITUR BARU: konverter soal otomatis
+            st.markdown("---")
+            st.subheader("📥 Tambah soal ke Bank Soal (otomatis rapi)")
+            tampilkan_konverter_bank_soal("owner")
 
         with tab4:
             st.caption("Owner dapat membuat PIN pengganti. PIN langsung disimpan dalam bentuk HASH; pengguna dapat menggantinya lagi setelah login.")
