@@ -4101,6 +4101,111 @@ def tampilkan_pratinjau_lembar_jawaban(daftar_soal, judul="Pratinjau lembar jawa
             st.divider()
 
 
+# =========================================================
+# FITUR BARU (disisipkan): tampilan soal yang diberikan ke siswa, untuk tutor.
+# Dipakai di Portofolio siswa dan saat memeriksa/menilai jawaban.
+# Hanya membaca data tugas; tidak menulis apa pun ke Google Sheets.
+# =========================================================
+def _isi_soal_tugas_tutor(tugas, tampil_kunci=True):
+    """Isi tampilan soal/lampiran tugas untuk tutor. Tanpa expander, aman dipakai di dalam expander."""
+    if not tugas:
+        st.info("Data tugas tidak ditemukan, sehingga soal tidak dapat ditampilkan.")
+        return
+    try:
+        daftar_soal, _mode_json = buka_soal_dan_mode(tugas.get("Soal_JSON", ""), tugas.get("Jenis_Tugas", ""))
+        timer_txt = str(tugas.get("Timer_Menit", "") or "").strip()
+        st.caption(
+            f"Mapel: {tugas.get('Mapel', '-')} · Sumber: {tugas.get('Sumber', '-') or '-'} · "
+            f"Mode: {mode_tugas(tugas)} · Diberikan: {tugas.get('Tanggal', '-')} · "
+            f"Timer: {'Tanpa timer' if timer_txt in ('', '0') else timer_txt + ' menit'}"
+        )
+        if str(tugas.get("Instruksi", "") or "").strip():
+            st.write(f"**Instruksi:** {tugas.get('Instruksi')}")
+
+        lampiran = parse_lampiran(tugas.get("File_Offline", ""))
+        if lampiran:
+            st.markdown("**📎 Soal / lampiran yang diberikan ke siswa:**")
+            for no, (jenis, url) in enumerate(lampiran, 1):
+                if jenis == "img":
+                    st.image(img_url(url), caption=f"Halaman {no}", use_container_width=True)
+                elif jenis == "video":
+                    st.video(media_direct_url(url))
+                elif jenis == "audio":
+                    st.audio(media_direct_url(url))
+                else:
+                    fid = drive_id(url)
+                    if fid:
+                        components.iframe(f"https://drive.google.com/file/d/{fid}/preview", height=480, scrolling=True)
+                st.markdown(f"[↗ Buka lampiran {no} ({jenis})]({url})")
+
+        if daftar_soal:
+            st.markdown(f"**📝 Soal pada lembar jawaban ({len(daftar_soal)} butir):**")
+            for i, soal in enumerate(daftar_soal, 1):
+                if not isinstance(soal, dict):
+                    continue
+                teks = str(soal.get("Teks_Soal", "") or "").strip()
+                if teks:
+                    st.markdown(f"**{i}. {teks}**")
+                else:
+                    st.markdown(f"**{i}.** _(teks soal ada pada lampiran di atas)_")
+                if str(soal.get("Url_Gambar", "") or "").strip():
+                    st.image(img_url(soal["Url_Gambar"]), use_container_width=True)
+                for ikon, kolom in (("🎧 Audio", "Url_Audio"), ("🎬 Video", "Url_Video"), ("📖 Bacaan", "Url_Bacaan")):
+                    u = str(soal.get(kolom, "") or "").strip()
+                    if u.startswith(("https://", "http://")):
+                        st.markdown(f"[{ikon} soal {i}]({u})")
+                bentuk = str(soal.get("Bentuk_Soal", "") or "")
+                if bentuk:
+                    st.caption(f"Bentuk: {bentuk} · Bobot: {soal.get('Bobot', 1)}")
+                opsi = soal.get("Opsi_List", []) or []
+                if isinstance(opsi, list) and opsi:
+                    st.caption("Pilihan: " + " · ".join(str(x) for x in opsi))
+                pasangan = soal.get("Pasangan", {}) or {}
+                if isinstance(pasangan, dict) and pasangan:
+                    kiri = pasangan.get("kolom_A", {}) or {}
+                    kanan = pasangan.get("kolom_B", {}) or {}
+                    st.caption("Kolom A: " + " · ".join(f"{k}. {v}" for k, v in kiri.items()))
+                    st.caption("Kolom B: " + " · ".join(f"{k}. {v}" for k, v in kanan.items()))
+                if tampil_kunci:
+                    kunci = str(soal.get("Kunci", "") or "").strip()
+                    if kunci:
+                        st.caption(f"🔑 Kunci (hanya terlihat tutor): {kunci}")
+                    rubrik = soal.get("Rubrik_Kata_Kunci", []) or []
+                    if rubrik:
+                        st.caption("🔑 Rubrik kata kunci (hanya terlihat tutor): " + ", ".join(str(x) for x in rubrik))
+        if not lampiran and not daftar_soal:
+            st.caption("Tugas ini tidak memiliki soal atau lampiran yang tersimpan.")
+    except Exception as exc:
+        st.warning(f"Soal tugas belum dapat ditampilkan: {exc.__class__.__name__}")
+
+
+def tampilkan_soal_tugas_untuk_tutor(tugas, expanded=True, judul="📘 Soal yang diberikan pada tugas ini"):
+    """Expander soal untuk satu tugas; dipakai saat tutor memeriksa dan menilai jawaban."""
+    with st.expander(judul, expanded=expanded):
+        _isi_soal_tugas_tutor(tugas)
+
+
+def tampilkan_pilih_soal_portofolio(nama_siswa, daftar_tugas):
+    """Di Portofolio: pilih satu tugas siswa lalu lihat soal yang pernah diberikan."""
+    tugas_ada = [t for t in (daftar_tugas or []) if str(t.get("ID_Tugas", "")).strip()]
+    if not tugas_ada:
+        return
+    opsi = {}
+    for t in reversed(tugas_ada):  # terbaru di atas
+        label = (
+            f"{str(t.get('Tanggal', ''))[:10]} | {t.get('Mapel', '')} - "
+            f"{t.get('Judul_Tugas', '') or t.get('Instruksi', '')} | {t.get('ID_Tugas', '')}"
+        )
+        opsi[label] = t
+    with st.expander(f"📘 Soal yang diberikan ke {nama_siswa}", expanded=False):
+        pilih = st.selectbox(
+            "Pilih tugas untuk melihat soalnya:", ["— Pilih tugas —"] + list(opsi.keys()),
+            key=f"pilih_soal_portofolio_{nama_siswa}"
+        )
+        if pilih != "— Pilih tugas —":
+            _isi_soal_tugas_tutor(opsi[pilih])
+
+
 def tampilkan_laporan_perkembangan(nama_siswa, tugas, jawaban, nilai):
     """Ringkasan perkembangan dengan relasi nilai berdasarkan penugasan dan siswa."""
     tugas_siswa = [
@@ -6620,6 +6725,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                 st.rerun()
 
                     daftar_draft = st.session_state[draft_key]
+                    if st.session_state.get("_nazma_notice_tambahan"):
+                        st.info(st.session_state.pop("_nazma_notice_tambahan"))
                     st.markdown("### 📋 Daftar tugas yang akan dikirim")
                     if daftar_draft:
                         for i, item in enumerate(daftar_draft, 1):
@@ -6660,6 +6767,34 @@ elif peran == "🔒 Pengajar / Tutor":
                                     except Exception as exc:
                                         st.warning(f"Salinan ada di sesi ini tetapi belum tersinkron: {exc}")
                                     st.rerun()
+                        # FITUR BARU: kirim tugas yang sama juga ke siswa lain
+                        kunci_tambahan = f"_siswa_tambahan_{selected_siswa}"
+                        terpilih_tambahan = list(st.session_state.get(kunci_tambahan, []))
+                        with st.expander(
+                            f"👥 Kirim tugas yang sama ke siswa lain (opsional) — {len(terpilih_tambahan)} dipilih",
+                            expanded=bool(terpilih_tambahan)
+                        ):
+                            st.caption(
+                                "Semua tugas di daftar ini akan dikirim juga ke siswa yang dipilih di sini. "
+                                "Setiap siswa menerima tugas sendiri dengan ID berbeda, timer, jawaban, dan nilai terpisah."
+                            )
+                            cari_tambahan = st.text_input(
+                                "Cari nama siswa tambahan (minimal 3 huruf):", key=f"cari_tambahan_{selected_siswa}"
+                            )
+                            hasil_tambahan, pesan_tambahan = cari_siswa_terbatas(
+                                cari_tambahan,
+                                [n for n in siswa_aktif if str(n).strip().casefold() != str(selected_siswa).strip().casefold()]
+                            )
+                            if pesan_tambahan:
+                                st.caption(pesan_tambahan)
+                            opsi_tambahan = sorted(set(terpilih_tambahan) | set(hasil_tambahan), key=str.casefold)
+                            if opsi_tambahan:
+                                pilihan_tambahan = st.multiselect(
+                                    "Siswa tambahan:", opsi_tambahan, default=terpilih_tambahan
+                                )
+                                st.session_state[kunci_tambahan] = list(pilihan_tambahan)
+                            else:
+                                st.caption("Ketik nama untuk mencari siswa. Siswa yang sudah dipilih tetap tersimpan di sini.")
                         col_kirim, col_hapus = st.columns(2)
                         with col_kirim:
                             if st.button(f"📤 Simpan & Kirim Semua ({len(daftar_draft)})", type="primary", key=f"kirim_semua_{selected_siswa}"):
@@ -6738,6 +6873,44 @@ elif peran == "🔒 Pengajar / Tutor":
                                                 str(st.session_state.get("tutor_id", "")).strip()
                                             ])
                                         ws_tugas.append_rows(baris_baru, value_input_option="RAW")
+                                        # FITUR BARU: salin penugasan yang sama ke siswa tambahan.
+                                        # Lampiran Drive yang sudah diunggah dipakai ulang; tiap siswa mendapat ID_Tugas baru.
+                                        try:
+                                            nama_tambahan = [
+                                                n for n in st.session_state.get(f"_siswa_tambahan_{selected_siswa}", [])
+                                                if str(n).strip().casefold() != str(selected_siswa).strip().casefold()
+                                            ]
+                                            baris_tambahan, siswa_terkirim, siswa_dilewati = [], [], []
+                                            for nama_t in nama_tambahan:
+                                                id_t = get_siswa_id_by_nama(nama_t)
+                                                if not id_t:
+                                                    siswa_dilewati.append(nama_t)
+                                                    continue
+                                                for baris_asal in baris_baru:
+                                                    baris_salin = list(baris_asal)
+                                                    baris_salin[0] = "TGS-" + uuid.uuid4().hex[:10].upper()
+                                                    baris_salin[2] = nama_t
+                                                    baris_salin[15] = id_t
+                                                    baris_tambahan.append(baris_salin)
+                                                siswa_terkirim.append(nama_t)
+                                            if baris_tambahan:
+                                                ws_tugas.append_rows(baris_tambahan, value_input_option="RAW")
+                                            catatan_tambahan = ""
+                                            if siswa_terkirim:
+                                                catatan_tambahan = "Tugas yang sama juga terkirim ke: " + ", ".join(siswa_terkirim) + "."
+                                            if siswa_dilewati:
+                                                catatan_tambahan += (
+                                                    " Tidak dikirim (identitas tidak dapat dipastikan / nama ganda): "
+                                                    + ", ".join(siswa_dilewati) + "."
+                                                )
+                                            if catatan_tambahan:
+                                                st.session_state["_nazma_notice_tambahan"] = catatan_tambahan.strip()
+                                            st.session_state.pop(f"_siswa_tambahan_{selected_siswa}", None)
+                                        except Exception as exc_tambahan:
+                                            st.session_state["_nazma_notice_tambahan"] = (
+                                                f"Tugas untuk {selected_siswa} sudah terkirim, tetapi pengiriman ke siswa tambahan gagal "
+                                                f"({exc_tambahan.__class__.__name__}). Pilih siswa tambahan lalu kirim ulang dari siswa tersebut."
+                                            )
                                         n_pr = sum(1 for it in daftar_draft if str(it["Jenis"]).startswith("PR"))
                                         st.session_state[draft_key] = []
                                         try:
@@ -7040,6 +7213,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                     )
                                 } for x in tugas_siswa_laporan
                             ]), use_container_width=True, hide_index=True)
+                            # FITUR BARU: soal yang diberikan ke siswa ini
+                            tampilkan_pilih_soal_portofolio(nama_siswa_laporan, tugas_siswa_laporan)
                 except Exception as exc:
                     st.warning(f"Ringkasan perkembangan belum dapat dimuat: {exc}")
 
@@ -7100,6 +7275,10 @@ elif peran == "🔒 Pengajar / Tutor":
                         st.rerun()
                 if item is not None:
                     st.write(f"**Siswa:** {nama_tampil_item}")
+                    # FITUR BARU: soal yang dikirim ke siswa ikut muncul saat menilai
+                    tampilkan_soal_tugas_untuk_tutor(
+                        info_tgs.get(str(item.get("ID_Tugas", "")).strip(), {}), expanded=True
+                    )
                     lampiran_item = baca_lampiran_jawaban(
                             item.get("ID_Tugas", ""), item.get("ID_Siswa", ""), refresh=True
                         )
