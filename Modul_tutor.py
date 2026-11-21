@@ -4587,7 +4587,7 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
                 st.error(f"Soal belum tersimpan: {exc}")
 
 
-def tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif):
+def tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif, dalam_expander=True):
     """Pilih beberapa siswa untuk tugas yang sama: ketik nama, tekan tombol ➕ pada hasil, ulangi.
     Memakai tombol dengan callback (bukan multiselect) agar mudah ditekan di HP dan pilihan tidak hilang."""
     kunci = f"_siswa_tambahan_{selected_siswa}"
@@ -4602,10 +4602,15 @@ def tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif):
     def _hapus(nama):
         st.session_state[kunci] = [x for x in st.session_state.get(kunci, []) if x != nama]
 
-    with st.expander(
-        f"👥 Beri tugas yang sama ke siswa lain (opsional) — {len(terpilih)} dipilih",
-        expanded=bool(terpilih)
-    ):
+    judul_bagi = f"👥 Beri tugas yang sama ke siswa lain (opsional) — {len(terpilih)} dipilih"
+    # Streamlit tidak mengizinkan expander di dalam expander; di dalam form tugas pakai kotak biasa.
+    if dalam_expander:
+        wadah_bagi = st.expander(judul_bagi, expanded=bool(terpilih))
+    else:
+        wadah_bagi = st.container(border=True)
+    with wadah_bagi:
+        if not dalam_expander:
+            st.markdown(f"**{judul_bagi}**")
         st.caption(
             f"Siswa utama: {selected_siswa}. Ketik nama siswa lain, tekan Enter, lalu tekan tombol ➕ pada nama yang cocok. "
             "Ulangi untuk menambah siswa lain. Setiap siswa mendapat tugas, timer, jawaban, dan nilai sendiri."
@@ -6576,9 +6581,6 @@ elif peran == "🔒 Pengajar / Tutor":
 
         elif menu_tutor == "📝 Persiapan Sesi & Bank Soal":
                 st.header("📖 Persiapan Sesi Pembelajaran")
-                # FITUR BARU: konverter soal otomatis untuk tutor
-                with st.expander("📥 Tambah soal ke Bank Soal (otomatis rapi)", expanded=False):
-                    tampilkan_konverter_bank_soal("tutor")
                 siswa_aktif = get_siswa_aktif()
 
                 search_query = st.text_input("🔍 Cari nama siswa yang sedang diajar:", key="tutor_cari_siswa").strip().lower()
@@ -6598,8 +6600,20 @@ elif peran == "🔒 Pengajar / Tutor":
                     st.markdown("---")
                     st.subheader(f"📚 Rencana tugas untuk: {selected_siswa}")
                     st.caption("Setiap tugas disimpan sebagai catatan tersendiri sehingga satu siswa dapat menerima beberapa tugas dari beberapa mata pelajaran.")
-                    # FITUR BARU: pilih beberapa siswa untuk tugas yang sama (di bagian atas)
-                    tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif)
+                    # Langkah 2 alur tutor: setelah nama siswa dipilih, tutor memilih konversi soal atau langsung buat tugas.
+                    langkah_awal = st.radio(
+                        "Mau mulai dari mana?",
+                        ["📝 Buat tugas (pilih sumber materi di bawah)", "📥 Konversi soal ke Bank Soal dulu"],
+                        key=f"tutor_langkah_{selected_siswa}",
+                    )
+                    if langkah_awal.startswith("📥"):
+                        with st.container(border=True):
+                            st.markdown("#### 📥 Tambah soal ke Bank Soal (otomatis rapi)")
+                            tampilkan_konverter_bank_soal("tutor")
+                            st.caption(
+                                "Setelah soal tersimpan, pilih **Buat tugas** lalu sumber "
+                                "**Bank Soal Bersama** untuk memakai soal tersebut."
+                            )
 
                     # Draft tugas disimpan di session state sampai tutor menekan tombol simpan.
                     draft_key = f"draft_tugas_{selected_siswa}"
@@ -6823,6 +6837,9 @@ elif peran == "🔒 Pengajar / Tutor":
 
                         if sumber_tugas != SUMBER_UPLOAD:
                             st.session_state.pop(f"_autosave_files_{k}", None)
+
+                        # Langkah 3 alur tutor: setelah sumber materi dipilih, tanya apakah dibagikan ke siswa lain.
+                        tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif, dalam_expander=False)
 
                         # Mode pengerjaan dipilih terpisah dari format sumber materi.
                         if source_ready:
