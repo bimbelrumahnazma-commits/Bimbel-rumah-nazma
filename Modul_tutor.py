@@ -4525,6 +4525,24 @@ def bank_susun_sesuai_header(headers, baris):
     return [str(baris.get(h, "") if not str(h).startswith("_") else "") for h in headers]
 
 
+def _tulis_baris_bank(ws_bank, baris_tulis, jumlah_kolom):
+    """Tulis tepat di bawah baris terakhir yang berisi data (bukan menebak 'tabel' seperti append_rows).
+    Mengembalikan (baris_awal, baris_akhir)."""
+    nilai = ws_bank.get_all_values()
+    awal = len(nilai) + 1
+    akhir = awal + len(baris_tulis) - 1
+    kolom = re.sub(r"\d+", "", gspread.utils.rowcol_to_a1(1, max(int(jumlah_kolom), 1)))
+    rentang = f"A{awal}:{kolom}{akhir}"
+    try:
+        ws_bank.update(range_name=rentang, values=baris_tulis, value_input_option="RAW")
+    except Exception as exc:
+        if "grid" not in str(exc).lower():
+            raise
+        ws_bank.add_rows(len(baris_tulis) + 10)
+        ws_bank.update(range_name=rentang, values=baris_tulis, value_input_option="RAW")
+    return awal, akhir
+
+
 def tampilkan_konverter_bank_soal(konteks="owner"):
     """UI konverter: tempel soal -> periksa hasil konversi -> simpan ke Bank_Soal_Master."""
     k = f"bk_{konteks}"
@@ -4631,10 +4649,32 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
             try:
                 ws_bank = get_worksheet("Bank_Soal_Master")
                 baris_tulis = [bank_susun_sesuai_header(hasil["headers"], b) for b in siap]
-                _panggil_sheets_dengan_retry_429(ws_bank.append_rows, baris_tulis, value_input_option="RAW")
+                baris_awal, baris_akhir = _panggil_sheets_dengan_retry_429(
+                    _tulis_baris_bank, ws_bank, baris_tulis, len(hasil["headers"])
+                )
                 _baca_values_cache.clear()
                 st.session_state.pop(kunci_hasil, None)
-                st.success(f"{len(siap)} soal tersimpan di Bank_Soal_Master dan siap dipilih saat membuat tugas.")
+                # Verifikasi: baca ulang dari Google Sheets dan pastikan soal terbaca sebagai soal aktif.
+                tersimpan = baca_records_aman(ws_bank, refresh=True)
+                kode_tulis = {b["Kode_Soal"] for b in siap}
+                terbaca = [
+                    r for r in tersimpan
+                    if str(r.get("Kode_Soal", "")).strip() in kode_tulis
+                    and str(r.get("Status", "")).strip().lower() in ("aktif", "ya", "true", "1")
+                ]
+                total_aktif = sum(
+                    1 for r in tersimpan if str(r.get("Status", "")).strip().lower() in ("aktif", "ya", "true", "1")
+                )
+                if len(terbaca) == len(siap):
+                    st.success(
+                        f"{len(siap)} soal tersimpan di Bank_Soal_Master (baris {baris_awal}-{baris_akhir}) dan terverifikasi. "
+                        f"Bank Soal sekarang berisi {total_aktif} soal aktif. Soal terbaru tampil paling atas di pilihan Bank Soal Bersama."
+                    )
+                else:
+                    st.error(
+                        f"Hanya {len(terbaca)} dari {len(siap)} soal terbaca sebagai soal aktif setelah disimpan. "
+                        f"Periksa baris {baris_awal}-{baris_akhir} di sheet Bank_Soal_Master (kolom Kode_Soal dan Status)."
+                    )
             except Exception as exc:
                 st.error(f"Soal belum tersimpan: {exc}")
 
@@ -6810,7 +6850,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                 ]
                                 kunci_pilih = f"ps_{k}_{jenjang_filter}_{kelas_filter}_{mapel_filter}_{topik_filter}_{bentuk_filter}"
                                 peta_soal = {}
-                                for q in bank_filter:
+                                for q in reversed(bank_filter):  # soal terbaru (baris paling bawah) tampil di atas
                                     kode = str(q.get("Kode_Soal", "")).strip() or f"BARIS-{q.get('_baris')}"
                                     peta_soal[kode] = q
                                 kode_dipilih = st.multiselect(
