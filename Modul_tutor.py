@@ -3459,7 +3459,7 @@ def ambil_bank_berkas(tutor, paksa=False):
     ]
 
 
-def simpan_berkas_ke_bank(judul, mapel, kelas, topik, lampiran, konfigurasi, tutor, dibagikan=True):
+def simpan_berkas_ke_bank(judul, mapel, kelas, topik, lampiran, konfigurasi, tutor, dibagikan=True, jenis_file=None):
     """Simpan berkas yang sudah ada di Google Drive ke bank. Berkas yang sama diperbarui, bukan digandakan."""
     judul = str(judul or "").strip()
     if not judul:
@@ -3493,7 +3493,7 @@ def simpan_berkas_ke_bank(judul, mapel, kelas, topik, lampiran, konfigurasi, tut
         jumlah_soal = int(ada.get("Jumlah_Soal", 0) or 0)
     data = [
         ada.get("ID_Berkas") if ada else "BRK-" + uuid.uuid4().hex[:10].upper(),
-        judul, str(mapel or ""), str(kelas or ""), str(topik or "").strip(), _jenis_file_bank(daftar),
+        judul, str(mapel or ""), str(kelas or ""), str(topik or "").strip(), jenis_file or _jenis_file_bank(daftar),
         json.dumps(daftar, ensure_ascii=False), konfigurasi_json, jumlah_soal,
         nama_tutor, "Ya" if dibagikan else "Tidak", "Aktif", sidik,
         ada.get("Dibuat_Pada", now) if ada else now, now
@@ -3501,7 +3501,7 @@ def simpan_berkas_ke_bank(judul, mapel, kelas, topik, lampiran, konfigurasi, tut
     if ada:
         ws.update(f"A{ada['_baris']}:O{ada['_baris']}", [data], value_input_option="RAW")
     else:
-        ws.append_row(data, value_input_option="RAW")
+        tulis_baris_di_bawah(ws, data, "RAW")
     _baca_values_cache.clear()
     st.session_state.pop("_nazma_bank_berkas_cache", None)
     return {"aksi": "diperbarui" if ada else "baru", "template": template_ok, "id": data[0]}
@@ -3543,10 +3543,28 @@ def perbarui_berkas_bank(id_berkas, tutor, judul, mapel, kelas, topik, dibagikan
     return True
 
 
-def tampilkan_kelola_bank_berkas(tutor):
-    st.subheader("📚 Bank Berkas Saya")
+def kategori_koleksi(r):
+    """Kelompokkan berkas bank: link, pdf, atau gambar (campuran digolongkan ke pdf)."""
+    jenis = str(r.get("Jenis_File", "")).strip().casefold()
+    lampiran = _json_aman(r.get("Lampiran_JSON", ""), [])
+    mime = [str(f.get("mime", "")) for f in lampiran if isinstance(f, dict)]
+    if jenis == "link drive" or (mime and all(m == "text/uri-list" for m in mime)):
+        return "link"
+    if jenis == "gambar":
+        return "gambar"
+    return "pdf"
+
+
+def _buka_persiapan_dengan_berkas(id_berkas):
+    st.session_state["_koleksi_pakai"] = id_berkas
+    st.session_state["menu_navigasi_tutor"] = "📝 Persiapan Sesi & Bank Soal"
+
+
+def tampilkan_kelola_bank_berkas(tutor, kategori=None):
+    if kategori is None:
+        st.subheader("📚 Bank Berkas Saya")
     st.caption(
-        "Berkas yang Anda simpan ke bank. Berkas yang dinonaktifkan tidak muncul saat memilih sumber soal, "
+        "Berkas yang Anda simpan. Berkas yang dinonaktifkan tidak muncul saat memilih sumber soal, "
         "sedangkan tugas yang sudah dibuat tidak terpengaruh."
     )
     notice = st.session_state.pop("_bbs_notice", None)
@@ -3557,21 +3575,25 @@ def tampilkan_kelola_bank_berkas(tutor):
     except Exception as exc:
         st.error(f"Bank Berkas belum dapat dibaca: {exc}")
         return
+    if kategori:
+        milik = [r for r in milik if kategori_koleksi(r) == kategori]
     if not milik:
-        st.info("Anda belum menyimpan berkas ke bank. Saat membuat tugas dari 'Upload dari perangkat', "
-                "buka bagian 'Simpan ke Bank Berkas Soal'.")
+        st.info("Belum ada item di sini. Tambahkan lewat formulir di atas.")
         return
     peta = {}
     for r in milik:
         status = "Aktif" if str(r.get("Status", "")).strip() == "Aktif" else "Nonaktif"
         label = f"{status} | {r.get('Judul', '')} | {r.get('Mapel', '')} | {r.get('Kelas_Jenjang', '')} | {r.get('ID_Berkas', '')}"
         peta[label] = r
-    pilih = st.selectbox("Pilih berkas:", list(peta.keys()), key="bbs_pilih")
+    pilih = st.selectbox("Pilih berkas:", list(peta.keys()), key=f"bbs_pilih_{kategori or 'semua'}")
     r = peta[pilih]
     id_berkas = str(r.get("ID_Berkas", "")).strip()
     for lb in _json_aman(r.get("Lampiran_JSON", ""), []):
         if isinstance(lb, dict) and str(lb.get("url", "")).startswith(("http://", "https://")):
             st.markdown(f"📎 [{lb.get('name', 'berkas')}]({lb['url']})")
+    if str(r.get("Status", "")).strip() == "Aktif":
+        st.button("➡️ Pakai untuk tugas", key=f"bbs_pakai_{id_berkas}",
+                  on_click=_buka_persiapan_dengan_berkas, args=(id_berkas,))
     try:
         jumlah_template = int(r.get("Jumlah_Soal", 0) or 0)
     except (ValueError, TypeError):
@@ -3613,6 +3635,137 @@ def tampilkan_kelola_bank_berkas(tutor):
             st.error(f"Perubahan belum tersimpan: {exc}")
 
 
+def _kolom_identitas_koleksi(k):
+    judul = st.text_input("Judul *", key=f"kol_judul_{k}")
+    mapel = st.selectbox("Mapel", MAPEL_OPTIONS, key=f"kol_mapel_{k}")
+    kelas = st.selectbox("Kelas / jenjang", KELAS_BANK_OPTIONS, key=f"kol_kelas_{k}")
+    topik = st.text_input("Bab / topik (opsional)", key=f"kol_topik_{k}")
+    bagikan = st.checkbox("Bagikan ke tutor lain", value=False, key=f"kol_bagikan_{k}")
+    return judul, mapel, kelas, topik, bagikan
+
+
+def _simpan_item_koleksi(tutor, judul, mapel, kelas, topik, bagikan, lampiran, jenis_file):
+    hasil = simpan_berkas_ke_bank(judul, mapel, kelas, topik, lampiran, [], tutor, bagikan, jenis_file=jenis_file)
+    st.session_state["_koleksi_notice"] = (
+        "✅ Item koleksi " + ("diperbarui." if hasil["aksi"] == "diperbarui" else "disimpan.")
+    )
+    st.session_state["_koleksi_n"] = st.session_state.get("_koleksi_n", 0) + 1
+
+
+def tampilkan_koleksi_soal(tutor):
+    """Satu tempat untuk bahan soal: hasil konversi, link Drive, PDF, dan gambar."""
+    st.header("📚 Koleksi Soal")
+    st.caption("Simpan dan kelola bahan soal Anda. Untuk memakainya, tekan 'Pakai untuk tugas' pada item.")
+    notice = st.session_state.pop("_koleksi_notice", None)
+    if notice:
+        st.success(notice)
+    jenis_pilihan = {
+        "🟩 Soal hasil konversi": "konversi", "☁️ Link Google Drive": "link",
+        "📕 File PDF": "pdf", "🖼️ File JPG / gambar soal": "gambar",
+    }
+    pilih = st.radio("Pilih jenis:", list(jenis_pilihan), key="koleksi_jenis")
+    jenis = jenis_pilihan[pilih]
+    n = st.session_state.get("_koleksi_n", 0)
+    st.markdown("---")
+
+    if jenis == "konversi":
+        with st.expander("➕ Tambah soal baru (konverter otomatis)", expanded=False):
+            tampilkan_konverter_bank_soal("tutor")
+        st.markdown("#### Soal di Bank Soal")
+        try:
+            bank = get_bank_soal()
+        except Exception as exc:
+            st.error(f"Bank soal belum dapat dibaca: {exc}")
+            return
+        if not bank:
+            st.info("Bank soal masih kosong. Tambahkan soal lewat konverter di atas.")
+            return
+        c1, c2 = st.columns(2)
+        mapel_f = c1.selectbox("Mapel:", ["Semua"] + sorted({str(x.get("Mapel", "")).strip() for x in bank if str(x.get("Mapel", "")).strip()}), key="kol_bank_mapel")
+        jenjang_f = c2.selectbox("Jenjang:", ["Semua"] + sorted({str(x.get("Jenjang", "")).strip() for x in bank if str(x.get("Jenjang", "")).strip()}), key="kol_bank_jenjang")
+        kata = st.text_input("Cari bab/topik atau isi soal:", key="kol_bank_kata").strip().casefold()
+        tampil = [
+            x for x in bank
+            if (mapel_f == "Semua" or str(x.get("Mapel", "")).strip() == mapel_f)
+            and (jenjang_f == "Semua" or str(x.get("Jenjang", "")).strip() == jenjang_f)
+            and (not kata or kata in f"{x.get('Bab_Atau_Topik', '')} {x.get('Teks_Soal', '')}".casefold())
+        ]
+        st.markdown(f"**{len(tampil)} soal** sesuai filter.")
+        if tampil:
+            st.dataframe(pd.DataFrame([{
+                "Kode": x.get("Kode_Soal", ""), "Jenjang": x.get("Jenjang", ""), "Kelas": x.get("Kelas", ""),
+                "Mapel": x.get("Mapel", ""), "Bab/Topik": x.get("Bab_Atau_Topik", ""),
+                "Bentuk": x.get("Bentuk_Soal", ""), "Soal": str(x.get("Teks_Soal", ""))[:90],
+            } for x in tampil[:200]]), use_container_width=True, hide_index=True)
+            if len(tampil) > 200:
+                st.caption("Menampilkan 200 soal pertama; persempit filter untuk melihat yang lain.")
+        st.button("➡️ Buka Persiapan Sesi untuk memakai soal", key="kol_buka_persiapan",
+                  on_click=lambda: st.session_state.update({"menu_navigasi_tutor": "📝 Persiapan Sesi & Bank Soal"}))
+        st.caption("Di Persiapan Sesi, pilih siswa lalu sumber 'Bank Soal Bersama'.")
+        return
+
+    if jenis == "link":
+        with st.expander("➕ Tambah link Google Drive / Flipbook", expanded=False):
+            with st.form(f"kol_form_link_{n}", clear_on_submit=False):
+                judul, mapel, kelas, topik, bagikan = _kolom_identitas_koleksi(f"link{n}")
+                tautan = st.text_area("Link (satu link per baris) *", placeholder="https://...", key=f"kol_tautan_{n}")
+                kirim = st.form_submit_button("💾 Simpan ke Koleksi")
+            if kirim:
+                daftar = [x.strip() for x in tautan.splitlines() if x.strip()]
+                if not judul.strip():
+                    st.error("Judul wajib diisi.")
+                elif not daftar or not all(x.lower().startswith(("http://", "https://")) for x in daftar):
+                    st.error("Isi minimal satu link, dan setiap link harus diawali http:// atau https://.")
+                else:
+                    try:
+                        lampiran = [{"name": f"Link materi {no}", "mime": "text/uri-list", "url": u}
+                                    for no, u in enumerate(daftar, 1)]
+                        _simpan_item_koleksi(tutor, judul, mapel, kelas, topik, bagikan, lampiran, "Link Drive")
+                        st.rerun()
+                    except Exception as exc:
+                        if exc.__class__.__name__ in ("RerunException", "StopException"):
+                            raise
+                        st.error(f"Belum tersimpan: {exc}")
+        tampilkan_kelola_bank_berkas(tutor, kategori="link")
+        return
+
+    # PDF atau gambar
+    pdf = jenis == "pdf"
+    with st.expander("➕ Tambah file PDF" if pdf else "➕ Tambah gambar soal", expanded=False):
+        with st.form(f"kol_form_{jenis}_{n}", clear_on_submit=False):
+            judul, mapel, kelas, topik, bagikan = _kolom_identitas_koleksi(f"{jenis}{n}")
+            berkas = st.file_uploader(
+                "Pilih file PDF *" if pdf else "Pilih gambar (boleh beberapa) *",
+                type=["pdf"] if pdf else ["png", "jpg", "jpeg", "webp"],
+                accept_multiple_files=True, key=f"kol_file_{jenis}_{n}"
+            )
+            kirim = st.form_submit_button("💾 Unggah & simpan ke Koleksi")
+        if kirim:
+            if not judul.strip():
+                st.error("Judul wajib diisi.")
+            elif not berkas:
+                st.error("Pilih minimal satu file.")
+            elif sum(len(f.getvalue()) for f in berkas) > 40 * 1024 * 1024:
+                st.error("Total ukuran lebih dari 40 MB. Kurangi jumlah file.")
+            else:
+                try:
+                    lampiran = []
+                    with st.spinner("Mengunggah ke Google Drive..."):
+                        for f in berkas:
+                            isi = f.getvalue()
+                            mime = f.type or ("application/pdf" if pdf else "image/jpeg")
+                            url = upload_lampiran_ke_drive(isi, f.name, mime)
+                            lampiran.append({"name": f.name, "mime": mime, "url": url,
+                                             "sha256": hashlib.sha256(isi).hexdigest()})
+                    _simpan_item_koleksi(tutor, judul, mapel, kelas, topik, bagikan, lampiran, "PDF" if pdf else "Gambar")
+                    st.rerun()
+                except Exception as exc:
+                    if exc.__class__.__name__ in ("RerunException", "StopException"):
+                        raise
+                    st.error(f"Belum tersimpan: {exc}")
+    tampilkan_kelola_bank_berkas(tutor, kategori="pdf" if pdf else "gambar")
+
+
 def pilih_berkas_dari_bank(k, tutor):
     """UI memilih berkas dari bank. Mengembalikan lampiran siap pakai dan template jawabannya."""
     kosong = {"files": [], "template": [], "id": "", "berkas": None}
@@ -3627,6 +3780,12 @@ def pilih_berkas_dari_bank(k, tutor):
             "buka bagian 'Simpan ke Bank Berkas Soal' agar berkas dan template jawabannya bisa dipakai ulang."
         )
         return kosong
+    pakai = st.session_state.pop("_koleksi_pakai_aktif", "")
+    pakai_rec = next((x for x in daftar if str(x.get("ID_Berkas", "")).strip() == pakai), None) if pakai else None
+    if pakai_rec:
+        st.session_state[f"bb_cari_{k}"] = str(pakai_rec.get("Judul", ""))
+        st.session_state[f"bb_mp_{k}"] = "Semua"
+        st.session_state[f"bb_kelas_{k}"] = "Semua"
     kata = st.text_input("Cari judul berkas:", key=f"bb_cari_{k}").strip().casefold()
     mapel_opsi = ["Semua"] + sorted({str(x.get("Mapel", "")).strip() for x in daftar if str(x.get("Mapel", "")).strip()})
     kelas_opsi = ["Semua"] + sorted({str(x.get("Kelas_Jenjang", "")).strip() for x in daftar if str(x.get("Kelas_Jenjang", "")).strip()})
@@ -3659,8 +3818,10 @@ def pilih_berkas_dari_bank(k, tutor):
             n_soal = 0
         return teks + (f" · template {n_soal} soal" if n_soal else " · tanpa template")
 
+    daftar_pilihan = [placeholder] + list(peta.keys())
     pilihan = st.selectbox(
-        "Pilih berkas soal:", [placeholder] + list(peta.keys()), format_func=_label,
+        "Pilih berkas soal:", daftar_pilihan, format_func=_label,
+        index=daftar_pilihan.index(pakai) if pakai in daftar_pilihan else 0,
         key=f"bb_pilih_{k}_{mapel_f}_{kelas_f}_{kata}"
     )
     if pilihan == placeholder or pilihan not in peta:
@@ -6194,6 +6355,8 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
+VERSI_KODE = "22-11-2026 · Koleksi Soal v1"
+st.caption(f"Versi kode: {VERSI_KODE}")
 
 peran = st.selectbox(
     "🔑 Pilih Akses Login Portal:",
@@ -6637,7 +6800,7 @@ elif peran == "🔒 Pengajar / Tutor":
             [
                 "🏠 Beranda",
                 "📝 Persiapan Sesi & Bank Soal",
-                "📚 Bank Berkas Saya",
+                "📚 Koleksi Soal",
                 "📋 Pantau Tugas & PR",
                 "📊 Portofolio Siswa",
                 "🕒 Kehadiran Siswa",
@@ -7139,20 +7302,7 @@ elif peran == "🔒 Pengajar / Tutor":
                     st.markdown("---")
                     st.subheader(f"📚 Rencana tugas untuk: {selected_siswa}")
                     st.caption("Setiap tugas disimpan sebagai catatan tersendiri sehingga satu siswa dapat menerima beberapa tugas dari beberapa mata pelajaran.")
-                    # Langkah 2 alur tutor: setelah nama siswa dipilih, tutor memilih konversi soal atau langsung buat tugas.
-                    langkah_awal = st.radio(
-                        "Mau mulai dari mana?",
-                        ["📝 Buat tugas (pilih sumber materi di bawah)", "📥 Konversi soal ke Bank Soal dulu"],
-                        key=f"tutor_langkah_{selected_siswa}",
-                    )
-                    if langkah_awal.startswith("📥"):
-                        with st.container(border=True):
-                            st.markdown("#### 📥 Tambah soal ke Bank Soal (otomatis rapi)")
-                            tampilkan_konverter_bank_soal("tutor")
-                            st.caption(
-                                "Setelah soal tersimpan, pilih **Buat tugas** lalu sumber "
-                                "**Bank Soal Bersama** untuk memakai soal tersebut."
-                            )
+                    st.caption("Mau menambah atau mengonversi soal baru? Buka menu **📚 Koleksi Soal** di sebelah kiri.")
 
                     # Draft tugas disimpan di session state sampai tutor menekan tombol simpan.
                     draft_key = f"draft_tugas_{selected_siswa}"
@@ -7235,6 +7385,10 @@ elif peran == "🔒 Pengajar / Tutor":
                         untuk_pr = kategori_label == KATEGORI_PR
                         mapel_tugas = st.selectbox("Mata pelajaran:", MAPEL_OPTIONS, key=f"mp_{k}")
                         judul_tugas = st.text_input("Judul / topik tugas:", key=f"jd_{k}")
+                        if st.session_state.get("_koleksi_pakai"):
+                            # Sekali pakai: arahkan sumber ke Bank Berkas, lalu bebaskan pilihan sumber lagi.
+                            st.session_state[f"sm_{k}"] = SUMBER_BERKAS
+                            st.session_state["_koleksi_pakai_aktif"] = st.session_state.pop("_koleksi_pakai")
                         sumber_tugas = st.radio(
                             "Sumber materi / soal:",
                             [SUMBER_BANK, SUMBER_BERKAS, SUMBER_DRIVE, SUMBER_UPLOAD],
@@ -8008,8 +8162,8 @@ elif peran == "🔒 Pengajar / Tutor":
             # -------------------------------------------------
             # TAB 2: PORTOFOLIO DAN PENILAIAN JAWABAN
             # -------------------------------------------------
-        elif menu_tutor == "📚 Bank Berkas Saya":
-            tampilkan_kelola_bank_berkas(st.session_state.get("tutor_nama", ""))
+        elif menu_tutor == "📚 Koleksi Soal":
+            tampilkan_koleksi_soal(st.session_state.get("tutor_nama", ""))
 
         elif menu_tutor == "📋 Pantau Tugas & PR":
                 st.header("📋 Pantau Tugas & PR")
