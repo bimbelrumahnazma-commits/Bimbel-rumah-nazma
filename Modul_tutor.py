@@ -2848,7 +2848,7 @@ def baca_jawaban_tergabung(ws, segarkan=False):
 
 
 
-INTERVAL_PENYEGARAN_TUTOR = 20  # detik; mengurangi pembacaan berulang Google Sheets
+INTERVAL_PENYEGARAN_TUTOR = 45  # detik; mengurangi pembacaan berulang Google Sheets
 
 
 def tugas_milik_tutor(t, tutor_id, tutor_nama=""):
@@ -3358,20 +3358,8 @@ def hitung_nilai_sementara(daftar_soal, jawaban):
         if any(k in str(soal.get("Bentuk_Soal", "")).casefold() for k in ("essay", "esai", "uraian", "isian"))
     }
     manual = [nomor for nomor in manual if nomor not in nomor_essay]
-    for nomor, soal in enumerate(daftar_soal or [], 1):
-        bentuk = str(soal.get("Bentuk_Soal", "")).casefold()
-        if not any(k in bentuk for k in ("essay", "esai", "uraian", "isian")):
-            continue
-        rubrik = soal.get("Rubrik_Kata_Kunci", []) or []
-        hasil = hitung_nilai_essay_keyword(jawaban.get(str(nomor), ""), rubrik)
-        bobot_soal = max(0.0, float(soal.get("Bobot", 1) or 1))
-        detail_essay.append({"nomor": nomor, "bobot_soal": bobot_soal, **hasil})
-        if hasil["nilai"] is None:
-            manual.append(nomor)
-        else:
-            total_bobot += bobot_soal
-            total_poin += (hasil["nilai"] / 100.0) * bobot_soal
-            rincian.append({"nomor": nomor, "poin": hasil["nilai"] / 100.0, "bobot": bobot_soal})
+    # Essay/isian dinilai penuh oleh tutor (tanpa kata kunci/sinonim).
+    manual = list(manual) + sorted(nomor_essay)
     skor = round(total_poin / total_bobot * 100, 2) if total_bobot > 0 else None
     return {
         "nilai_sementara": skor,
@@ -4141,9 +4129,6 @@ def validasi_konfigurasi_soal(soal):
             masalah.append("Kolom A, Kolom B, dan kunci pasangan wajib lengkap")
         elif set(kunci_p.keys()) - set(kiri.keys()) or set(kunci_p.values()) - set(kanan.keys()):
             masalah.append("kode kunci pasangan harus cocok dengan Kolom A dan Kolom B")
-    elif any(x in bentuk for x in ("essay", "esai", "uraian", "isian")):
-        if not soal.get("Rubrik_Kata_Kunci"):
-            masalah.append("rubrik kata kunci Essay belum diisi")
     try:
         if float(soal.get("Bobot", 1) or 0) <= 0:
             masalah.append("bobot soal harus lebih dari nol")
@@ -4223,24 +4208,8 @@ def buat_konfigurasi_kartu_soal(jumlah, key_prefix, konfigurasi_awal=None):
                 )
                 opsi = ["Benar", "Salah"]
             elif tipe == "Essay":
-                st.caption("Satu kriteria per baris. Format: Kata kunci | sinonim | bobot, atau Kata kunci | sinonim (bobot). Sinonim lebih dari satu dipisahkan koma.")
-                rubrik_awal = awal.get("Rubrik_Kata_Kunci", []) or []
-                teks_rubrik_awal = "\n".join(
-                    f"{x.get('kata_kunci','')} | {', '.join(x.get('alternatif',[]) or [])} | {x.get('bobot',0)}"
-                    for x in rubrik_awal
-                )
-                rubrik_teks = st.text_area(
-                    "Rubrik kata kunci Essay",
-                    value=teks_rubrik_awal,
-                    height=110,
-                    key=f"{key_prefix}_rubrik_{nomor}",
-                    placeholder="fotosintesis | proses fotosintesis | 40\nmembuat makanan | menghasilkan makanan | 60"
-                )
-                try:
-                    rubrik = _parse_rubrik_kata_kunci(rubrik_teks)
-                except ValueError as exc:
-                    st.warning(str(exc))
-                    rubrik = []
+                st.caption("Essay dinilai langsung oleh tutor saat pemeriksaan (tanpa kata kunci).")
+                rubrik = []
                 kunci = ""
             elif tipe == "Menjodohkan":
                 a_awal = awal.get("Pasangan", {}).get("kolom_A", {})
@@ -4384,9 +4353,6 @@ def _isi_soal_tugas_tutor(tugas, tampil_kunci=True):
                     kunci = str(soal.get("Kunci", "") or "").strip()
                     if kunci:
                         st.caption(f"🔑 Kunci (hanya terlihat tutor): {kunci}")
-                    rubrik = soal.get("Rubrik_Kata_Kunci", []) or []
-                    if rubrik:
-                        st.caption("🔑 Rubrik kata kunci (hanya terlihat tutor): " + ", ".join(str(x) for x in rubrik))
         if not lampiran and not daftar_soal:
             st.caption("Tugas ini tidak memiliki soal atau lampiran yang tersimpan.")
     except Exception as exc:
@@ -4397,6 +4363,42 @@ def tampilkan_soal_tugas_untuk_tutor(tugas, expanded=True, judul="📘 Soal yang
     """Expander soal untuk satu tugas; dipakai saat tutor memeriksa dan menilai jawaban."""
     with st.expander(judul, expanded=expanded):
         _isi_soal_tugas_tutor(tugas)
+
+
+def _tampilkan_jawaban_per_soal(tugas, jawaban_dict):
+    """Tampilkan per soal: soal, jawaban siswa, kunci dan pembahasan (khusus tutor)."""
+    try:
+        daftar, _m = buka_soal_dan_mode(tugas.get("Soal_JSON", ""), tugas.get("Jenis_Tugas", ""))
+    except Exception:
+        daftar = []
+    if not daftar:
+        if jawaban_dict:
+            st.json(jawaban_dict)
+        else:
+            st.caption("Tidak ada jawaban ketik; lihat lampiran jawaban siswa.")
+        return
+    hasil = hitung_nilai_objektif(daftar, jawaban_dict or {})
+    poin = {x["nomor"]: x["poin"] for x in hasil.get("rincian", [])}
+    for i, soal in enumerate(daftar, 1):
+        if not isinstance(soal, dict):
+            continue
+        jw = (jawaban_dict or {}).get(str(i), "")
+        if isinstance(jw, (list, dict)):
+            jw = json.dumps(jw, ensure_ascii=False)
+        tanda = ""
+        if i in poin:
+            tanda = " ✅" if poin[i] >= 0.999 else (" 🟡" if poin[i] > 0 else " ❌")
+        teks = str(soal.get("Teks_Soal", "") or "").strip() or "(soal ada pada lampiran)"
+        with st.expander(f"No. {i} · {soal.get('Bentuk_Soal', '')}{tanda}", expanded=False):
+            st.markdown(f"**Soal:** {teks}")
+            st.markdown(f"**Jawaban siswa:** {jw if str(jw).strip() else '_(kosong)_'}")
+            kunci = soal.get("Kunci", soal.get("Kunci_Jawaban", ""))
+            if isinstance(kunci, (list, dict)):
+                kunci = json.dumps(kunci, ensure_ascii=False)
+            if str(kunci).strip():
+                st.markdown(f"**🔑 Kunci:** {kunci}")
+            if str(soal.get("Pembahasan", "") or "").strip():
+                st.markdown(f"**📖 Pembahasan:** {soal.get('Pembahasan')}")
 
 
 def tampilkan_pilih_soal_portofolio(nama_siswa, daftar_tugas):
@@ -6355,7 +6357,7 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
-VERSI_KODE = "22-11-2026 · Koleksi Soal v1"
+VERSI_KODE = "23-11-2026 · Nilai tutor v1"
 st.caption(f"Versi kode: {VERSI_KODE}")
 
 peran = st.selectbox(
@@ -7613,8 +7615,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                 "Atur tipe jawaban dan jumlah nomor. Karena sumber soal berasal dari lampiran/link, "
                                 "pertanyaan dan teks opsi tidak perlu diketik ulang. Untuk pilihan ganda, cukup gunakan "
                                 "label A, B, C, D. Jawaban esai diketik online dan wajib disertai foto tulisan tangan "
-                                "yang diunggah siswa saat pengumpulan. Essay memakai rubrik kata kunci untuk nilai sementara; "
-                                "nilai akhir tetap menunggu persetujuan tutor."
+                                "yang diunggah siswa saat pengumpulan. Essay dinilai langsung oleh tutor; "
+                                "nilai akhir menunggu persetujuan tutor."
                             )
                             templates = ambil_template_soal(st.session_state.get("tutor_nama", ""))
                             template_map = {
@@ -8379,7 +8381,7 @@ elif peran == "🔒 Pengajar / Tutor":
                 st.markdown("---")
                 try:
                     ws_jawaban = get_worksheet("DB_Jawaban_Siswa")
-                    jawaban_records = baca_jawaban_tergabung(ws_jawaban, segarkan=True)
+                    jawaban_records = baca_jawaban_tergabung(ws_jawaban, segarkan=False)
                 except gspread.WorksheetNotFound:
                     jawaban_records = []
 
@@ -8433,7 +8435,7 @@ elif peran == "🔒 Pengajar / Tutor":
                         st.rerun()
                 if item is not None:
                     st.write(f"**Siswa:** {nama_tampil_item}")
-                    _jml_pelanggaran_item = hitung_pelanggaran_fokus(refresh=True).get(
+                    _jml_pelanggaran_item = hitung_pelanggaran_fokus().get(
                         (str(item.get("ID_Tugas", "")).strip(), str(item.get("ID_Siswa", "")).strip()), 0
                     )
                     if _jml_pelanggaran_item:
@@ -8445,7 +8447,7 @@ elif peran == "🔒 Pengajar / Tutor":
                         info_tgs.get(str(item.get("ID_Tugas", "")).strip(), {}), expanded=True
                     )
                     lampiran_item = baca_lampiran_jawaban(
-                            item.get("ID_Tugas", ""), item.get("ID_Siswa", ""), refresh=True
+                            item.get("ID_Tugas", ""), item.get("ID_Siswa", "")
                         )
                     if lampiran_item:
                         st.markdown("**📎 Lampiran jawaban siswa:**")
@@ -8462,7 +8464,9 @@ elif peran == "🔒 Pengajar / Tutor":
                     except (ValueError, TypeError):
                         jawaban_dict = {}
                     st.write("**Jawaban siswa:**")
-                    st.json(jawaban_dict)
+                    _tampilkan_jawaban_per_soal(
+                        info_tgs.get(str(item.get("ID_Tugas", "")).strip(), {}), jawaban_dict
+                    )
                     tugas_terpilih = info_tgs.get(str(item.get("ID_Tugas", "")).strip(), {})
                     # Metadata mode di elemen pertama Soal_JSON harus dibuang agar nomor soal tidak bergeser.
                     soal_untuk_nilai, _mode_review = buka_soal_dan_mode(
@@ -8491,34 +8495,11 @@ elif peran == "🔒 Pengajar / Tutor":
                     elif not soal_untuk_nilai:
                         st.warning("Data soal/kunci tidak tersedia pada tugas ini. Penilaian dilakukan manual.")
 
-                    if hasil_sementara.get("nilai_sementara") is not None:
-                        st.markdown("### Nilai sementara (belum diterbitkan)")
-                        label_estimasi = (
-                            "Estimasi nilai sementara"
-                            if not hasil_sementara.get("soal_manual")
-                            else "Estimasi sementara untuk soal yang dapat dinilai otomatis"
-                        )
-                        st.metric(label_estimasi, f'{hasil_sementara["nilai_sementara"]:.2f}/100')
+                    if hasil_sementara.get("nilai_sementara") is not None and hasil_sementara.get("soal_manual"):
                         st.caption(
-                            "Pencocokan ini berbasis kata/frasa yang disiapkan tutor, bukan pemahaman makna penuh. "
-                            "Nilai hanya bahan pertimbangan tutor dan belum terlihat oleh siswa."
+                            f'Skor sementara dari soal objektif: {hasil_sementara["nilai_sementara"]:.2f}/100. '
+                            "Soal essay/isian dinilai tutor pada form di bawah."
                         )
-                        if hasil_sementara.get("soal_manual"):
-                            st.warning(
-                                "Nomor " + ", ".join(map(str, hasil_sementara["soal_manual"])) +
-                                " belum memiliki hasil otomatis lengkap. Tutor perlu memeriksa dan menetapkan nilai akhirnya."
-                            )
-                    if hasil_sementara.get("essay"):
-                        with st.expander("Rincian pemeriksaan kata kunci Essay", expanded=True):
-                            for detail in hasil_sementara["essay"]:
-                                st.markdown(f"**Essay nomor {detail['nomor']} — {detail.get('nilai') if detail.get('nilai') is not None else 'Perlu pemeriksaan manual'}**")
-                                if detail.get("ditemukan"):
-                                    st.success("Kata kunci ditemukan: " + ", ".join(detail["ditemukan"]))
-                                if detail.get("belum_ditemukan"):
-                                    st.warning("Belum ditemukan: " + ", ".join(detail["belum_ditemukan"]))
-                                if detail.get("nilai") is None:
-                                    st.info("Rubrik belum tersedia atau tidak valid. Tentukan nilai secara manual.")
-
                     nilai_awal = int(round(hasil_sementara.get("nilai_sementara") or hasil_otomatis["skor_objektif"] or 1))
                     key_penilaian = f"{item.get('ID_Tugas')}_{item.get('ID_Siswa')}"
                     with st.form(f"form_penilaian_jawaban_{key_penilaian}"):
@@ -8545,7 +8526,7 @@ elif peran == "🔒 Pengajar / Tutor":
                         elif hasil_sementara.get("soal_manual"):
                             st.warning("Lengkapi pemeriksaan manual setiap soal agar nilai berbobot dapat dihitung.")
                         nilai = st.number_input("Nilai akhir (1–100):", min_value=1, max_value=100, value=max(1, min(100, nilai_awal)))
-                        catatan = st.text_area("Umpan balik tutor:")
+                        catatan = st.text_area("💬 Komentar tutor untuk tugas ini:", key=f"komentar_tugas_{key_penilaian}")
                         persetujuan = st.checkbox("Saya sudah memeriksa hasil dan menyetujui penerbitan nilai akhir.")
                         # Tombol tetap mengirim nilai checkbox; validasi dilakukan setelah submit.
                         simpan_nilai = st.form_submit_button("Setujui dan Terbitkan Nilai")
