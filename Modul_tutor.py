@@ -4684,6 +4684,122 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
                 st.error(f"Soal belum tersimpan: {exc}")
 
 
+def _id_berikutnya(nilai_list, default):
+    """ID berikutnya mengikuti pola ID yang sudah ada di kolom (awalan, pemisah, lebar angka)."""
+    from collections import Counter
+    pola = re.compile(r"^(.*?)(\d+)$")
+    awalan_ada, maks, lebar = Counter(), {}, {}
+    for v in nilai_list:
+        m = pola.match(str(v).strip())
+        if not m:
+            continue
+        awal, angka = m.group(1), m.group(2)
+        awalan_ada[awal] += 1
+        maks[awal] = max(maks.get(awal, 0), int(angka))
+        lebar[awal] = max(lebar.get(awal, 0), len(angka))
+    if not awalan_ada:
+        return default
+    awal = awalan_ada.most_common(1)[0][0]
+    return f"{awal}{maks[awal] + 1:0{lebar[awal]}d}"
+
+
+def tambah_baris_sesuai_header(ws, nilai, wajib=(), id_otomatis=None):
+    """Tulis satu baris mengikuti urutan header sheet yang sebenarnya (bukan asumsi urutan kolom).
+    nilai: {nama_header: isi}. id_otomatis: {nama_header: ID_awal_bila_kolom_kosong}; ID dibuat dari isi kolom
+    tepat sebelum menulis. Header yang tidak dikenal dibiarkan kosong. Mengembalikan nilai akhir (kunci huruf kecil)."""
+    data = ws.get_all_values()
+    if not data:
+        raise RuntimeError(f"Sheet {ws.title} belum memiliki header.")
+    headers = [str(h).strip() for h in data[0]]
+    kecil = [h.casefold() for h in headers]
+    kurang = [w for w in wajib if w.casefold() not in kecil]
+    if kurang:
+        raise RuntimeError(f"Kolom {', '.join(kurang)} tidak ditemukan di sheet {ws.title}.")
+    akhir = {str(k).casefold(): v for k, v in nilai.items()}
+    for header, default in (id_otomatis or {}).items():
+        if header.casefold() in kecil:
+            idx = kecil.index(header.casefold())
+            akhir[header.casefold()] = _id_berikutnya(
+                [r[idx] if idx < len(r) else "" for r in data[1:]], default
+            )
+    ws.append_row([akhir.get(h, "") for h in kecil], value_input_option="RAW")
+    _baca_values_cache.clear()
+    return akhir
+
+
+def buat_akun_pengguna(nama, level, pin, id_siswa=""):
+    """Buat baris login di Akun_Pengguna dengan ID_User otomatis (USR-xxx) dan PIN ter-hash."""
+    ws = get_worksheet("Akun_Pengguna")
+    data = ws.get_all_values()
+    headers = [str(h).strip().casefold() for h in data[0]] if data else []
+    username_ada = set()
+    if "username" in headers:
+        i = headers.index("username")
+        username_ada = {str(r[i]).strip().casefold() for r in data[1:] if i < len(r)}
+    dasar = ("siswa_" if str(level).casefold() == "siswa" else "ortu_") + (
+        re.sub(r"[^a-z0-9]+", "", str(nama).casefold())[:20] or "user"
+    )
+    username, n = dasar, 2
+    while username.casefold() in username_ada:
+        username, n = f"{dasar}{n}", n + 1
+    akhir = tambah_baris_sesuai_header(
+        ws,
+        {
+            "Nama_Pengguna": nama, "Level_Akses": level, "Username": username,
+            "PIN_Password": hash_pin(pin), "Akses_Khusus": level,
+            "ID_SISWA": id_siswa, "Status": "Aktif",
+        },
+        wajib=("ID_User", "Nama_Pengguna", "Level_Akses", "PIN_Password"),
+        id_otomatis={"ID_User": "USR-001"},
+    )
+    return akhir["id_user"]
+
+
+def daftarkan_orang_tua(nama_ortu, hubungan, pin, id_siswa, wali_utama=True, no_hp=""):
+    """Buat akun login wali (Akun_Pengguna), data wali (Data_Orangtua), dan relasi ke anak
+    (Relasi_Orangtua_Siswa). Jika satu langkah gagal, pesan galat menyebut langkah yang sudah tersimpan."""
+    tersimpan = []
+    try:
+        # Periksa dulu header semua sheet agar tidak ada data setengah jadi.
+        for judul, wajib in (("Akun_Pengguna", ("ID_User", "Nama_Pengguna", "Level_Akses", "PIN_Password")),
+                             ("Data_Orangtua", ("ID_Ortu", "ID_User", "Nama_Ortu")),
+                             ("Relasi_Orangtua_Siswa", ("ID_Ortu", "ID_Siswa"))):
+            header_ada = [str(h).strip().casefold() for h in get_worksheet(judul).row_values(1)]
+            kurang = [w for w in wajib if w.casefold() not in header_ada]
+            if kurang:
+                raise RuntimeError(f"Kolom {', '.join(kurang)} tidak ditemukan di sheet {judul}.")
+        id_user = buat_akun_pengguna(nama_ortu, "Orang Tua", pin)
+        tersimpan.append(f"akun login {id_user}")
+        tanggal = waktu_lokal().strftime("%Y-%m-%d")
+        hasil_ortu = tambah_baris_sesuai_header(
+            get_worksheet("Data_Orangtua"),
+            {"ID_User": id_user, "Nama_Ortu": nama_ortu, "Status_Ortu": "Aktif",
+             "No_HP": no_hp, "Hubungan": hubungan, "Tanggal_Dibuat": tanggal},
+            wajib=("ID_Ortu", "ID_User", "Nama_Ortu"),
+            id_otomatis={"ID_Ortu": "ORT001"},
+        )
+        id_ortu = hasil_ortu["id_ortu"]
+        tersimpan.append(f"Data_Orangtua {id_ortu}")
+        ws_relasi = get_worksheet("Relasi_Orangtua_Siswa")
+        header_relasi = [str(h).strip() for h in ws_relasi.row_values(1)]
+        auto_relasi = {}
+        if header_relasi and "relasi" in header_relasi[0].casefold():
+            auto_relasi = {header_relasi[0]: "REL001"}
+        tambah_baris_sesuai_header(
+            ws_relasi,
+            {"ID_Ortu": id_ortu, "ID_Siswa": id_siswa, "Hubungan": hubungan,
+             "Wali_Utama": "Ya" if wali_utama else "Tidak", "Status_Relasi": "Aktif",
+             "Tanggal_Dibuat": tanggal},
+            wajib=("ID_Ortu", "ID_Siswa"),
+            id_otomatis=auto_relasi,
+        )
+        tersimpan.append("relasi ke anak")
+        return {"id_user": id_user, "id_ortu": id_ortu}
+    except Exception as exc:
+        awal = ("Sudah tersimpan: " + ", ".join(tersimpan) + ". ") if tersimpan else "Belum ada yang tersimpan. "
+        raise RuntimeError(f"{awal}Gagal: {exc}") from exc
+
+
 def tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif, dalam_expander=True):
     """Pilih beberapa siswa untuk tugas yang sama.
     Urutan tampilan: kotak cari -> hasil (tombol ➕) -> daftar siswa terpilih (✅ nama + tombol Hapus).
@@ -8355,10 +8471,11 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.session_state.owner_logged_in = False
             st.rerun()
         st.success("Akses diizinkan.")
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
             "🎁 Undian Hadiah", "👥 Kelola Status Akun", "📚 Arsip Bank Soal",
             "🔑 Reset PIN", "🔐 Keamanan Owner", "➕ Tambah Siswa",
-            "🧪 Audit Data Sistem", "🧩 Pulihkan Tugas Historis"
+            "🧪 Audit Data Sistem", "🧩 Pulihkan Tugas Historis",
+            "👪 Tambah Orang Tua"
         ])
 
         with tab8:
@@ -8413,6 +8530,76 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     } for t in tanpa]), use_container_width=True, hide_index=True)
             except Exception as exc:
                 st.error(f"Daftar tugas historis belum dapat dibaca: {exc.__class__.__name__}")
+
+        with tab9:
+            st.header("👪 Tambah Orang Tua / Wali Murid")
+            st.caption("ID login wali (USR-xxx) dan ID orang tua dibuat otomatis, lalu langsung dihubungkan ke anak.")
+            _pesan_ortu = st.session_state.pop("_pesan_ortu_baru", None)
+            if _pesan_ortu:
+                st.success(_pesan_ortu)
+            n_ortu = st.session_state.get("_ortu_baru_n", 0)
+            try:
+                kata_anak = st.text_input("Ketik nama anak (minimal 3 huruf):", key=f"ortu_baru_cari_{n_ortu}").strip()
+                hasil_anak, pesan_anak = cari_siswa_terbatas(kata_anak, get_siswa_aktif())
+                anak_dipilih = None
+                if hasil_anak:
+                    anak_dipilih = st.selectbox("Pilih anak:", hasil_anak, key=f"ortu_baru_anak_{n_ortu}")
+                    if pesan_anak:
+                        st.caption(pesan_anak)
+                elif kata_anak:
+                    st.warning(pesan_anak or "Siswa aktif tidak ditemukan.")
+                if anak_dipilih:
+                    id_anak_baru = get_siswa_id_by_nama(anak_dipilih)
+                    if not id_anak_baru:
+                        st.error("Identitas anak tidak dapat dipastikan (nama ganda atau ID kosong). Periksa Data_Siswa.")
+                    else:
+                        try:
+                            id_ortu_anak = [
+                                str(r.get("ID_Ortu", "")).strip()
+                                for r in baca_records_aman(get_worksheet("Relasi_Orangtua_Siswa"))
+                                if str(r.get("ID_Siswa", r.get("ID_SISWA", ""))).strip() == id_anak_baru
+                            ]
+                            if id_ortu_anak:
+                                nama_ortu_ada = {
+                                    str(r.get("ID_Ortu", "")).strip(): str(r.get("Nama_Ortu", "")).strip()
+                                    for r in baca_records_aman(get_worksheet("Data_Orangtua"))
+                                }
+                                st.info(
+                                    f"{anak_dipilih} ({id_anak_baru}) sudah terhubung dengan: "
+                                    + ", ".join(f"{i} {nama_ortu_ada.get(i, '')}".strip() for i in id_ortu_anak)
+                                    + ". Anda tetap bisa menambah wali lain (misalnya ayah dan ibu)."
+                                )
+                        except Exception:
+                            pass
+                        nama_ortu_baru = st.text_input("Nama orang tua / wali *", key=f"ortu_baru_nama_{n_ortu}").strip()
+                        hubungan_baru = st.selectbox("Hubungan dengan anak", ["Ayah", "Ibu", "Wali"], key=f"ortu_baru_hub_{n_ortu}")
+                        no_hp_ortu_baru = st.text_input("No. HP wali (opsional)", key=f"ortu_baru_hp_{n_ortu}").strip()
+                        pin_ortu_baru = st.text_input("PIN awal wali (minimal 6 angka) *", type="password", key=f"ortu_baru_pin_{n_ortu}")
+                        pin_ortu_ulang = st.text_input("Ulangi PIN awal *", type="password", key=f"ortu_baru_pin2_{n_ortu}")
+                        wali_utama_baru = st.checkbox("Wali utama", value=not id_ortu_anak, key=f"ortu_baru_utama_{n_ortu}")
+                        if st.button("Simpan Orang Tua", key=f"ortu_baru_simpan_{n_ortu}"):
+                            if not nama_ortu_baru:
+                                st.error("Nama orang tua wajib diisi.")
+                            elif not pin_ortu_baru.isdigit() or len(pin_ortu_baru) < 6:
+                                st.error("PIN awal harus berupa angka minimal 6 digit.")
+                            elif pin_ortu_baru != pin_ortu_ulang:
+                                st.error("Konfirmasi PIN tidak sama.")
+                            else:
+                                try:
+                                    hasil_ortu_baru = daftarkan_orang_tua(
+                                        nama_ortu_baru, hubungan_baru, pin_ortu_baru, id_anak_baru, wali_utama_baru, no_hp_ortu_baru
+                                    )
+                                    st.session_state["_pesan_ortu_baru"] = (
+                                        f"✅ {nama_ortu_baru} ({hubungan_baru} dari {anak_dipilih}) tersimpan. "
+                                        f"ID login wali: {hasil_ortu_baru['id_user']} (ID orang tua {hasil_ortu_baru['id_ortu']}) "
+                                        "dengan PIN yang baru Anda isi."
+                                    )
+                                    st.session_state["_ortu_baru_n"] = n_ortu + 1
+                                    st.rerun()
+                                except Exception as exc_ortu:
+                                    st.error(f"Orang tua belum tersimpan lengkap. {exc_ortu}")
+            except Exception as exc_tab_ortu:
+                st.error(f"Form orang tua belum dapat dibuka: {exc_tab_ortu}")
 
         with tab7:
             st.header("🧪 Audit Data Sistem")
@@ -8477,7 +8664,10 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
 
         with tab6:
             st.header("➕ Pendaftaran Siswa Baru")
-            st.caption("Isi satu formulir saja. ID dibuat otomatis dan data disimpan ke Data_Siswa.")
+            st.caption("Isi satu formulir saja. ID dibuat otomatis; data disimpan ke Data_Siswa dan akun login siswa dibuat di Akun_Pengguna.")
+            _pesan_daftar = st.session_state.pop("_pesan_daftar_siswa", None)
+            if _pesan_daftar:
+                (st.success if _pesan_daftar[0] == "success" else st.warning)(_pesan_daftar[1])
             try:
                 ws_daftar = get_worksheet("Data_Siswa")
                 values_daftar = _baca_values_cache(sheet.id, ws_daftar.title)
@@ -8644,10 +8834,20 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                                         st.session_state["pendaftaran_sukses_terakhir"] = (
                                             id_submit, nama_input
                                         )
-                                        st.success(
-                                            f"Terverifikasi tersimpan di Google Sheets: "
-                                            f"{nama_input} — {id_submit}."
-                                        )
+                                        # Login siswa membaca Akun_Pengguna, jadi akun dibuat sekaligus di sini.
+                                        try:
+                                            buat_akun_pengguna(nama_input, "Siswa", pin_baru, id_siswa=id_submit)
+                                            st.session_state["_pesan_daftar_siswa"] = (
+                                                "success",
+                                                f"✅ {nama_input} tersimpan. ID login siswa: **{id_submit}** "
+                                                "dengan PIN yang baru Anda isi. Akun login sudah dibuat otomatis."
+                                            )
+                                        except Exception as exc_akun:
+                                            st.session_state["_pesan_daftar_siswa"] = (
+                                                "warning",
+                                                f"{nama_input} ({id_submit}) tersimpan di Data_Siswa, tetapi akun login "
+                                                f"belum dibuat: {exc_akun}. Siswa belum bisa login sampai akunnya dibuat."
+                                            )
                                         st.rerun()
                                     else:
                                         st.error(
