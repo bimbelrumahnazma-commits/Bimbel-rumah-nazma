@@ -63,6 +63,9 @@ MAPEL_OPTIONS = [
     # Program khusus / persiapan tes
     "OSN SD", "OSN SMP", "OSN SMA",
     "TOEFL", "SKD", "UTBK", "TKA",
+
+    # Umum
+    "Umum",
 ]
 
 # =========================================================
@@ -166,53 +169,16 @@ def init_spreadsheet():
     return gc.open_by_key("17JI1x966HfVG4YpfzCz_bssBwOmUTIJFbRutl0qyIZE")
 
 
-# ---------------------------------------------------------
-# DAFTAR TAB RESMI
-# Kode memakai nama logis (kiri); yang dibuka di Google Sheets adalah nama tab asli (kanan).
-# Untuk berpindah tab, ubah di sini saja.
-# ---------------------------------------------------------
-TAB_RESMI = {
-    "Data_Siswa": "Data_Siswa_Rapi",
-}
-# Tab lama yang TIDAK BOLEH dibaca atau dibuat lagi oleh kode (nama asli di Google Sheets).
-TAB_USANG = {
-    "Data_Siswa": "tab lama (struktur awal); data siswa yang benar ada di Data_Siswa_Rapi",
-}
-
-
-def nama_tab_asli(worksheet_title):
-    """Ubah nama logis di kode menjadi nama tab asli di Google Sheets."""
-    return TAB_RESMI.get(worksheet_title, worksheet_title)
-
-
-def _tolak_tab_usang(worksheet_title):
-    if worksheet_title in TAB_USANG:
-        raise RuntimeError(
-            f"Tab '{worksheet_title}' sudah tidak dipakai: {TAB_USANG[worksheet_title]}."
-        )
-
-
 @st.cache_resource
 def _worksheet_cached(spreadsheet_id, worksheet_title):
     """Cache handle worksheet agar pemanggilan sheet.worksheet tidak meminta metadata berulang."""
-    _tolak_tab_usang(worksheet_title)
     return init_spreadsheet().worksheet(worksheet_title)
 
 
 def get_worksheet(worksheet_title):
-    """Ambil handle worksheet dari cache proses, lewat daftar tab resmi."""
+    """Ambil handle worksheet dari cache proses."""
     book = init_spreadsheet()
-    asli = nama_tab_asli(worksheet_title)
-    try:
-        return _worksheet_cached(book.id, asli)
-    except gspread.WorksheetNotFound:
-        if worksheet_title in TAB_RESMI:
-            # Tab resmi tidak boleh dibuat otomatis; jangan diam-diam membuat tab kosong.
-            tersedia = ", ".join(ws.title for ws in book.worksheets())
-            raise RuntimeError(
-                f"Tab resmi '{asli}' tidak ditemukan di spreadsheet. Tab yang ada: {tersedia}"
-            )
-        raise
+    return _worksheet_cached(book.id, worksheet_title)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -241,7 +207,7 @@ def buat_paket_audit_sistem():
     }
 
     target = [
-        nama_tab_asli("Data_Siswa"), "Akun_Pengguna", "Bank_Soal_Master",
+        "Data_Siswa", "Akun_Pengguna", "Bank_Soal_Master",
         "Tugas_Sesi_Siswa_v2", "DB_Jawaban_Siswa", "DB_Nilai_Tugas",
         "Relasi_Orangtua_Siswa", "Relasi_Tutor_Siswa",
         "Status_Sesi_Tugas", "Riwayat_Latihan",
@@ -323,7 +289,7 @@ def buat_paket_audit_sistem():
         if nama not in sheet_map:
             cek(nama, "SHEET_TIDAK_ADA", None, "Worksheet tidak ditemukan.")
 
-    siswa = records.get(nama_tab_asli("Data_Siswa"), [])
+    siswa = records.get("Data_Siswa", [])
     id_siswa = [str(r.get("ID_SISWA") or r.get("ID_Siswa") or "").strip() for r in siswa]
     id_isi = [x for x in id_siswa if x]
     duplikat_id = len(id_isi) - len(set(id_isi))
@@ -498,7 +464,6 @@ def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
     """Ambil worksheet tanpa membaca seluruh isi setiap rerun.
     Header ditulis saat worksheet baru dibuat; worksheet lama dipertahankan apa adanya.
     """
-    _tolak_tab_usang(title)
     try:
         return get_worksheet(title)
     except gspread.WorksheetNotFound:
@@ -510,7 +475,6 @@ def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
 @st.cache_data(ttl=180, show_spinner=False)
 def _baca_values_cache(spreadsheet_id, worksheet_title):
     """Cache nilai sheet 3 menit; memakai objek spreadsheet yang sudah di-cache."""
-    _tolak_tab_usang(worksheet_title)
     ws_cached = init_spreadsheet().worksheet(worksheet_title)
     return ws_cached.get_all_values()
 
@@ -549,10 +513,6 @@ def baca_records_aman(ws, refresh=False):
             rec["Nama_Lengkap"] = rec["Nama_Siswa"]
         elif "Nama_Lengkap" in rec and "Nama_Siswa" not in rec:
             rec["Nama_Siswa"] = rec["Nama_Lengkap"]
-
-        # Tab Data_Siswa_Rapi memakai Status_Siswa; kode memakai Status. Sediakan keduanya.
-        if "Status_Siswa" in rec and "Status" not in rec:
-            rec["Status"] = rec["Status_Siswa"]
 
         # Header ID siswa bisa tertulis ID_Siswa atau ID_SISWA: sediakan keduanya.
         if "ID_SISWA" in rec and "ID_Siswa" not in rec:
@@ -1925,6 +1885,44 @@ def sesi_kedaluwarsa_tugas(siswa_id, task_id):
     )
 
 
+def sesi_selesai_tugas(siswa_id, task_id):
+    """True bila siswa sudah menekan Selesai Mengerjakan (sesi berstatus Selesai) untuk tugas ini."""
+    rows = baca_records_aman(get_active_task_worksheet())
+    sid, tid = str(siswa_id or "").strip(), str(task_id or "").strip()
+    return any(
+        str(r.get("ID_Siswa", "")).strip() == sid and str(r.get("ID_Tugas", "")).strip() == tid
+        and str(r.get("Status", "")).strip().lower() == "selesai"
+        for r in rows
+    )
+
+
+def tampilkan_tombol_selesai_mengerjakan(siswa_id, task_id, expander_state_key):
+    """Tombol Selesai dengan konfirmasi (menghentikan timer dan membebaskan kunci tugas lain)."""
+    kunci_konfirmasi = f"_konfirmasi_selesai_{task_id}"
+    if not st.session_state.get(kunci_konfirmasi):
+        if st.button("✅ Selesai Mengerjakan", key=f"selesai_kerja_{task_id}", type="primary"):
+            st.session_state[kunci_konfirmasi] = True
+            st.session_state[expander_state_key] = True
+            st.rerun()
+        return
+    st.warning("Yakin sudah selesai? Waktu pengerjaan akan dihentikan dan tugas ini tidak bisa dimulai lagi.")
+    kol_ya, kol_belum = st.columns(2)
+    with kol_ya:
+        if st.button("Ya, sudah selesai", key=f"ya_selesai_{task_id}", type="primary"):
+            try:
+                akhiri_sesi_online(siswa_id, task_id)
+                st.session_state.pop(kunci_konfirmasi, None)
+                st.session_state[expander_state_key] = True
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Belum dapat menandai selesai ({exc.__class__.__name__}). Coba lagi.")
+    with kol_belum:
+        if st.button("Belum", key=f"belum_selesai_{task_id}"):
+            st.session_state.pop(kunci_konfirmasi, None)
+            st.session_state[expander_state_key] = True
+            st.rerun()
+
+
 def kirim_otomatis_draft(siswa_id, task_id):
     """Ubah semua jawaban Draft pada tugas ini menjadi terkirim. Tidak menyentuh pengiriman yang sudah ada."""
     ws = get_answers_worksheet()
@@ -2042,6 +2040,13 @@ def gerbang_sesi_tugas(t, task_id, siswa_id, sesi_aktif_page, expander_state_key
     if sesi_lain_aktif:
         st.warning("Tugas ini terkunci karena kamu sedang mengerjakan tugas lain. Kumpulkan tugas yang aktif terlebih dahulu.")
         return False
+    if not sesi_ini_aktif and unggah_oleh_tugas(t) != "siswa":
+        try:
+            if sesi_selesai_tugas(siswa_id, task_id):
+                st.success("✅ Kamu sudah menyelesaikan tugas ini. Menunggu Tutor mengunggah hasil pekerjaan.")
+                return True
+        except Exception:
+            pass
     if not sesi_ini_aktif:
         st.info("Tekan Mulai Mengerjakan jika sudah siap. Soal terbuka dan waktu berjalan setelah tombol ditekan; tugas lain terkunci sampai selesai.")
         if st.button("▶️ Mulai Mengerjakan", key=f"mulai_offline_{task_id}", type="primary"):
@@ -4548,20 +4553,24 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
             "Salin baris dari Google Sheets/Excel termasuk baris judul kolom. Judul seperti Soal, Pertanyaan, Opsi, "
             "Pilihan, A/B/C/D, Kunci, Jawaban, Tipe, Mapel, Kelas dikenali otomatis."
         )
-    teks_tempel = st.text_area("Tempel di sini:", height=220, key=f"{k}_teks")
+    # Isian dan tombol dibungkus form agar teks yang diketik ikut terkirim saat tombol ditekan.
+    # Tanpa form, di HP ketukan pertama hanya menyimpan isian lalu halaman dimuat ulang sehingga tombol tampak tidak merespons.
+    with st.form(f"{k}_form", clear_on_submit=False, enter_to_submit=False):
+        teks_tempel = st.text_area("Tempel di sini:", height=220, key=f"{k}_teks")
 
-    st.markdown("**Data umum untuk soal yang tidak mencantumkannya sendiri:**")
-    kol1, kol2 = st.columns(2)
-    with kol1:
-        jenjang = st.text_input("Jenjang (contoh: SMP)", key=f"{k}_jenjang")
-        kelas = st.text_input("Kelas (contoh: Kelas 7)", key=f"{k}_kelas")
-    with kol2:
-        mapel = st.selectbox("Mapel", [""] + list(MAPEL_OPTIONS), key=f"{k}_mapel")
-        topik = st.text_input("Bab / topik", key=f"{k}_topik")
+        st.markdown("**Data umum untuk soal yang tidak mencantumkannya sendiri:**")
+        kol1, kol2 = st.columns(2)
+        with kol1:
+            jenjang = st.text_input("Jenjang (contoh: SMP)", key=f"{k}_jenjang")
+            kelas = st.text_input("Kelas (contoh: Kelas 7)", key=f"{k}_kelas")
+        with kol2:
+            mapel = st.selectbox("Mapel", [""] + list(MAPEL_OPTIONS), key=f"{k}_mapel")
+            topik = st.text_input("Bab / topik", key=f"{k}_topik")
+        konversi_ditekan = st.form_submit_button("🔄 Konversi dan periksa")
     meta = {"jenjang": jenjang.strip(), "kelas": kelas.strip(), "mapel": mapel.strip(), "topik": topik.strip()}
 
     kunci_hasil = f"{k}_hasil"
-    if st.button("🔄 Konversi dan periksa", key=f"{k}_konversi"):
+    if konversi_ditekan:
         if not teks_tempel.strip():
             st.warning("Tempel soal terlebih dahulu.")
         else:
@@ -5642,6 +5651,9 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
             elif gerbang_sesi_tugas(t, task_id, siswa_id, sesi_aktif_page, expander_state_key):
                 st.info("Tugas ini dikerjakan di kertas. Setelah selesai, Tutor yang akan mengunggah foto hasil pekerjaan dan memasukkan nilai.")
                 st.caption("Tidak perlu mengunggah foto dari akun siswa.")
+                # FITUR BARU: tombol Selesai Mengerjakan (menghentikan timer, membebaskan kunci tugas lain)
+                if sesi_aktif_page and str(sesi_aktif_page.get("ID_Tugas", "")).strip() == task_id:
+                    tampilkan_tombol_selesai_mengerjakan(siswa_id, task_id, expander_state_key)
         else:
             # Mode upload lama dipertahankan hanya untuk kompatibilitas tugas historis.
             if mode_pengerjaan == TASK_MODE_ONLINE and not daftar_soal:
@@ -5653,6 +5665,21 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                     t, task_id, siswa_id, sesi_aktif_page, expander_state_key):
                 return
             else:
+                # FITUR BARU: tugas offline unggah mandiri: Mulai -> kerjakan -> Selesai Mengerjakan -> unggah foto.
+                _timer_ofl = str(t.get("Timer_Menit", "")).strip()
+                if mode_pengerjaan == TASK_MODE_OFFLINE and _timer_ofl not in ("", "0"):
+                    _kunci_selesai_kerja = f"_selesai_kerja_{task_id}"
+                    try:
+                        _sisa_kerja = hitung_sisa_waktu_sesi(sesi_aktif_page, _timer_ofl)
+                    except Exception:
+                        _sisa_kerja = 0
+                    if _sisa_kerja and _sisa_kerja > 0 and not st.session_state.get(_kunci_selesai_kerja):
+                        st.info("Kerjakan di kertas. Setelah selesai menulis, tekan Selesai Mengerjakan, lalu unggah foto hasilnya.")
+                        if st.button("✅ Selesai Mengerjakan", key=f"selesai_kerja_{task_id}", type="primary"):
+                            st.session_state[_kunci_selesai_kerja] = True
+                            st.session_state[expander_state_key] = True
+                            st.rerun()
+                        return
                 st.info("Kerjakan melalui materi/lampiran dari Tutor. Unggah foto, PDF, audio, atau video hasil pekerjaan, lalu kirim kepada Tutor.")
                 catatan_siswa = st.text_area("Catatan untuk Tutor (opsional):", key=f"cat_{task_id}")
                 file_jawaban_offline = st.file_uploader(
@@ -6636,24 +6663,6 @@ elif peran == "🔒 Pengajar / Tutor":
                         st.caption(pesan_cari)
                 elif search_query:
                     st.warning(pesan_cari or "Siswa aktif tidak ditemukan.")
-                    # DIAGNOSTIK SEMENTARA (hanya baca, tanpa nama siswa): hapus blok ini setelah masalah ketemu.
-                    with st.expander("🔧 Diagnostik pencarian (sementara)"):
-                        try:
-                            ws_dx = get_worksheet("Data_Siswa")
-                            vals_dx = ws_dx.get_all_values()  # baca langsung, tanpa cache
-                            hdr_dx = [str(h).strip() for h in (vals_dx[0] if vals_dx else [])]
-                            st.write(f"Spreadsheet: {init_spreadsheet().title} | Tab: {ws_dx.title}")
-                            st.write("Tab di spreadsheet: " + ", ".join(w.title for w in init_spreadsheet().worksheets()))
-                            st.write(f"Baris data di tab (baca langsung): {max(len(vals_dx) - 1, 0)}")
-                            st.write("Header: " + " | ".join(hdr_dx))
-                            st.write(f"Jumlah nama yang dibaca aplikasi (setelah cache dan filter): {len(siswa_aktif)}")
-                            kata_dx = search_query.casefold()
-                            st.write(
-                                f"Baris di sheet yang memuat '{search_query}' di kolom mana pun: "
-                                f"{sum(1 for r in vals_dx[1:] if any(kata_dx in str(c).casefold() for c in r))}"
-                            )
-                        except Exception as exc_dx:
-                            st.error(f"Diagnostik gagal: {exc_dx}")
                 else:
                     st.info("Ketik nama siswa untuk menyiapkan materi dan tugas.")
 
@@ -7051,21 +7060,37 @@ elif peran == "🔒 Pengajar / Tutor":
 
                         # Detail penugasan dilengkapi setelah sumber dan cara pengerjaan ditentukan.
                         instruksi_tugas = st.text_area("Instruksi untuk siswa:", key=f"in_{k}")
+                        # FITUR BARU: durasi dan tenggat mengikuti pengaturan form sebelumnya (siswa/tugas sebelumnya).
+                        _kat_waktu = "pr" if untuk_pr else "sesi"
+                        _opsi_timer = [0, 15, 30, 45, 60, 90, 120]
+                        _timer_idx_awal = 0 if untuk_pr else 2
+                        _tenggat_awal = datetime.combine(
+                            waktu_lokal().date() + (timedelta(days=3) if untuk_pr else timedelta(days=0)),
+                            datetime.strptime("23:59", "%H:%M").time()
+                        )
+                        _waktu_lalu = st.session_state.get("_nazma_waktu_terakhir", {}).get(_kat_waktu)
+                        if (_waktu_lalu and _waktu_lalu["timer"] in _opsi_timer
+                                and _waktu_lalu["tenggat"] > waktu_lokal().replace(tzinfo=None)):
+                            _timer_idx_awal = _opsi_timer.index(_waktu_lalu["timer"])
+                            _tenggat_awal = _waktu_lalu["tenggat"]
                         timer_tugas = st.selectbox(
-                            "Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=0 if untuk_pr else 2,
+                            "Durasi pengerjaan:", [0, 15, 30, 45, 60, 90, 120], index=_timer_idx_awal,
                             format_func=lambda x: "Tanpa timer (khusus upload)" if x == 0 else f"{x} menit",
                             key=f"tm_{k}_{'pr' if untuk_pr else 'sesi'}"
                         )
                         tenggat_tugas = st.date_input(
                             "Tanggal tenggat:",
-                            value=waktu_lokal().date() + (timedelta(days=3) if untuk_pr else timedelta(days=0)),
+                            value=_tenggat_awal.date(),
                             key=f"tg_{k}_{'pr' if untuk_pr else 'sesi'}"
                         )
                         tenggat_jam = st.time_input(
-                            "Jam tenggat:", value=datetime.strptime("23:59", "%H:%M").time(),
+                            "Jam tenggat:", value=_tenggat_awal.time(),
                             key=f"tgj_{k}_{'pr' if untuk_pr else 'sesi'}"
                         )
                         tenggat_datetime = datetime.combine(tenggat_tugas, tenggat_jam)
+                        st.session_state.setdefault("_nazma_waktu_terakhir", {})[_kat_waktu] = {
+                            "timer": timer_tugas, "tenggat": tenggat_datetime
+                        }
                         mode_online_aktif = mode_pengerjaan == TASK_MODE_ONLINE
                         if mode_online_aktif:
                             st.caption("Tugas online wajib memiliki timer. Timer dimulai ketika siswa menekan tombol Mulai Mengerjakan.")
@@ -8338,9 +8363,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                 kolom_pin = "PIN_Siswa" if "PIN_Siswa" in headers_daftar else None
                 kolom_jenjang = "Jenjang" if "Jenjang" in headers_daftar else None
                 kolom_kelas = "Kelas" if "Kelas" in headers_daftar else None
-                kolom_status = "Status" if "Status" in headers_daftar else (
-                    "Status_Siswa" if "Status_Siswa" in headers_daftar else None
-                )
+                kolom_status = "Status" if "Status" in headers_daftar else None
                 kolom_poin = "Poin" if "Poin" in headers_daftar else None
                 kolom_tanggal = next((c for c in ("Tanggal_Daftar", "Tanggal_Masuk", "Tanggal") if c in headers_daftar), None)
 
@@ -8570,9 +8593,8 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     status_baru = st.selectbox("Status:", ["Aktif", "Nonaktif"])
                     if st.form_submit_button("Update Status"):
                         headers = ws_siswa.row_values(1)
-                        kolom_status_owner = "Status" if "Status" in headers else ("Status_Siswa" if "Status_Siswa" in headers else None)
-                        if kolom_status_owner:
-                            ws_siswa.update_cell(opsi_status[pilih_nama]["_baris"], headers.index(kolom_status_owner) + 1, status_baru)
+                        if "Status" in headers:
+                            ws_siswa.update_cell(opsi_status[pilih_nama]["_baris"], headers.index("Status") + 1, status_baru)
                             st.success("Status berhasil diperbarui.")
                             st.rerun()
                         else:
