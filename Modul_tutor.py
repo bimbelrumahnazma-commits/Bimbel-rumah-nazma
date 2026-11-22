@@ -4891,6 +4891,181 @@ def tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif, dalam_expander=T
                 kanan.button("🗑 Hapus", key=f"tbh_hapus_{selected_siswa}_{nama}", on_click=_hapus, args=(nama,))
 
 
+def _peta_baris_tugas_segar(ws):
+    """Baca langsung dari Sheets (tanpa cache) lalu petakan ID_Tugas -> (nomor baris, status). Cache lama
+    bisa membuat nomor baris keliru setelah ada baris yang dihapus, jadi aksi tulis selalu memakai ini."""
+    data = ws.get_all_values()
+    if not data:
+        return [], {}
+    headers = [str(h).strip() for h in data[0]]
+    if "ID_Tugas" not in headers or "Status_Tugas" not in headers:
+        raise RuntimeError("Kolom ID_Tugas atau Status_Tugas tidak ditemukan di Tugas_Sesi_Siswa_v2.")
+    i_id, i_st = headers.index("ID_Tugas"), headers.index("Status_Tugas")
+    peta = {}
+    for nomor, row in enumerate(data[1:], start=2):
+        if i_id < len(row) and str(row[i_id]).strip():
+            peta[str(row[i_id]).strip()] = (nomor, str(row[i_st]).strip() if i_st < len(row) else "")
+    return headers, peta
+
+
+def tampilkan_riwayat_tugas_owner():
+    """Riwayat tugas SEMUA tutor untuk Pengelola: lihat, batalkan, pulihkan, dan bersihkan tugas batal."""
+    st.header("📜 Riwayat Semua Tugas")
+    st.caption(
+        "Tugas dari semua tutor. Batalkan = tugas hilang dari siswa tetapi masih tercatat dan bisa dipulihkan. "
+        "Hapus permanen hanya untuk tugas yang sudah dibatalkan dan belum pernah dikirim siswa. "
+        "Tugas yang sudah dikirim atau dinilai tidak pernah dihapus karena menyimpan jawaban dan nilai."
+    )
+    _pesan_riw = st.session_state.pop("_pesan_riwayat_tugas", None)
+    if _pesan_riw:
+        st.success(_pesan_riw)
+    if st.button("🔄 Muat ulang data", key="riw_muat"):
+        _baca_values_cache.clear()
+        st.rerun()
+    try:
+        ws = get_worksheet("Tugas_Sesi_Siswa_v2")
+    except gspread.WorksheetNotFound:
+        st.info("Sheet Tugas_Sesi_Siswa_v2 belum ada.")
+        return
+    tugas = baca_records_aman(ws)
+    if not tugas:
+        st.info("Belum ada tugas.")
+        return
+    try:
+        jawaban = baca_jawaban_tergabung(get_answers_worksheet())
+    except Exception:
+        jawaban = []
+    status_by_task = {str(x.get("ID_Tugas", "")).strip(): str(x.get("Status", "")) for x in jawaban}
+    try:
+        nilai_keys = {kunci_nilai_penugasan(n) for n in baca_nilai_tugas_terpadu() if all(kunci_nilai_penugasan(n))}
+    except Exception:
+        nilai_keys = set()
+
+    def nama_tutor(t):
+        return str(t.get("Tutor", "")).strip() or "(tanpa tutor)"
+
+    c1, c2 = st.columns(2)
+    f_tutor = c1.selectbox("Tutor:", ["Semua tutor"] + sorted({nama_tutor(t) for t in tugas}), key="riw_tutor")
+    f_status = c2.selectbox("Status:", ["Semua", "Aktif", "Dibatalkan"], key="riw_status")
+    f_kata = st.text_input("Cari nama siswa atau judul (opsional):", key="riw_kata").strip().casefold()
+
+    baris, opsi = [], {}
+    for t in reversed(tugas):
+        tid = str(t.get("ID_Tugas", "")).strip()
+        if not tid:
+            continue
+        batal = "batal" in str(t.get("Status_Tugas", "")).lower()
+        kode, label = label_status(t, status_by_task, nilai_keys)
+        if batal:
+            kode, label = "batal", "🚫 Dibatalkan"
+        if f_tutor != "Semua tutor" and nama_tutor(t) != f_tutor:
+            continue
+        if f_status == "Aktif" and batal:
+            continue
+        if f_status == "Dibatalkan" and not batal:
+            continue
+        teks_cari = f"{t.get('Nama_Siswa', '')} {t.get('Judul_Tugas', '')} {t.get('Mapel', '')}".casefold()
+        if f_kata and f_kata not in teks_cari:
+            continue
+        baris.append({
+            "Tanggal": str(t.get("Tanggal", ""))[:10], "Tutor": nama_tutor(t),
+            "Siswa": t.get("Nama_Siswa", ""), "Mapel": t.get("Mapel", ""),
+            "Judul": t.get("Judul_Tugas", ""), "Status": label, "ID": tid,
+        })
+        opsi[tid] = (kode, f"{t.get('Nama_Siswa', '')} | {t.get('Mapel', '')} | {t.get('Judul_Tugas', '')} | {nama_tutor(t)} | {str(t.get('Tanggal', ''))[:10]} | {tid}")
+
+    st.markdown(f"**{len(baris)} tugas** sesuai filter.")
+    if not baris:
+        return
+    st.dataframe(pd.DataFrame(baris[:300]), use_container_width=True, hide_index=True)
+    if len(baris) > 300:
+        st.caption("Tabel menampilkan 300 tugas terbaru; persempit filter untuk melihat yang lain.")
+
+    st.markdown("#### Proses tugas terpilih")
+    pilih = st.multiselect(
+        "Pilih tugas (maksimal 30 sekali proses):",
+        options=list(opsi.keys())[:200], format_func=lambda i: opsi[i][1],
+        key=f"riw_pilih_{abs(hash((f_tutor, f_status, f_kata))) % 10**8}_{st.session_state.get('_riw_n', 0)}",
+        max_selections=30
+    )
+    bisa_batal = [i for i in pilih if opsi[i][0] not in ("batal", "dikirim", "dinilai")]
+    bisa_pulih = [i for i in pilih if opsi[i][0] == "batal"]
+    tak_bisa = [i for i in pilih if opsi[i][0] in ("dikirim", "dinilai")]
+    if tak_bisa:
+        st.caption(f"{len(tak_bisa)} tugas yang sudah dikirim/dinilai tidak bisa dibatalkan atau dihapus.")
+
+    kiri, kanan = st.columns(2)
+    if kiri.button(f"🚫 Batalkan ({len(bisa_batal)})", disabled=not bisa_batal, key="riw_batalkan"):
+        try:
+            headers, peta = _peta_baris_tugas_segar(ws)
+            kolom_status = headers.index("Status_Tugas") + 1
+            data = [
+                {"range": gspread.utils.rowcol_to_a1(peta[i][0], kolom_status), "values": [["Dibatalkan"]]}
+                for i in bisa_batal if i in peta
+            ]
+            if data:
+                ws.batch_update(data, value_input_option="RAW")
+            _baca_values_cache.clear()
+            st.session_state["_pesan_riwayat_tugas"] = f"{len(data)} tugas dibatalkan."
+            st.session_state["_riw_n"] = st.session_state.get("_riw_n", 0) + 1
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Gagal membatalkan: {exc}")
+    if kanan.button(f"♻️ Pulihkan ({len(bisa_pulih)})", disabled=not bisa_pulih, key="riw_pulihkan"):
+        try:
+            headers, peta = _peta_baris_tugas_segar(ws)
+            kolom_status = headers.index("Status_Tugas") + 1
+            data = [
+                {"range": gspread.utils.rowcol_to_a1(peta[i][0], kolom_status), "values": [["Diberikan"]]}
+                for i in bisa_pulih if i in peta
+            ]
+            if data:
+                ws.batch_update(data, value_input_option="RAW")
+            _baca_values_cache.clear()
+            st.session_state["_pesan_riwayat_tugas"] = f"{len(data)} tugas dipulihkan."
+            st.session_state["_riw_n"] = st.session_state.get("_riw_n", 0) + 1
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Gagal memulihkan: {exc}")
+
+    # Hapus permanen: hanya tugas batal yang tidak punya jawaban maupun nilai.
+    id_dengan_jejak = set(status_by_task) | {k[0] for k in nilai_keys if isinstance(k, tuple) and k}
+    batal_semua = [t for t in tugas if "batal" in str(t.get("Status_Tugas", "")).lower()]
+    layak_hapus = [str(t.get("ID_Tugas", "")).strip() for t in batal_semua
+                   if str(t.get("ID_Tugas", "")).strip() and str(t.get("ID_Tugas", "")).strip() not in id_dengan_jejak]
+    with st.expander(f"🗑 Bersihkan tugas batal ({len(layak_hapus)} bisa dihapus permanen)"):
+        st.warning("Baris tugas yang sudah dibatalkan dan belum pernah dikirim akan dihapus permanen dari Google Sheets. Tidak bisa dibatalkan.")
+        yang_dihapus = [i for i in pilih if i in layak_hapus]
+        mode = st.radio(
+            "Yang dihapus:", [f"Hanya yang saya pilih di atas ({len(yang_dihapus)})",
+                              f"Semua tugas batal yang layak dihapus ({len(layak_hapus)})"],
+            key="riw_mode_hapus"
+        )
+        target = yang_dihapus if mode.startswith("Hanya") else layak_hapus
+        konfirmasi = st.text_input("Ketik HAPUS untuk melanjutkan:", key="riw_konfirmasi_hapus").strip()
+        if st.button(f"Hapus permanen {len(target)} tugas", disabled=not target or konfirmasi != "HAPUS", key="riw_hapus"):
+            try:
+                headers, peta = _peta_baris_tugas_segar(ws)
+                # Periksa ulang dari data segar: harus masih berstatus batal.
+                baris_hapus = sorted(
+                    {peta[i][0] for i in target if i in peta and "batal" in peta[i][1].lower()}, reverse=True
+                )
+                if baris_hapus:
+                    permintaan = [
+                        {"deleteDimension": {"range": {
+                            "sheetId": ws.id, "dimension": "ROWS", "startIndex": n - 1, "endIndex": n
+                        }}} for n in baris_hapus  # dari bawah ke atas agar nomor baris tidak bergeser
+                    ]
+                    ws.spreadsheet.batch_update({"requests": permintaan})
+                _baca_values_cache.clear()
+                st.session_state["_pesan_riwayat_tugas"] = f"{len(baris_hapus)} tugas dihapus permanen."
+                st.session_state["_riw_n"] = st.session_state.get("_riw_n", 0) + 1
+                st.session_state.pop("riw_konfirmasi_hapus", None)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Gagal menghapus: {exc}")
+
+
 def tampilkan_laporan_perkembangan(nama_siswa, tugas, jawaban, nilai):
     """Ringkasan perkembangan dengan relasi nilai berdasarkan penugasan dan siswa."""
     tugas_siswa = [
@@ -8541,14 +8716,16 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.session_state.owner_logged_in = False
             st.rerun()
         st.success("Akses diizinkan.")
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
-            "🎁 Undian Hadiah", "👥 Kelola Status Akun", "📚 Arsip Bank Soal",
-            "🔑 Reset PIN", "🔐 Keamanan Owner", "➕ Tambah Siswa",
-            "🧪 Audit Data Sistem", "🧩 Pulihkan Tugas Historis",
-            "👪 Tambah Orang Tua"
-        ])
+        # Menu pilihan (bukan st.tabs): lebih mudah ditekan di HP dan hanya bagian terpilih yang diproses.
+        _MENU_OWNER = {
+            1: "🎁 Undian Hadiah", 2: "👥 Kelola Status Akun", 3: "📚 Arsip Bank Soal",
+            4: "🔑 Reset PIN", 5: "🔐 Keamanan Owner", 6: "➕ Tambah Siswa",
+            9: "👪 Tambah Orang Tua", 10: "📜 Riwayat Semua Tugas",
+            7: "🧪 Audit Data Sistem", 8: "🧩 Pulihkan Tugas Historis",
+        }
+        _menu_owner_pilih = st.selectbox("Menu Pengelola:", list(_MENU_OWNER.values()), key="menu_owner_pilih")
 
-        with tab8:
+        if _menu_owner_pilih == _MENU_OWNER[8]:
             st.header("🧩 Pemulihan Kepemilikan Tugas Historis")
             st.caption("Tugas tanpa ID_Tutor tetap disembunyikan dari tutor sampai pengelola memverifikasi dan menetapkan pemiliknya. Tidak ada tugas atau jawaban yang dihapus.")
             try:
@@ -8601,7 +8778,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             except Exception as exc:
                 st.error(f"Daftar tugas historis belum dapat dibaca: {exc.__class__.__name__}")
 
-        with tab9:
+        if _menu_owner_pilih == _MENU_OWNER[9]:
             st.header("👪 Tambah Orang Tua / Wali Murid")
             st.caption("ID login wali (USR-xxx) dan ID orang tua dibuat otomatis, lalu langsung dihubungkan ke anak.")
             _pesan_ortu = st.session_state.pop("_pesan_ortu_baru", None)
@@ -8671,7 +8848,10 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             except Exception as exc_tab_ortu:
                 st.error(f"Form orang tua belum dapat dibuka: {exc_tab_ortu}")
 
-        with tab7:
+        if _menu_owner_pilih == _MENU_OWNER[10]:
+            tampilkan_riwayat_tugas_owner()
+
+        if _menu_owner_pilih == _MENU_OWNER[7]:
             st.header("🧪 Audit Data Sistem")
             st.caption(
                 "Pemeriksaan baca-saja untuk membantu menelusuri masalah aplikasi. "
@@ -8732,7 +8912,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     key="download_audit_duplikat_csv"
                 )
 
-        with tab6:
+        if _menu_owner_pilih == _MENU_OWNER[6]:
             st.header("➕ Pendaftaran Siswa Baru")
             st.caption("Isi satu formulir saja. ID dibuat otomatis; data disimpan ke Data_Siswa dan akun login siswa dibuat di Akun_Pengguna.")
             _pesan_daftar = st.session_state.pop("_pesan_daftar_siswa", None)
@@ -8948,7 +9128,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             except Exception as exc:
                 st.error(f"Form pendaftaran siswa belum dapat dibuka: {exc}")
 
-        with tab1:
+        if _menu_owner_pilih == _MENU_OWNER[1]:
             data_siswa_all = baca_records_aman(get_worksheet("Data_Siswa"))
             peserta_undian = []
             for s in data_siswa_all:
@@ -8973,7 +9153,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             else:
                 st.info("Belum ada siswa yang mencapai 100 poin.")
 
-        with tab2:
+        if _menu_owner_pilih == _MENU_OWNER[2]:
             ws_siswa = get_worksheet("Data_Siswa")
             records_siswa = baca_records_aman(ws_siswa)
             if records_siswa:
@@ -9001,7 +9181,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             else:
                 st.info("Data siswa kosong.")
 
-        with tab3:
+        if _menu_owner_pilih == _MENU_OWNER[3]:
             try:
                 ws_bank = get_worksheet("Bank_Soal_Master")
                 st.dataframe(pd.DataFrame(baca_records_aman(ws_bank)).drop(columns=["_baris"], errors="ignore"), use_container_width=True)
@@ -9012,7 +9192,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             st.subheader("📥 Tambah soal ke Bank Soal (otomatis rapi)")
             tampilkan_konverter_bank_soal("owner")
 
-        with tab4:
+        if _menu_owner_pilih == _MENU_OWNER[4]:
             st.caption("Owner dapat membuat PIN pengganti. PIN langsung disimpan dalam bentuk HASH; pengguna dapat menggantinya lagi setelah login.")
             jenis_akun = st.radio("Jenis akun", ["Siswa", "Tutor / Orang Tua"], horizontal=True, key="owner_jenis_reset")
             if jenis_akun == "Siswa":
@@ -9074,7 +9254,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
             else:
                 st.info("Tidak ada akun yang dapat dipilih pada kategori ini.")
 
-        with tab5:
+        if _menu_owner_pilih == _MENU_OWNER[5]:
             st.caption("Ganti PIN Owner langsung dari portal. PIN disimpan sebagai HASH pada worksheet Pengaturan_Aplikasi; data username dan akun pengguna tidak diubah.")
             owner_settings = baca_records_aman(ws_owner_security)
             owner_pin_records = [
