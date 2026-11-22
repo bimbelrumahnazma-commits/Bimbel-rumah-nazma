@@ -4684,6 +4684,24 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
                 st.error(f"Soal belum tersimpan: {exc}")
 
 
+def tulis_baris_di_bawah(ws, baris, mode="RAW", nilai_sekarang=None):
+    """Tulis satu baris tepat di kolom A pada baris kosong pertama di bawah data.
+    Tidak memakai append_row, karena append_row menebak 'tabel' dan bisa menggeser kolom bila sheet
+    punya blok data lain; akibatnya ID siswa mendarat di kolom yang salah. Mengembalikan nomor baris."""
+    nilai = nilai_sekarang if nilai_sekarang is not None else ws.get_all_values()
+    nomor = len(nilai) + 1
+    kolom = re.sub(r"\d+", "", gspread.utils.rowcol_to_a1(1, max(len(baris), 1)))
+    rentang = f"A{nomor}:{kolom}{nomor}"
+    try:
+        ws.update(range_name=rentang, values=[list(baris)], value_input_option=mode)
+    except Exception as exc:
+        if "grid" not in str(exc).lower():
+            raise
+        ws.add_rows(10)
+        ws.update(range_name=rentang, values=[list(baris)], value_input_option=mode)
+    return nomor
+
+
 def _id_berikutnya(nilai_list, default):
     """ID berikutnya mengikuti pola ID yang sudah ada di kolom (awalan, pemisah, lebar angka)."""
     from collections import Counter
@@ -4722,7 +4740,7 @@ def tambah_baris_sesuai_header(ws, nilai, wajib=(), id_otomatis=None):
             akhir[header.casefold()] = _id_berikutnya(
                 [r[idx] if idx < len(r) else "" for r in data[1:]], default
             )
-    ws.append_row([akhir.get(h, "") for h in kecil], value_input_option="RAW")
+    tulis_baris_di_bawah(ws, [akhir.get(h, "") for h in kecil], "RAW", nilai_sekarang=data)
     _baca_values_cache.clear()
     return akhir
 
@@ -8859,8 +8877,8 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                                         else:
                                             row_baru.append("")
 
-                                    hasil_append = ws_daftar.append_row(
-                                        row_baru, value_input_option="USER_ENTERED"
+                                    nomor_baris_baru = tulis_baris_di_bawah(
+                                        ws_daftar, row_baru, "USER_ENTERED", nilai_sekarang=data_terkini
                                     )
 
                                     # Konfirmasi dengan membaca ulang spreadsheet, bukan mengandalkan
