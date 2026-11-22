@@ -2914,6 +2914,7 @@ def tampilkan_daftar_pemeriksaan(tutor_id, tutor_nama, interval_detik=INTERVAL_P
             return
         kata = st.text_input("Cari nama siswa atau tugas:", key="periksa_cari").strip().casefold()
         tampil = [x for x in daftar if not kata or kata in f"{x['Nama_Tampil']} {x['Judul']} {x['Mapel']}".casefold()]
+        peta_pelanggaran = hitung_pelanggaran_fokus() if tampil else {}
         if not tampil:
             st.caption("Tidak ada yang cocok dengan pencarian.")
         for x in tampil[:30]:
@@ -2921,7 +2922,11 @@ def tampilkan_daftar_pemeriksaan(tutor_id, tutor_nama, interval_detik=INTERVAL_P
             id_siswa = str(x.get("ID_Siswa", "")).strip()
             teks, tombol = st.columns([4, 1])
             teks.markdown(f"**{x['Nama_Tampil']}** · {x['Kategori']} {x['Mapel']} — {x['Judul']}")
-            teks.caption(f"Dikirim: {x.get('Waktu_Kirim') or '-'}")
+            _jml_p = peta_pelanggaran.get((id_tugas, id_siswa), 0)
+            teks.caption(
+                f"Dikirim: {x.get('Waktu_Kirim') or '-'}"
+                + (f" · 🚨 Keluar tab {teks_pelanggaran(_jml_p)}" if _jml_p else " · Keluar tab 0 kali")
+            )
             if tombol.button("Periksa", key=f"periksa_{id_tugas}_{id_siswa}"):
                 st.session_state["_periksa_terpilih"] = f"{id_tugas}|{id_siswa}"
                 _baca_values_cache.clear()
@@ -4681,15 +4686,24 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
 
 def tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif, dalam_expander=True):
     """Pilih beberapa siswa untuk tugas yang sama: ketik nama, tekan tombol ➕ pada hasil, ulangi.
-    Memakai tombol dengan callback (bukan multiselect) agar mudah ditekan di HP dan pilihan tidak hilang."""
+    Setelah satu siswa ditambahkan, kotak pencarian dikosongkan otomatis supaya siswa berikutnya
+    bisa langsung diketik. Tombol 'Tambah semua yang cocok' menambah beberapa siswa sekaligus."""
     kunci = f"_siswa_tambahan_{selected_siswa}"
+    kunci_cari = f"cari_tambahan_{selected_siswa}"
     terpilih = list(st.session_state.get(kunci, []))
+    utama = str(selected_siswa).strip().casefold()
 
-    def _tambah(nama):
+    def _tambah(*daftar_nama):
         daftar = list(st.session_state.get(kunci, []))
-        if nama not in daftar:
-            daftar.append(nama)
+        sudah = {str(x).strip().casefold() for x in daftar}
+        for nama in daftar_nama:
+            kunci_nama = str(nama).strip().casefold()
+            if kunci_nama and kunci_nama != utama and kunci_nama not in sudah:
+                daftar.append(nama)
+                sudah.add(kunci_nama)
         st.session_state[kunci] = daftar
+        # Kosongkan kotak cari agar nama berikutnya bisa langsung diketik.
+        st.session_state[kunci_cari] = ""
 
     def _hapus(nama):
         st.session_state[kunci] = [x for x in st.session_state.get(kunci, []) if x != nama]
@@ -4703,26 +4717,34 @@ def tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif, dalam_expander=T
     with wadah_bagi:
         if not dalam_expander:
             st.markdown(f"**{judul_bagi}**")
-        st.caption(
-            f"Siswa utama: {selected_siswa}. Ketik nama siswa lain, tekan Enter, lalu tekan tombol ➕ pada nama yang cocok. "
-            "Ulangi untuk menambah siswa lain. Setiap siswa mendapat tugas, timer, jawaban, dan nilai sendiri."
-        )
-        cari = st.text_input(
-            "Ketik nama siswa lalu tekan Enter (minimal 3 huruf):", key=f"cari_tambahan_{selected_siswa}"
-        )
-        hasil, pesan = cari_siswa_terbatas(
-            cari,
-            [n for n in siswa_aktif
-             if str(n).strip().casefold() != str(selected_siswa).strip().casefold() and n not in terpilih]
-        )
-        if pesan:
-            st.caption(pesan)
-        for nama in hasil:
-            st.button(f"➕ {nama}", key=f"tbh_tambah_{selected_siswa}_{nama}", on_click=_tambah, args=(nama,))
+        # Daftar yang sudah dipilih tampil lebih dulu, sehingga jelas siapa saja yang sudah masuk.
         if terpilih:
             st.markdown("**Sudah dipilih (tekan untuk menghapus):**")
             for nama in terpilih:
                 st.button(f"✖ {nama}", key=f"tbh_hapus_{selected_siswa}_{nama}", on_click=_hapus, args=(nama,))
+        st.caption(
+            f"Siswa utama: {selected_siswa}. Ketik nama siswa lain, tekan Enter, lalu tekan tombol ➕ pada nama yang cocok. "
+            "Kotak akan kosong lagi setelah menambah, jadi Anda bisa langsung mengetik siswa berikutnya. "
+            "Setiap siswa mendapat tugas, timer, jawaban, dan nilai sendiri."
+        )
+        cari = st.text_input(
+            "Ketik nama siswa lalu tekan Enter (minimal 3 huruf):", key=kunci_cari
+        )
+        sudah_dipilih = {str(x).strip().casefold() for x in terpilih}
+        hasil, pesan = cari_siswa_terbatas(
+            cari,
+            [n for n in siswa_aktif
+             if str(n).strip().casefold() != utama and str(n).strip().casefold() not in sudah_dipilih]
+        )
+        if pesan:
+            st.caption(pesan)
+        if len(hasil) > 1:
+            st.button(
+                f"➕ Tambah semua yang cocok ({len(hasil)})",
+                key=f"tbh_semua_{selected_siswa}", on_click=_tambah, args=tuple(hasil)
+            )
+        for nama in hasil:
+            st.button(f"➕ {nama}", key=f"tbh_tambah_{selected_siswa}_{nama}", on_click=_tambah, args=(nama,))
 
 
 def tampilkan_laporan_perkembangan(nama_siswa, tugas, jawaban, nilai):
@@ -4753,6 +4775,12 @@ def tampilkan_laporan_perkembangan(nama_siswa, tugas, jawaban, nilai):
     c1.metric("Total tugas", len(tugas_siswa))
     c2.metric("Jawaban terkirim", len(jawaban_siswa))
     c3.metric("Nilai diterbitkan", len(nilai_angka))
+    _peta_pel = hitung_pelanggaran_fokus()
+    _total_pel = sum(
+        jml for (id_t, id_s), jml in _peta_pel.items()
+        if id_t in ids_tugas and (not ids_siswa or id_s in ids_siswa)
+    )
+    st.metric("Total pelanggaran keluar tab", teks_pelanggaran(_total_pel))
     if nilai_angka:
         st.metric("Rata-rata nilai terbit", f"{sum(nilai_angka)/len(nilai_angka):.1f}")
     else:
@@ -5293,6 +5321,36 @@ def catat_focus_alert_server(evento, task_info=None):
     except Exception as exc:
         st.session_state["_focus_log_galat"] = str(exc)[:160]
     return status_telegram
+
+
+def hitung_pelanggaran_fokus(refresh=False):
+    """Jumlah pelanggaran keluar tab per (ID_Tugas, ID_Siswa), dihitung dari Riwayat_Focus_Alert.
+    Tiap ID_Event dihitung sekali. Jika log tidak terbaca, hasilnya kosong agar laporan nilai tetap tampil."""
+    try:
+        ws = get_or_create_worksheet(
+            "Riwayat_Focus_Alert", FOCUS_ALERT_HEADERS, rows="5000", cols=str(len(FOCUS_ALERT_HEADERS))
+        )
+        rows = baca_records_aman(ws, refresh=refresh)
+    except Exception:
+        return {}
+    kejadian = {}
+    for r in rows:
+        id_tugas = str(r.get("ID_Tugas", "")).strip()
+        id_siswa = str(r.get("ID_Siswa", "")).strip()
+        if not id_tugas or not id_siswa:
+            continue
+        id_event = str(r.get("ID_Event", "")).strip() or f"baris-{r.get('_baris', len(kejadian))}"
+        try:
+            jumlah = max(1, int(float(r.get("Jumlah_Kejadian", 1) or 1)))
+        except (ValueError, TypeError):
+            jumlah = 1
+        kejadian.setdefault((id_tugas, id_siswa), {})[id_event] = jumlah
+    # Jumlah kejadian unik, atau hitungan berjalan tertinggi bila ada baris log yang gagal tertulis.
+    return {k: max(len(v), max(v.values())) for k, v in kejadian.items()}
+
+
+def teks_pelanggaran(jumlah):
+    return f"{int(jumlah or 0)} kali"
 
 
 def tampilkan_peringatan_fokus(tutor_id, tutor_nama, interval_detik=INTERVAL_PENYEGARAN_TUTOR, menit=120):
@@ -7764,6 +7822,18 @@ elif peran == "🔒 Pengajar / Tutor":
                                 if kunci_nilai_penugasan(x)[0]
                                 and (not siswa_ids_laporan or kunci_nilai_penugasan(x)[1] in siswa_ids_laporan)
                             }
+                            _peta_pel_laporan = hitung_pelanggaran_fokus()
+                            _sudah_kirim_laporan = {
+                                (str(j.get("ID_Tugas", "")).strip(), str(j.get("ID_Siswa", "")).strip())
+                                for j in semua_jawaban_laporan
+                            }
+
+                            def _teks_pel_laporan(t):
+                                kunci_t = (str(t.get("ID_Tugas", "")).strip(), str(t.get("ID_Siswa", "")).strip())
+                                if kunci_t in _peta_pel_laporan:
+                                    return teks_pelanggaran(_peta_pel_laporan[kunci_t])
+                                return teks_pelanggaran(0) if kunci_t in _sudah_kirim_laporan else "-"
+
                             st.dataframe(pd.DataFrame([
                                 {
                                     "Mapel": x.get("Mapel", ""),
@@ -7772,7 +7842,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                     "Nilai akhir": nilai_map_laporan.get(
                                         (str(x.get("ID_Tugas", "")).strip(), str(x.get("ID_Siswa", "")).strip()),
                                         "Belum terbit"
-                                    )
+                                    ),
+                                    "Pelanggaran (keluar tab)": _teks_pel_laporan(x)
                                 } for x in tugas_siswa_laporan
                             ]), use_container_width=True, hide_index=True)
                             # FITUR BARU: soal yang diberikan ke siswa ini
@@ -7837,6 +7908,13 @@ elif peran == "🔒 Pengajar / Tutor":
                         st.rerun()
                 if item is not None:
                     st.write(f"**Siswa:** {nama_tampil_item}")
+                    _jml_pelanggaran_item = hitung_pelanggaran_fokus(refresh=True).get(
+                        (str(item.get("ID_Tugas", "")).strip(), str(item.get("ID_Siswa", "")).strip()), 0
+                    )
+                    if _jml_pelanggaran_item:
+                        st.warning(f"🚨 Pelanggaran: siswa keluar dari tab/halaman {teks_pelanggaran(_jml_pelanggaran_item)} saat mengerjakan.")
+                    else:
+                        st.caption("Pelanggaran keluar tab: 0 kali.")
                     # FITUR BARU: soal yang dikirim ke siswa ikut muncul saat menilai
                     tampilkan_soal_tugas_untuk_tutor(
                         info_tgs.get(str(item.get("ID_Tugas", "")).strip(), {}), expanded=True
@@ -8964,6 +9042,7 @@ elif peran == "👨‍👩‍👧 Orang Tua":
             st.header("📈 Rekap Nilai & Evaluasi")
             data_tabel_ortu = []
             try:
+                peta_pel_ortu = hitung_pelanggaran_fokus()
                 nilai_ortu = baca_nilai_tugas_terpadu()
                 tugas_ortu = {
                     str(t.get("ID_Tugas", "")).strip(): t
@@ -8983,6 +9062,9 @@ elif peran == "👨‍👩‍👧 Orang Tua":
                         "Mapel": tugas.get("Mapel", "-"),
                         "Aktivitas": tugas.get("Judul_Tugas", id_tugas_nilai or "-"),
                         "Nilai": n.get("Nilai", "-"),
+                        "Pelanggaran (keluar tab)": teks_pelanggaran(
+                            peta_pel_ortu.get((id_tugas_nilai, str(id_anak_ortu).strip()), 0)
+                        ),
                         "Evaluasi Tutor": n.get("Umpan_Balik", n.get("Catatan", "-")),
                         "Tutor": tugas.get("Tutor") or n.get("Tutor") or n.get("ID_Tutor_Penilai", "-")
                     })
