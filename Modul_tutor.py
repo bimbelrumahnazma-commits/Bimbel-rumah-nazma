@@ -5305,6 +5305,20 @@ def _konfigurasi_telegram_focus(tutor_id):
     return bot_token, penerima, ""
 
 
+def _konfigurasi_telegram_tugas(tutor_id):
+    """Bot khusus notifikasi 'tugas selesai dikirim' ([telegram_tugas] di Secrets) supaya bunyinya bisa
+    dibedakan dari bot Focus Alert. Chat ID tutor sama; bila bot khusus belum diisi, memakai bot lama."""
+    token_focus, penerima, alasan = _konfigurasi_telegram_focus(tutor_id)
+    token_tugas = ""
+    try:
+        token_tugas = str(st.secrets.get("telegram_tugas", {}).get("bot_token", "")).strip()
+    except Exception:
+        token_tugas = ""
+    if token_tugas:
+        return token_tugas, penerima, ("" if penerima else "CHAT_ID_TUTOR_BELUM_DIDAFTARKAN"), True
+    return token_focus, penerima, alasan, False
+
+
 def kirim_telegram_pesan(bot_token, chat_id, teks):
     """(berhasil, keterangan). Keterangan hanya berisi respons Telegram, tidak pernah token."""
     try:
@@ -5374,17 +5388,28 @@ def kirim_telegram_notifikasi_pengiriman(task_id, student_id, jenis="jawaban"):
             return False, "Data tugas tidak ditemukan untuk notifikasi."
         tutor_id = str(tugas.get("ID_Tutor", "")).strip()
         tutor_nama = str(tugas.get("Tutor", "")).strip()
-        bot_token, chat_id, alasan = _konfigurasi_telegram_focus(tutor_id)
+        bot_token, chat_id, alasan, _bot_khusus = _konfigurasi_telegram_tugas(tutor_id)
         if alasan:
             return False, alasan
         siswa_id = str(student_id or "").strip()
         nama_siswa = str(tugas.get("Nama_Siswa", "")).strip() or siswa_id
         judul = str(tugas.get("Judul_Tugas", "Tugas siswa")).strip() or "Tugas siswa"
+        try:
+            jumlah_pelanggaran = hitung_pelanggaran_fokus(refresh=True).get(
+                (str(task_id or "").strip(), siswa_id), 0
+            )
+        except Exception:
+            jumlah_pelanggaran = 0
+        baris_pelanggaran = (
+            f"🚨 Pelanggaran keluar tab: {teks_pelanggaran(jumlah_pelanggaran)}\n"
+            if jumlah_pelanggaran else "✅ Pelanggaran keluar tab: 0 kali\n"
+        )
         pesan = (
-            "🔔 NAZMA — JAWABAN BARU MASUK\n\n"
+            "🔔 NAZMA — TUGAS SELESAI DIKIRIM\n\n"
             f"Siswa: {nama_siswa} ({siswa_id})\n"
             f"Tugas: {judul}\n"
             f"Jenis kiriman: {jenis}\n"
+            f"{baris_pelanggaran}"
             f"Tutor: {tutor_nama or tutor_id}\n"
             f"Waktu: {waktu_lokal().strftime('%d-%m-%Y %H:%M:%S')} WIB\n\n"
             "Silakan buka Portal Tutor → Portofolio Siswa → Jawaban yang menunggu pemeriksaan."
@@ -5393,6 +5418,27 @@ def kirim_telegram_notifikasi_pengiriman(task_id, student_id, jenis="jawaban"):
         return kirim_telegram_pesan(bot_token, chat_id, pesan)
     except Exception as exc:
         return False, f"Notifikasi gagal: {exc.__class__.__name__}"
+
+
+def uji_telegram_tugas(tutor_id, tutor_nama):
+    """Pesan uji untuk bot notifikasi tugas. Tutor harus menekan Start di bot ini lebih dulu."""
+    try:
+        bot_token, penerima, alasan, bot_khusus = _konfigurasi_telegram_tugas(tutor_id)
+    except Exception as exc:
+        return False, f"Konfigurasi Secrets tidak terbaca: {exc.__class__.__name__}"
+    if alasan:
+        return False, "Chat ID pribadi belum didaftarkan atau bot belum dikonfigurasi. Isi Chat ID di atas lalu Simpan Chat ID."
+    if not bot_khusus:
+        return False, "Bagian [telegram_tugas] dengan bot_token belum terbaca di Secrets, jadi masih memakai bot lama."
+    ok, ket = kirim_telegram_pesan(
+        bot_token, penerima,
+        f"✅ Tes bot Notifikasi Tugas Nazma untuk {tutor_nama or 'tutor'}. Pesan ini muncul saat siswa selesai mengirim tugas."
+    )
+    if ok:
+        return True, "Pesan uji bot tugas terkirim. Periksa Telegram Anda."
+    if "403" in ket or "chat not found" in ket.lower() or "400" in ket:
+        return False, f"{ket}. Buka bot tugas di Telegram lalu tekan Start/kirim satu pesan, kemudian coba lagi."
+    return False, ket
 
 
 def uji_telegram_tutor(tutor_id, tutor_nama):
@@ -6870,6 +6916,12 @@ elif peran == "🔒 Pengajar / Tutor":
                             tutor_id_notif, st.session_state.get("tutor_nama", "")
                         )
                         (st.success if ok_tg else st.error)(pesan_tg)
+                    if st.button("Kirim pesan uji bot Tugas", key="tes_telegram_tugas_tutor"):
+                        ok_tg2, pesan_tg2 = uji_telegram_tugas(
+                            tutor_id_notif, st.session_state.get("tutor_nama", "")
+                        )
+                        (st.success if ok_tg2 else st.error)(pesan_tg2)
+                    st.caption("Bot Tugas dipakai untuk notifikasi 'tugas selesai dikirim'. Buka bot itu di Telegram dan tekan Start sekali; setelah itu bunyinya bisa diatur terpisah dari bot Focus Alert.")
                     if NAZMA_FOCUS_COMPONENT is None:
                         st.warning("Folder komponen nazma_focus_component tidak ditemukan, jadi pendeteksi keluar halaman belum aktif.")
 
@@ -8713,7 +8765,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                         "Nama lengkap siswa *", key="tambah_siswa_nama"
                     )
                     jenjang_baru = st.selectbox(
-                        "Jenjang *", ["TK", "SD", "SMP", "SMA"],
+                        "Jenjang *", ["TK", "SD", "SMP", "SMA", "Umum"],
                         key="tambah_siswa_jenjang"
                     )
                     kelas_opsi = {
@@ -8721,6 +8773,7 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                         "SD": [f"Kelas {i}" for i in range(1, 7)],
                         "SMP": [f"Kelas {i}" for i in range(7, 10)],
                         "SMA": [f"Kelas {i}" for i in range(10, 13)],
+                        "Umum": ["Umum"],
                     }
                     kelas_baru = st.selectbox(
                         "Kelas", kelas_opsi[jenjang_baru],
