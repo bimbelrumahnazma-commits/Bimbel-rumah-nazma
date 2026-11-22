@@ -4685,31 +4685,38 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
 
 
 def tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif, dalam_expander=True):
-    """Pilih beberapa siswa untuk tugas yang sama: ketik nama, tekan tombol ➕ pada hasil, ulangi.
-    Setelah satu siswa ditambahkan, kotak pencarian dikosongkan otomatis supaya siswa berikutnya
-    bisa langsung diketik. Tombol 'Tambah semua yang cocok' menambah beberapa siswa sekaligus."""
+    """Pilih beberapa siswa untuk tugas yang sama.
+    Urutan tampilan: kotak cari -> hasil (tombol ➕) -> daftar siswa terpilih (✅ nama + tombol Hapus).
+    Kotak cari dikosongkan otomatis setelah menambah, dan ada pesan konfirmasi di bawahnya."""
     kunci = f"_siswa_tambahan_{selected_siswa}"
     kunci_cari = f"cari_tambahan_{selected_siswa}"
+    kunci_info = f"_info_tambahan_{selected_siswa}"
     terpilih = list(st.session_state.get(kunci, []))
     utama = str(selected_siswa).strip().casefold()
 
     def _tambah(*daftar_nama):
         daftar = list(st.session_state.get(kunci, []))
         sudah = {str(x).strip().casefold() for x in daftar}
+        baru_ditambah = []
         for nama in daftar_nama:
             kunci_nama = str(nama).strip().casefold()
             if kunci_nama and kunci_nama != utama and kunci_nama not in sudah:
                 daftar.append(nama)
                 sudah.add(kunci_nama)
+                baru_ditambah.append(nama)
         st.session_state[kunci] = daftar
-        # Kosongkan kotak cari agar nama berikutnya bisa langsung diketik.
         st.session_state[kunci_cari] = ""
+        if baru_ditambah:
+            st.session_state[kunci_info] = (
+                f"✅ {', '.join(baru_ditambah)} berhasil ditambahkan. Total {len(daftar)} siswa lain. "
+                "Ketik nama siswa berikutnya di kotak di atas bila masih ada."
+            )
 
     def _hapus(nama):
         st.session_state[kunci] = [x for x in st.session_state.get(kunci, []) if x != nama]
+        st.session_state[kunci_info] = f"🗑 {nama} dihapus dari daftar."
 
     judul_bagi = f"👥 Beri tugas yang sama ke siswa lain (opsional) — {len(terpilih)} dipilih"
-    # Streamlit tidak mengizinkan expander di dalam expander; di dalam form tugas pakai kotak biasa.
     if dalam_expander:
         wadah_bagi = st.expander(judul_bagi, expanded=bool(terpilih))
     else:
@@ -4717,15 +4724,9 @@ def tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif, dalam_expander=T
     with wadah_bagi:
         if not dalam_expander:
             st.markdown(f"**{judul_bagi}**")
-        # Daftar yang sudah dipilih tampil lebih dulu, sehingga jelas siapa saja yang sudah masuk.
-        if terpilih:
-            st.markdown("**Sudah dipilih (tekan untuk menghapus):**")
-            for nama in terpilih:
-                st.button(f"✖ {nama}", key=f"tbh_hapus_{selected_siswa}_{nama}", on_click=_hapus, args=(nama,))
         st.caption(
             f"Siswa utama: {selected_siswa}. Ketik nama siswa lain, tekan Enter, lalu tekan tombol ➕ pada nama yang cocok. "
-            "Kotak akan kosong lagi setelah menambah, jadi Anda bisa langsung mengetik siswa berikutnya. "
-            "Setiap siswa mendapat tugas, timer, jawaban, dan nilai sendiri."
+            "Ulangi untuk menambah siswa lain. Setiap siswa mendapat tugas, timer, jawaban, dan nilai sendiri."
         )
         cari = st.text_input(
             "Ketik nama siswa lalu tekan Enter (minimal 3 huruf):", key=kunci_cari
@@ -4744,7 +4745,16 @@ def tampilkan_pilih_siswa_tambahan(selected_siswa, siswa_aktif, dalam_expander=T
                 key=f"tbh_semua_{selected_siswa}", on_click=_tambah, args=tuple(hasil)
             )
         for nama in hasil:
-            st.button(f"➕ {nama}", key=f"tbh_tambah_{selected_siswa}_{nama}", on_click=_tambah, args=(nama,))
+            st.button(f"➕ Tambah {nama}", key=f"tbh_tambah_{selected_siswa}_{nama}", on_click=_tambah, args=(nama,))
+        info = st.session_state.get(kunci_info)
+        if info:
+            st.success(info)
+        if terpilih:
+            st.markdown(f"**Siswa lain yang akan menerima tugas ini ({len(terpilih)}):**")
+            for nama in terpilih:
+                kiri, kanan = st.columns([3, 2])
+                kiri.markdown(f"✅ **{nama}**")
+                kanan.button("🗑 Hapus", key=f"tbh_hapus_{selected_siswa}_{nama}", on_click=_hapus, args=(nama,))
 
 
 def tampilkan_laporan_perkembangan(nama_siswa, tugas, jawaban, nilai):
