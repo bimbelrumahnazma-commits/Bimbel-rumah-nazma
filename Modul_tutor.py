@@ -501,6 +501,22 @@ def _pasang_penanda_tulis():
                     _STATE_CACHE["tulis"][self.title] = time.time()
             return terbungkus
         setattr(kelas_ws, nama, _bungkus())
+    # Pemeriksaan header (row_values(1)) dilayani dari cache nilai sheet: tidak memanggil Google lagi.
+    asli_rv = getattr(kelas_ws, "row_values", None)
+    if asli_rv is not None:
+        @functools.wraps(asli_rv)
+        def row_values_cache(self, row, *a, **k):
+            if row == 1 and not a and not k:
+                try:
+                    nilai = _baca_values_cache(self.spreadsheet_id, self.title)
+                    baris = list(nilai[0]) if nilai else []
+                    while baris and str(baris[-1]) == "":
+                        baris.pop()
+                    return baris
+                except Exception:
+                    pass
+            return asli_rv(self, row, *a, **k)
+        kelas_ws.row_values = row_values_cache
     kelas_ss = getattr(gspread, "Spreadsheet", None)
     asli_ss = getattr(kelas_ss, "batch_update", None) if kelas_ss else None
     if asli_ss is not None:
@@ -6605,7 +6621,16 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                         alasan_kirim.append("jawab semua soal atau centang konfirmasi soal yang dikosongkan")
                     if alasan_kirim:
                         st.info("Tombol Kirim belum aktif. Yang perlu dilakukan: " + "; ".join(alasan_kirim) + ".")
-                if st.button("📤 Kirim Jawaban", key=f"submit_{task_id}", disabled=(not boleh_kirim)):
+                _flag_kirim = f"_mengirim_{task_id}"
+                st.button(
+                    "⏳ Sedang mengirim…" if st.session_state.get(_flag_kirim) else "📤 Kirim Jawaban",
+                    key=f"submit_{task_id}",
+                    disabled=(not boleh_kirim) or bool(st.session_state.get(_flag_kirim)),
+                    on_click=st.session_state.__setitem__, args=(_flag_kirim, True),
+                )
+                if st.session_state.get(_flag_kirim):
+                    st.info("⏳ Sedang mengirim. Jangan tutup halaman dan jangan tekan tombol lagi sampai selesai.")
+                    urls_lampiran_online = []
                     try:
                         # Validasi timer dilakukan sebelum unggah lampiran maupun simpan jawaban.
                         validasi_waktu_pengiriman(task_id, siswa_id)
@@ -6619,16 +6644,21 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                             st.session_state.get("_draft_pending_by_task", {}).pop(task_id, None)
                             st.session_state.setdefault("_draft_status_by_task", {})[task_id] = "Terkirim"
                             # Notifikasi hanya dikirim setelah penyimpanan jawaban berhasil.
-                            kirim_telegram_notifikasi_pengiriman(
-                                task_id, siswa_id,
-                                "jawaban online" + (" + lampiran foto" if file_jawaban else "")
-                            )
+                            try:
+                                kirim_telegram_notifikasi_pengiriman(
+                                    task_id, siswa_id,
+                                    "jawaban online" + (" + lampiran foto" if file_jawaban else "")
+                                )
+                            except Exception:
+                                pass  # kegagalan notifikasi tidak boleh membatalkan pengiriman
                         st.success("Jawaban berhasil dikirim. Tutor akan memeriksanya." if ok
                                    else "Jawaban untuk tugas ini sudah dikirim sebelumnya.")
                         st.rerun()
                     except Exception as e:
                         catat_log_gagal_pengiriman(task_id, siswa_id, "pengiriman_jawaban_online", e, urls_lampiran_online)
                         st.error(f"Pengiriman jawaban/lampiran gagal ({e.__class__.__name__}). Periksa koneksi dan status pengiriman sebelum mencoba ulang.")
+                    finally:
+                        st.session_state[_flag_kirim] = False
 
         elif mode_pengerjaan == TASK_MODE_OFFLINE and unggah_oleh_tugas(t) != "siswa":
             if terkunci:
@@ -6676,7 +6706,15 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                 )
                 if file_jawaban_offline:
                     st.caption("Foto dikecilkan otomatis. Video/audio maksimal 10 MB per file. Pastikan video/audio dapat diputar dan suaranya jelas.")
-                if st.button("📤 Kirim Hasil Pekerjaan", key=f"selesai_{task_id}"):
+                _flag_kirim_ofl = f"_mengirim_ofl_{task_id}"
+                st.button(
+                    "⏳ Sedang mengirim…" if st.session_state.get(_flag_kirim_ofl) else "📤 Kirim Hasil Pekerjaan",
+                    key=f"selesai_{task_id}",
+                    disabled=bool(st.session_state.get(_flag_kirim_ofl)),
+                    on_click=st.session_state.__setitem__, args=(_flag_kirim_ofl, True),
+                )
+                if st.session_state.get(_flag_kirim_ofl):
+                    st.info("⏳ Sedang mengirim. Jangan tutup halaman dan jangan tekan tombol lagi sampai selesai.")
                     urls_lampiran_offline = []
                     try:
                         teks = "Sudah dikerjakan (offline)"
@@ -6693,16 +6731,21 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                             # Tutup sesi walau sistem mengenali pengiriman yang sudah tersimpan sebelumnya.
                             akhiri_sesi_online(siswa_id, task_id)
                             if ok:
-                                kirim_telegram_notifikasi_pengiriman(
-                                    task_id, siswa_id,
-                                    "hasil pekerjaan upload mandiri" + (" + lampiran" if file_jawaban_offline else "")
-                                )
+                                try:
+                                    kirim_telegram_notifikasi_pengiriman(
+                                        task_id, siswa_id,
+                                        "hasil pekerjaan upload mandiri" + (" + lampiran" if file_jawaban_offline else "")
+                                    )
+                                except Exception:
+                                    pass  # kegagalan notifikasi tidak boleh membatalkan pengiriman
                             st.success("Hasil pekerjaan berhasil dikirim. Tutor akan memeriksanya." if ok
                                        else "Tugas ini sudah dikirim sebelumnya.")
                             st.rerun()
                     except Exception as e:
                         catat_log_gagal_pengiriman(task_id, siswa_id, "pengiriman_hasil_offline_siswa", e, urls_lampiran_offline)
                         st.error(f"Pengiriman hasil pekerjaan gagal ({e.__class__.__name__}). Periksa status pengiriman sebelum mencoba ulang.")
+                    finally:
+                        st.session_state[_flag_kirim_ofl] = False
 
 
 # =========================================================
@@ -6716,7 +6759,7 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
-VERSI_KODE = "23-11-2026 · Cache per-sheet v8"
+VERSI_KODE = "23-11-2026 · Header cache v9"
 st.caption(f"Versi kode: {VERSI_KODE}")
 
 peran = st.selectbox(
@@ -9738,24 +9781,33 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     c for c in ["ID_Siswa", "Nama_Lengkap", "Jenjang", "Poin", "Status"]
                     if c in records_siswa[0]
                 ]
-                # Tambahkan ID dan nama orang tua tiap siswa (dari Relasi_Orangtua_Siswa + Data_Orangtua).
+                # Tambahkan akun pengguna (USR) siswa dan orang tua serta nama ortu.
                 peta_ortu = {}
+                ortu_info, akun_siswa = {}, {}
                 try:
-                    nama_ortu_by_id = {
-                        str(o.get("ID_Ortu", "")).strip(): str(o.get("Nama_Ortu", "")).strip()
-                        for o in baca_records_aman(get_worksheet("Data_Orangtua"))
-                    }
+                    for o in baca_records_aman(get_worksheet("Data_Orangtua")):
+                        ortu_info[str(o.get("ID_Ortu", "")).strip()] = (
+                            str(o.get("ID_User", "")).strip(), str(o.get("Nama_Ortu", "")).strip()
+                        )
                     for rel in baca_records_aman(get_worksheet("Relasi_Orangtua_Siswa")):
                         sid, oid = str(rel.get("ID_Siswa", "")).strip(), str(rel.get("ID_Ortu", "")).strip()
                         if sid and oid:
-                            peta_ortu.setdefault(sid, []).append(oid)
+                            peta_ortu.setdefault(sid.upper(), []).append(oid)
+                    for ak in baca_records_aman(get_worksheet("Akun_Pengguna")):
+                        if str(ak.get("Level_Akses", "")).strip().casefold() == "siswa":
+                            kid = str(ak.get("ID_SISWA", ak.get("ID_Siswa", ""))).strip().upper()
+                            if kid:
+                                akun_siswa[kid] = str(ak.get("ID_User", "")).strip()
                 except Exception:
-                    nama_ortu_by_id = {}
+                    pass
                 df_kelola = pd.DataFrame(records_siswa)[kolom_tampil].copy()
-                _ids = df_kelola["ID_Siswa"].astype(str).str.strip() if "ID_Siswa" in df_kelola else []
-                df_kelola["ID_Ortu"] = [", ".join(peta_ortu.get(i, [])) or "-" for i in _ids]
+                _ids = [str(x).strip().upper() for x in df_kelola["ID_Siswa"]] if "ID_Siswa" in df_kelola else []
+                df_kelola["Akun_Siswa (USR)"] = [akun_siswa.get(i, "-") or "-" for i in _ids]
+                df_kelola["Akun_Ortu (USR)"] = [
+                    ", ".join((ortu_info.get(o, ("", ""))[0] or "-") for o in peta_ortu.get(i, [])) or "-" for i in _ids
+                ]
                 df_kelola["Nama_Ortu"] = [
-                    ", ".join(nama_ortu_by_id.get(o, "") or o for o in peta_ortu.get(i, [])) or "-" for i in _ids
+                    ", ".join((ortu_info.get(o, ("", ""))[1] or o) for o in peta_ortu.get(i, [])) or "-" for i in _ids
                 ]
                 st.dataframe(df_kelola, use_container_width=True, hide_index=True)
                 with st.form("form_status"):
