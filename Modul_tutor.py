@@ -6357,7 +6357,7 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
-VERSI_KODE = "23-11-2026 · Nilai tutor v1"
+VERSI_KODE = "23-11-2026 · Nilai tutor v2"
 st.caption(f"Versi kode: {VERSI_KODE}")
 
 peran = st.selectbox(
@@ -7176,11 +7176,18 @@ elif peran == "🔒 Pengajar / Tutor":
                         placeholder="Contoh: Matematika, Trigonometri, Kelas 8",
                         key="kata_kunci_simpan_library_tutor"
                     )
-                    if file_lokal and st.button(
+                    if not file_lokal:
+                        st.caption(
+                            "Pilih file dulu, lalu tekan Simpan. Jika file bertanda ❗ merah, "
+                            "hapus (✖) dan pilih ulang, atau periksa koneksi internet."
+                        )
+                    if st.button(
                         "⬆️ Simpan ke Library Saya", key="unggah_media_beranda_tutor",
                         use_container_width=True
                     ):
                         berhasil, gagal = [], []
+                        if not file_lokal:
+                            st.warning("Belum ada file yang dipilih atau file gagal terunggah (❗). Pilih ulang file-nya.")
                         with st.spinner("Mengunggah dan menyimpan indeks library..."):
                             for satu_file in file_lokal:
                                 try:
@@ -8089,23 +8096,22 @@ elif peran == "🔒 Pengajar / Tutor":
                     st.subheader("📝 Jurnal dan Evaluasi Sesi")
                     # Status kirim per siswa-tanggal mencegah klik berulang setelah penyimpanan sukses.
                     tanggal_sesi = st.date_input("Tanggal sesi:", waktu_lokal().date(), key=f"tgl_sesi_{selected_siswa}")
-                    jurnal_lock_key = f"jurnal_terkirim_{selected_siswa}_{tanggal_sesi.strftime('%Y%m%d')}"
-                    if st.session_state.get(jurnal_lock_key, False):
-                        st.success("✅ Jurnal untuk siswa dan tanggal ini sudah tersimpan. Tombol pengiriman dikunci agar tidak membuat catatan ganda.")
-                        if st.button("➕ Buat jurnal sesi berikutnya", key=f"jurnal_baru_{selected_siswa}_{tanggal_sesi.strftime('%Y%m%d')}"):
-                            st.session_state[jurnal_lock_key] = False
-                            st.rerun()
-                    mapel_diajarkan = st.multiselect("Mata pelajaran yang diajarkan:", MAPEL_OPTIONS, key=f"mapel_ajar_{selected_siswa}")
-                    with st.form(f"form_jurnal_v2_{selected_siswa}"):
+                    # Versi form naik setelah simpan, sehingga isian kosong lagi dan tombol selalu aktif.
+                    ver_jurnal = st.session_state.get(f"jurnal_ver_{selected_siswa}", 0)
+                    jurnal_sig_key = f"jurnal_sig_{selected_siswa}_{tanggal_sesi.strftime('%Y%m%d')}"
+                    for jenis_pesan, isi_pesan in st.session_state.pop(f"jurnal_pesan_{selected_siswa}", []):
+                        (st.success if jenis_pesan == "ok" else st.warning)(isi_pesan)
+                    mapel_diajarkan = st.multiselect("Mata pelajaran yang diajarkan:", MAPEL_OPTIONS, key=f"mapel_ajar_{selected_siswa}_{ver_jurnal}")
+                    with st.form(f"form_jurnal_v2_{selected_siswa}_{ver_jurnal}"):
                         st.markdown("#### Evaluasi per mata pelajaran")
                         evaluasi_mapel = {}
                         for idx, mp in enumerate(mapel_diajarkan):
                             st.markdown(f"**{mp}**")
-                            materi_mp = st.text_input(f"Materi {mp}", key=f"materi_mp_{selected_siswa}_{idx}")
-                            target_mp = st.text_input(f"Target belajar {mp}", key=f"target_mp_{selected_siswa}_{idx}")
-                            capaian_mp = st.text_area(f"Kompetensi yang dikuasai / hasil belajar {mp}", key=f"capaian_mp_{selected_siswa}_{idx}")
-                            penguatan_mp = st.text_area(f"Bagian yang perlu penguatan {mp}", key=f"penguatan_mp_{selected_siswa}_{idx}")
-                            nilai_mp = st.text_input(f"Nilai latihan (opsional) {mp}", key=f"nilai_mp_{selected_siswa}_{idx}")
+                            materi_mp = st.text_input(f"Materi {mp}", key=f"materi_mp_{selected_siswa}_{idx}_{ver_jurnal}")
+                            target_mp = st.text_input(f"Target belajar {mp}", key=f"target_mp_{selected_siswa}_{idx}_{ver_jurnal}")
+                            capaian_mp = st.text_area(f"Kompetensi yang dikuasai / hasil belajar {mp}", key=f"capaian_mp_{selected_siswa}_{idx}_{ver_jurnal}")
+                            penguatan_mp = st.text_area(f"Bagian yang perlu penguatan {mp}", key=f"penguatan_mp_{selected_siswa}_{idx}_{ver_jurnal}")
+                            nilai_mp = st.text_input(f"Nilai latihan (opsional) {mp}", key=f"nilai_mp_{selected_siswa}_{idx}_{ver_jurnal}")
                             evaluasi_mapel[mp] = {"Materi": materi_mp, "Target": target_mp, "Capaian": capaian_mp, "Penguatan": penguatan_mp, "Nilai": nilai_mp}
                         st.markdown("#### Catatan umum sesi")
                         kondisi_siswa = st.selectbox("Kondisi siswa:", ["Baik", "Cukup", "Kurang fokus", "Lelah", "Perlu perhatian khusus"])
@@ -8118,14 +8124,22 @@ elif peran == "🔒 Pengajar / Tutor":
                             "Lampiran evaluasi tutor (foto/video):",
                             type=["jpg", "jpeg", "png", "webp", "mp4", "mov", "webm", "m4v"],
                             accept_multiple_files=True,
-                            key=f"lampiran_evaluasi_{selected_siswa}"
+                            key=f"lampiran_evaluasi_{selected_siswa}_{ver_jurnal}"
                         )
                         simpan_jurnal = st.form_submit_button(
-                            "💾 Simpan Jurnal dan Evaluasi",
-                            disabled=st.session_state.get(jurnal_lock_key, False)
+                            "💾 Simpan Jurnal dan Evaluasi"
                         )
 
                     if simpan_jurnal:
+                        _sig_jurnal = json.dumps(
+                            [kondisi_siswa, keaktifan, kendala_umum, rekomendasi, handover, dokumentasi, evaluasi_mapel],
+                            sort_keys=True, ensure_ascii=False
+                        )
+                        if st.session_state.get(jurnal_sig_key) == _sig_jurnal:
+                            st.warning("Isi jurnal ini sama dengan yang baru saja disimpan. Ubah isinya bila ingin membuat jurnal baru.")
+                            simpan_jurnal = False
+                    if simpan_jurnal:
+                        pesan_jurnal = []
                         try:
                             daftar_dokumentasi = [dokumentasi.strip()] if dokumentasi.strip() else []
                             peringatan_lampiran = []
@@ -8147,17 +8161,21 @@ elif peran == "🔒 Pengajar / Tutor":
                             id_sesi = "SES-" + uuid.uuid4().hex[:10].upper()
                             ws_sesi.append_row([id_sesi, tanggal_sesi.strftime("%Y-%m-%d"), selected_siswa, st.session_state.tutor_nama, kondisi_siswa, keaktifan, kendala_umum, rekomendasi, handover, dokumentasi_final])
                             # Kunci setelah jurnal utama berhasil tersimpan, agar retry tidak menggandakan jurnal.
-                            st.session_state[jurnal_lock_key] = True
+                            st.session_state[jurnal_sig_key] = _sig_jurnal
                             try:
                                 ws_eval = get_or_create_worksheet("Evaluasi_Mapel_Tutor_v2", ["ID_Evaluasi", "ID_Sesi", "Tanggal", "Nama_Siswa", "Tutor", "Mapel", "Materi", "Target", "Capaian", "Penguatan", "Nilai"])
                                 baris_eval = [["EVL-" + uuid.uuid4().hex[:10].upper(), id_sesi, tanggal_sesi.strftime("%Y-%m-%d"), selected_siswa, st.session_state.tutor_nama, mp, ev["Materi"], ev["Target"], ev["Capaian"], ev["Penguatan"], ev["Nilai"]] for mp, ev in evaluasi_mapel.items()]
                                 if baris_eval:
                                     ws_eval.append_rows(baris_eval, value_input_option="RAW")
-                                st.success(f"✅ Terkirim! Jurnal sesi dan evaluasi berhasil disimpan. ID sesi: {id_sesi}. Tombol dikunci agar tidak terkirim dua kali.")
+                                pesan_jurnal.append(("ok", f"✅ Terkirim! Jurnal sesi dan evaluasi berhasil disimpan. ID sesi: {id_sesi}."))
                             except Exception as eval_error:
-                                st.warning(f"Jurnal utama sudah tersimpan dengan ID {id_sesi}, tetapi evaluasi per mapel belum seluruhnya tersimpan. Jangan kirim ulang jurnal; catat ID ini untuk perbaikan: {eval_error}")
+                                pesan_jurnal.append(("warn", f"Jurnal utama sudah tersimpan dengan ID {id_sesi}, tetapi evaluasi per mapel belum seluruhnya tersimpan. Jangan kirim ulang jurnal; catat ID ini untuk perbaikan: {eval_error}"))
                             for peringatan in peringatan_lampiran:
-                                st.warning(peringatan)
+                                pesan_jurnal.append(("warn", peringatan))
+                            _baca_values_cache.clear()
+                            st.session_state[f"jurnal_pesan_{selected_siswa}"] = pesan_jurnal
+                            st.session_state[f"jurnal_ver_{selected_siswa}"] = ver_jurnal + 1
+                            st.rerun()
                         except Exception as e:
                             st.error(f"Gagal menyimpan jurnal/evaluasi: {e}. Periksa riwayat sebelum mencoba mengirim ulang.")
 
@@ -9296,7 +9314,26 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
                     c for c in ["ID_Siswa", "Nama_Lengkap", "Jenjang", "Poin", "Status"]
                     if c in records_siswa[0]
                 ]
-                st.dataframe(pd.DataFrame(records_siswa)[kolom_tampil], use_container_width=True)
+                # Tambahkan ID dan nama orang tua tiap siswa (dari Relasi_Orangtua_Siswa + Data_Orangtua).
+                peta_ortu = {}
+                try:
+                    nama_ortu_by_id = {
+                        str(o.get("ID_Ortu", "")).strip(): str(o.get("Nama_Ortu", "")).strip()
+                        for o in baca_records_aman(get_worksheet("Data_Orangtua"))
+                    }
+                    for rel in baca_records_aman(get_worksheet("Relasi_Orangtua_Siswa")):
+                        sid, oid = str(rel.get("ID_Siswa", "")).strip(), str(rel.get("ID_Ortu", "")).strip()
+                        if sid and oid:
+                            peta_ortu.setdefault(sid, []).append(oid)
+                except Exception:
+                    nama_ortu_by_id = {}
+                df_kelola = pd.DataFrame(records_siswa)[kolom_tampil].copy()
+                _ids = df_kelola["ID_Siswa"].astype(str).str.strip() if "ID_Siswa" in df_kelola else []
+                df_kelola["ID_Ortu"] = [", ".join(peta_ortu.get(i, [])) or "-" for i in _ids]
+                df_kelola["Nama_Ortu"] = [
+                    ", ".join(nama_ortu_by_id.get(o, "") or o for o in peta_ortu.get(i, [])) or "-" for i in _ids
+                ]
+                st.dataframe(df_kelola, use_container_width=True, hide_index=True)
                 with st.form("form_status"):
                     # Pakai ID siswa (bukan nama) agar yang diubah pasti baris siswa yang dipilih.
                     opsi_status = {
