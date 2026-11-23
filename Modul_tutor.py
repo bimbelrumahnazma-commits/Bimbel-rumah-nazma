@@ -2848,6 +2848,7 @@ def baca_jawaban_tergabung(ws, segarkan=False):
 
 
 
+BATAS_SEL_SHEETS = 45000  # batas aman satu sel Google Sheets (50.000 karakter)
 INTERVAL_PENYEGARAN_TUTOR = 45  # detik; mengurangi pembacaan berulang Google Sheets
 
 
@@ -3867,6 +3868,13 @@ def simpan_draft_tugas_persisten(id_siswa, nama_siswa, tutor, daftar_draft):
             for f in (item.get("Files", []) or [])
         ]
         payload.append(aman)
+    teks_payload = json.dumps(payload, ensure_ascii=False)
+    if len(teks_payload) > BATAS_SEL_SHEETS:
+        st.warning(
+            "Draft terlalu besar untuk disimpan otomatis ke spreadsheet. Draft tetap ada selama halaman ini terbuka; "
+            "kirim tugasnya sebelum menutup halaman, atau kurangi jumlah soal per tugas."
+        )
+        return False
     records = baca_records_aman(ws, refresh=True)
     aktif = next((
         r for r in records
@@ -3877,7 +3885,7 @@ def simpan_draft_tugas_persisten(id_siswa, nama_siswa, tutor, daftar_draft):
     data = [
         aktif.get("ID_Draft") if aktif else "DRF-" + uuid.uuid4().hex[:10].upper(),
         str(id_siswa), str(nama_siswa), str(tutor),
-        json.dumps(payload, ensure_ascii=False), "Draft",
+        teks_payload, "Draft",
         aktif.get("Dibuat_Pada", now) if aktif else now, now
     ]
     if aktif:
@@ -4863,6 +4871,196 @@ def tulis_baris_di_bawah(ws, baris, mode="RAW", nilai_sekarang=None):
         ws.add_rows(10)
         ws.update(range_name=rentang, values=[list(baris)], value_input_option=mode)
     return nomor
+
+
+def tulis_banyak_baris_di_bawah(ws, daftar_baris, mode="RAW"):
+    """Tulis beberapa baris sekaligus (satu panggilan update) tepat di bawah data terakhir.
+    Pengganti append_rows yang menebak 'tabel' dan bisa menggeser kolom. Mengembalikan baris pertama."""
+    daftar_baris = [list(b) for b in (daftar_baris or [])]
+    if not daftar_baris:
+        return None
+    awal = len(ws.get_all_values()) + 1
+    akhir = awal + len(daftar_baris) - 1
+    lebar = max(len(b) for b in daftar_baris)
+    kolom = re.sub(r"\d+", "", gspread.utils.rowcol_to_a1(1, max(lebar, 1)))
+    rentang = f"A{awal}:{kolom}{akhir}"
+    try:
+        ws.update(range_name=rentang, values=daftar_baris, value_input_option=mode)
+    except Exception as exc:
+        if "grid" not in str(exc).lower():
+            raise
+        ws.add_rows(len(daftar_baris) + 10)
+        ws.update(range_name=rentang, values=daftar_baris, value_input_option=mode)
+    _baca_values_cache.clear()
+    return awal
+
+
+NAMA_SHEET_ID_SISWA = [
+    "Data_Siswa", "Akun_Pengguna", "Relasi_Orangtua_Siswa", "Tugas_Sesi_Siswa_v2",
+    "DB_Jawaban_Siswa", "DB_Lampiran_Jawaban", "DB_Nilai_Tugas", "Riwayat_Focus_Alert",
+]
+
+
+def _muat_sheet_id_siswa():
+    """Baca (ws, nilai, indeks_kolom_ID_Siswa) untuk semua sheet yang memuat ID siswa."""
+    hasil = []
+    daftar_nama = list(NAMA_SHEET_ID_SISWA)
+    try:
+        judul_sesi = get_active_task_worksheet().title
+        if judul_sesi not in daftar_nama:
+            daftar_nama.append(judul_sesi)
+    except Exception:
+        pass
+    for nama in daftar_nama:
+        try:
+            ws = get_worksheet(nama)
+        except gspread.WorksheetNotFound:
+            continue
+        nilai = ws.get_all_values()
+        if not nilai:
+            continue
+        kolom = [i for i, h in enumerate(nilai[0]) if str(h).strip().casefold() == "id_siswa"]
+        if kolom:
+            hasil.append((ws, nilai, kolom))
+    return hasil
+
+
+def hitung_pemakaian_id_siswa(sheet_data, id_cari):
+    """Jumlah baris per sheet yang memuat id_cari pada kolom ID_Siswa."""
+    kunci = str(id_cari).strip().upper()
+    hasil = {}
+    for ws, nilai, kolom in sheet_data:
+        n = sum(
+            1 for row in nilai[1:]
+            if any(c < len(row) and str(row[c]).strip().upper() == kunci for c in kolom)
+        )
+        if n:
+            hasil[ws.title] = n
+    return hasil
+
+
+def ganti_id_siswa_di_semua_sheet(sheet_data, id_lama, id_baru):
+    """Ganti id_lama menjadi id_baru pada semua kolom ID_Siswa. Satu batch_update per sheet."""
+    kunci = str(id_lama).strip().upper()
+    ringkas = {}
+    for ws, nilai, kolom in sheet_data:
+        pembaruan = []
+        for nomor, row in enumerate(nilai[1:], start=2):
+            for c in kolom:
+                if c < len(row) and str(row[c]).strip().upper() == kunci:
+                    pembaruan.append({"range": gspread.utils.rowcol_to_a1(nomor, c + 1), "values": [[id_baru]]})
+        if pembaruan:
+            ws.batch_update(pembaruan, value_input_option="RAW")
+            ringkas[ws.title] = len(pembaruan)
+    _baca_values_cache.clear()
+    return ringkas
+
+
+def tampilkan_cek_perbaiki_id():
+    st.header("🔧 Cek & Perbaiki ID Siswa")
+    st.caption(
+        "Mencari siswa yang namanya sama tetapi ID di Data_Siswa berbeda dengan ID di Akun_Pengguna. "
+        "Pindai dulu (hanya membaca), lalu pilih ID yang dipertahankan. Perbaikan menyamakan ID di semua sheet."
+    )
+    if st.button("🔍 Pindai ID siswa", key="pindai_id_siswa"):
+        try:
+            st.session_state["_pindai_id"] = _muat_sheet_id_siswa()
+        except Exception as exc:
+            st.error(f"Pemindaian gagal ({exc.__class__.__name__}): {exc}")
+            return
+    sheet_data = st.session_state.get("_pindai_id")
+    if not sheet_data:
+        st.info("Tekan Pindai untuk memulai.")
+        return
+    peta = {ws.title: (nilai, kolom) for ws, nilai, kolom in sheet_data}
+    if "Data_Siswa" not in peta or "Akun_Pengguna" not in peta:
+        st.error("Sheet Data_Siswa atau Akun_Pengguna tidak ditemukan.")
+        return
+
+    def _records(judul):
+        nilai, _k = peta[judul]
+        kepala = [str(h).strip() for h in nilai[0]]
+        return [dict(zip(kepala, row)) for row in nilai[1:] if any(str(x).strip() for x in row)]
+
+    def _ambil(rec, *nama):
+        for n in nama:
+            if str(rec.get(n, "")).strip():
+                return str(rec.get(n, "")).strip()
+        return ""
+
+    siswa = _records("Data_Siswa")
+    id_siswa_semua = {}
+    nama_ke_id = {}
+    for r in siswa:
+        sid = _ambil(r, "ID_SISWA", "ID_Siswa").upper()
+        nama = _ambil(r, "Nama_Siswa", "Nama_Lengkap").casefold()
+        if sid:
+            id_siswa_semua.setdefault(sid, []).append(nama)
+        if sid and nama:
+            nama_ke_id.setdefault(nama, []).append(sid)
+    kasus = []
+    for r in _records("Akun_Pengguna"):
+        if _ambil(r, "Level_Akses").casefold() != "siswa":
+            continue
+        id_akun = _ambil(r, "ID_SISWA", "ID_Siswa").upper()
+        nama = _ambil(r, "Nama_Pengguna").casefold()
+        id_data = nama_ke_id.get(nama, [])
+        if id_data and id_akun not in id_data:
+            kasus.append({"Nama": _ambil(r, "Nama_Pengguna"), "ID_Data_Siswa": id_data[0], "ID_Akun": id_akun or "(kosong)", "jenis": "beda"})
+        elif not id_data and id_akun and id_akun not in id_siswa_semua:
+            kasus.append({"Nama": _ambil(r, "Nama_Pengguna"), "ID_Data_Siswa": "-", "ID_Akun": id_akun, "jenis": "akun tanpa siswa"})
+    ganda = {i: n for i, n in id_siswa_semua.items() if len(n) > 1}
+    if ganda:
+        st.warning("ID ganda di Data_Siswa: " + "; ".join(f"{i} → {', '.join(n)}" for i, n in ganda.items()))
+    if not kasus:
+        st.success("Tidak ditemukan siswa dengan ID berbeda antara Data_Siswa dan Akun_Pengguna.")
+        return
+    baris_tabel = []
+    for k in kasus:
+        pakai_data = hitung_pemakaian_id_siswa(sheet_data, k["ID_Data_Siswa"]) if k["ID_Data_Siswa"] != "-" else {}
+        pakai_akun = hitung_pemakaian_id_siswa(sheet_data, k["ID_Akun"]) if k["ID_Akun"] != "(kosong)" else {}
+        baris_tabel.append({
+            "Nama": k["Nama"], "Jenis": k["jenis"],
+            "ID di Data_Siswa": k["ID_Data_Siswa"], "Dipakai (Data_Siswa ID)": ", ".join(f"{a}:{b}" for a, b in pakai_data.items()) or "-",
+            "ID di Akun": k["ID_Akun"], "Dipakai (Akun ID)": ", ".join(f"{a}:{b}" for a, b in pakai_akun.items()) or "-",
+        })
+    st.dataframe(pd.DataFrame(baris_tabel), use_container_width=True, hide_index=True)
+    bisa_diperbaiki = [k for k in kasus if k["jenis"] == "beda" and k["ID_Akun"] != "(kosong)"]
+    if not bisa_diperbaiki:
+        st.info("Kasus di atas perlu diperiksa manual (akun tanpa siswa / ID akun kosong).")
+        return
+    pilih = st.selectbox(
+        "Pilih siswa yang diperbaiki:",
+        [f"{k['Nama']} · Data {k['ID_Data_Siswa']} / Akun {k['ID_Akun']}" for k in bisa_diperbaiki],
+        key="pilih_kasus_id"
+    )
+    k = bisa_diperbaiki[[f"{x['Nama']} · Data {x['ID_Data_Siswa']} / Akun {x['ID_Akun']}" for x in bisa_diperbaiki].index(pilih)]
+    opsi_a = f"Pakai ID Data_Siswa: {k['ID_Data_Siswa']} (ID akun {k['ID_Akun']} diganti)"
+    opsi_b = f"Pakai ID Akun: {k['ID_Akun']} (ID Data_Siswa {k['ID_Data_Siswa']} diganti)"
+    arah = st.radio("ID yang dipertahankan:", [opsi_a, opsi_b], key="arah_id")
+    if arah == opsi_a:
+        id_final, id_buang = k["ID_Data_Siswa"], k["ID_Akun"]
+    else:
+        id_final, id_buang = k["ID_Akun"], k["ID_Data_Siswa"]
+    pemilik_buang = id_siswa_semua.get(id_buang.upper(), [])
+    pemilik_final = id_siswa_semua.get(id_final.upper(), [])
+    nama_kasus = k["Nama"].strip().casefold()
+    lain_buang = [n for n in pemilik_buang if n != nama_kasus]
+    lain_final = [n for n in pemilik_final if n != nama_kasus]
+    if lain_buang or lain_final:
+        st.error("ID yang terlibat juga dipakai siswa lain di Data_Siswa. Perbaiki manual agar tidak menimpa data siswa lain.")
+        return
+    rencana = hitung_pemakaian_id_siswa(sheet_data, id_buang)
+    st.write(f"**Rencana:** ganti `{id_buang}` → `{id_final}` pada: " + (", ".join(f"{a} ({b} baris)" for a, b in rencana.items()) or "tidak ada baris"))
+    yakin = st.checkbox("Saya sudah memeriksa rencana di atas dan siap menyamakan ID.", key="yakin_id")
+    if st.button("✅ Samakan ID sekarang", key="terapkan_id", disabled=not yakin):
+        try:
+            ringkas = ganti_id_siswa_di_semua_sheet(sheet_data, id_buang, id_final)
+            st.session_state.pop("_pindai_id", None)
+            st.success("ID disamakan: " + (", ".join(f"{a} ({b})" for a, b in ringkas.items()) or "tidak ada perubahan") +
+                       f". Siswa kini memakai ID {id_final} untuk login.")
+        except Exception as exc:
+            st.error(f"Gagal menyamakan ID ({exc.__class__.__name__}): {exc}. Periksa sheet sebelum mengulang.")
 
 
 def _id_berikutnya(nilai_list, default):
@@ -6292,20 +6490,10 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                 return
             else:
                 # FITUR BARU: tugas offline unggah mandiri: Mulai -> kerjakan -> Selesai Mengerjakan -> unggah foto.
-                _timer_ofl = str(t.get("Timer_Menit", "")).strip()
-                if mode_pengerjaan == TASK_MODE_OFFLINE and _timer_ofl not in ("", "0"):
-                    _kunci_selesai_kerja = f"_selesai_kerja_{task_id}"
-                    try:
-                        _sisa_kerja = hitung_sisa_waktu_sesi(sesi_aktif_page, _timer_ofl)
-                    except Exception:
-                        _sisa_kerja = 0
-                    if _sisa_kerja and _sisa_kerja > 0 and not st.session_state.get(_kunci_selesai_kerja):
-                        st.info("Kerjakan di kertas. Setelah selesai menulis, tekan Selesai Mengerjakan, lalu unggah foto hasilnya.")
-                        if st.button("✅ Selesai Mengerjakan", key=f"selesai_kerja_{task_id}", type="primary"):
-                            st.session_state[_kunci_selesai_kerja] = True
-                            st.session_state[expander_state_key] = True
-                            st.rerun()
-                        return
+                # Tanpa tombol perantara: area unggah langsung terbuka. Penanda di memori sesi hilang saat HP
+                # memuat ulang halaman (misalnya ketika kamera/galeri dibuka), sehingga tombol Selesai terlihat tidak respon.
+                if mode_pengerjaan == TASK_MODE_OFFLINE:
+                    st.info("Kerjakan di kertas. Setelah selesai menulis, foto hasilnya di bawah lalu tekan Kirim Hasil Pekerjaan.")
                 st.info("Kerjakan melalui materi/lampiran dari Tutor. Unggah foto, PDF, audio, atau video hasil pekerjaan, lalu kirim kepada Tutor.")
                 catatan_siswa = st.text_area("Catatan untuk Tutor (opsional):", key=f"cat_{task_id}")
                 file_jawaban_offline = st.file_uploader(
@@ -6357,7 +6545,7 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
-VERSI_KODE = "23-11-2026 · Nilai tutor v2"
+VERSI_KODE = "23-11-2026 · API & ID v5"
 st.caption(f"Versi kode: {VERSI_KODE}")
 
 peran = st.selectbox(
@@ -7930,6 +8118,42 @@ elif peran == "🔒 Pengajar / Tutor":
                                     except Exception:
                                         pass
                                     st.rerun()
+                                if st.checkbox("✏️ Edit judul, instruksi, timer, tenggat", key=f"edit_toggle_{selected_siswa}_{i}"):
+                                    try:
+                                        _dt_lama = datetime.strptime(str(item.get("Tenggat", ""))[:19], "%Y-%m-%d %H:%M:%S")
+                                    except (ValueError, TypeError):
+                                        try:
+                                            _dt_lama = datetime.strptime(str(item.get("Tenggat", ""))[:10] + " 23:59:00", "%Y-%m-%d %H:%M:%S")
+                                        except (ValueError, TypeError):
+                                            _dt_lama = waktu_lokal().replace(tzinfo=None) + timedelta(days=1)
+                                    with st.form(f"form_edit_item_{selected_siswa}_{i}"):
+                                        _judul_baru = st.text_input("Judul", value=str(item.get("Judul", "")))
+                                        _instruksi_baru = st.text_area("Instruksi", value=str(item.get("Instruksi", "")))
+                                        _timer_baru = st.number_input(
+                                            "Timer (menit, 0 = tanpa timer)", min_value=0, max_value=600,
+                                            value=int(item.get("Timer", 0) or 0)
+                                        )
+                                        _tgl_baru = st.date_input("Tenggat tanggal", value=_dt_lama.date())
+                                        _jam_baru = st.time_input("Tenggat jam", value=_dt_lama.time())
+                                        if st.form_submit_button("💾 Simpan perubahan"):
+                                            if not _judul_baru.strip():
+                                                st.error("Judul tidak boleh kosong.")
+                                            elif item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD) == TASK_MODE_ONLINE and int(_timer_baru) <= 0:
+                                                st.error("Tugas online memerlukan timer lebih dari 0 menit.")
+                                            else:
+                                                item["Judul"] = _judul_baru.strip()
+                                                item["Instruksi"] = _instruksi_baru
+                                                item["Timer"] = int(_timer_baru)
+                                                item["Tenggat"] = datetime.combine(_tgl_baru, _jam_baru).strftime("%Y-%m-%d %H:%M:%S")
+                                                try:
+                                                    simpan_draft_tugas_persisten(
+                                                        get_siswa_id_by_nama(selected_siswa), selected_siswa,
+                                                        st.session_state.get("tutor_nama", ""), daftar_draft
+                                                    )
+                                                except Exception:
+                                                    pass
+                                                st.session_state.pop(f"edit_toggle_{selected_siswa}_{i}", None)
+                                                st.rerun()
                                 if st.button("📄 Duplikasi tugas ini", key=f"duplikasi_item_{selected_siswa}_{i}"):
                                     salinan = json.loads(json.dumps(item, ensure_ascii=False))
                                     salinan["Judul"] = str(salinan.get("Judul", "")) + " (Salinan)"
@@ -7949,10 +8173,23 @@ elif peran == "🔒 Pengajar / Tutor":
                                 f"👥 Semua tugas di daftar ini juga akan dikirim ke {len(_tambahan_dipilih)} siswa lain: "
                                 + ", ".join(_tambahan_dipilih) + ". Ubah pilihan di bagian atas halaman."
                             )
+                        _semua_penerima = [selected_siswa] + [
+                            n for n in _tambahan_dipilih if str(n).strip().casefold() != str(selected_siswa).strip().casefold()
+                        ]
+                        _penerima_pilih = st.multiselect(
+                            "Kirim ke siswa (hapus nama yang tidak hadir):",
+                            _semua_penerima, default=_semua_penerima,
+                            key="penerima_kirim_" + "|".join(_semua_penerima)
+                        )
+                        _utama_ikut = selected_siswa in _penerima_pilih
+                        _tambahan_final = [n for n in _penerima_pilih if n != selected_siswa]
                         col_kirim, col_hapus = st.columns(2)
                         with col_kirim:
                             if st.button(f"📤 Simpan & Kirim Semua ({len(daftar_draft)})", type="primary", key=f"kirim_semua_{selected_siswa}"):
                                 try:
+                                    if not _penerima_pilih:
+                                        st.error("Pilih minimal satu siswa penerima.")
+                                        st.stop()
                                     # Validasi ulang seluruh draft tepat sebelum publikasi, termasuk draft lama yang dipulihkan.
                                     masalah_publikasi = []
                                     for nomor_item, item in enumerate(daftar_draft, 1):
@@ -7974,6 +8211,20 @@ elif peran == "🔒 Pengajar / Tutor":
                                         except (ValueError, TypeError):
                                             masalah_publikasi.append(
                                                 f"Tugas ke-{nomor_item} ({item.get('Judul', 'Tanpa judul')}): tanggal/jam tenggat tidak valid."
+                                            )
+                                    for nomor_item, item in enumerate(daftar_draft, 1):
+                                        try:
+                                            _ukuran_soal = len(json.dumps(bungkus_soal_dengan_mode(
+                                                item["Soal"], item.get("Mode_Pengerjaan", TASK_MODE_UPLOAD),
+                                                item.get("Daftar_Mapel", [item.get("Mapel", "")]),
+                                                item.get("Unggah_Oleh") or None
+                                            ), ensure_ascii=False))
+                                        except Exception:
+                                            _ukuran_soal = 0
+                                        if _ukuran_soal > BATAS_SEL_SHEETS:
+                                            masalah_publikasi.append(
+                                                f"Tugas ke-{nomor_item} ({item.get('Judul', 'Tanpa judul')}): data soal terlalu besar "
+                                                f"({_ukuran_soal:,} karakter, batas {BATAS_SEL_SHEETS:,}). Kurangi jumlah soal atau pecah menjadi dua tugas."
                                             )
                                     if masalah_publikasi:
                                         for pesan_masalah in masalah_publikasi:
@@ -8026,14 +8277,12 @@ elif peran == "🔒 Pengajar / Tutor":
                                                 get_siswa_id_by_nama(selected_siswa),
                                                 str(st.session_state.get("tutor_id", "")).strip()
                                             ])
-                                        ws_tugas.append_rows(baris_baru, value_input_option="RAW")
+                                        if _utama_ikut:
+                                            tulis_banyak_baris_di_bawah(ws_tugas, baris_baru)
                                         # FITUR BARU: salin penugasan yang sama ke siswa tambahan.
                                         # Lampiran Drive yang sudah diunggah dipakai ulang; tiap siswa mendapat ID_Tugas baru.
                                         try:
-                                            nama_tambahan = [
-                                                n for n in st.session_state.get(f"_siswa_tambahan_{selected_siswa}", [])
-                                                if str(n).strip().casefold() != str(selected_siswa).strip().casefold()
-                                            ]
+                                            nama_tambahan = list(_tambahan_final)
                                             baris_tambahan, siswa_terkirim, siswa_dilewati = [], [], []
                                             for nama_t in nama_tambahan:
                                                 id_t = get_siswa_id_by_nama(nama_t)
@@ -8048,7 +8297,7 @@ elif peran == "🔒 Pengajar / Tutor":
                                                     baris_tambahan.append(baris_salin)
                                                 siswa_terkirim.append(nama_t)
                                             if baris_tambahan:
-                                                ws_tugas.append_rows(baris_tambahan, value_input_option="RAW")
+                                                tulis_banyak_baris_di_bawah(ws_tugas, baris_tambahan)
                                             catatan_tambahan = ""
                                             if siswa_terkirim:
                                                 catatan_tambahan = "Tugas yang sama juga terkirim ke: " + ", ".join(siswa_terkirim) + "."
@@ -8074,7 +8323,8 @@ elif peran == "🔒 Pengajar / Tutor":
                                             )
                                         except Exception:
                                             pass
-                                        st.success(f"{len(hasil_kirim)} penugasan terkirim untuk {selected_siswa} ({n_pr} PR, {len(hasil_kirim) - n_pr} tugas sesi).")
+                                        _label_kirim = selected_siswa if _utama_ikut else ", ".join(_tambahan_final)
+                                        st.success(f"{len(hasil_kirim)} penugasan terkirim untuk {_label_kirim} ({n_pr} PR, {len(hasil_kirim) - n_pr} tugas sesi).")
                                         st.rerun()
                                 except Exception as e:
                                     st.error(f"Gagal menyimpan tugas: {e}")
@@ -8873,10 +9123,13 @@ elif peran == "👑 Pengelola / Owner (Mbak Fatimah)":
         _MENU_OWNER = {
             1: "🎁 Undian Hadiah", 2: "👥 Kelola Status Akun", 3: "📚 Arsip Bank Soal",
             4: "🔑 Reset PIN", 5: "🔐 Keamanan Owner", 6: "➕ Tambah Siswa",
-            9: "👪 Tambah Orang Tua", 10: "📜 Riwayat Semua Tugas",
+            9: "👪 Tambah Orang Tua", 10: "📜 Riwayat Semua Tugas", 11: "🔧 Cek & Perbaiki ID",
             7: "🧪 Audit Data Sistem", 8: "🧩 Pulihkan Tugas Historis",
         }
         _menu_owner_pilih = st.selectbox("Menu Pengelola:", list(_MENU_OWNER.values()), key="menu_owner_pilih")
+
+        if _menu_owner_pilih == _MENU_OWNER[11]:
+            tampilkan_cek_perbaiki_id()
 
         if _menu_owner_pilih == _MENU_OWNER[8]:
             st.header("🧩 Pemulihan Kepemilikan Tugas Historis")
