@@ -4994,9 +4994,8 @@ def tampilkan_cek_perbaiki_id():
     for r in siswa:
         sid = _ambil(r, "ID_SISWA", "ID_Siswa").upper()
         nama = _ambil(r, "Nama_Siswa", "Nama_Lengkap").casefold()
-        if sid:
+        if sid and nama:  # baris hanya-ID (tanpa nama) tidak dihitung sebagai siswa
             id_siswa_semua.setdefault(sid, []).append(nama)
-        if sid and nama:
             nama_ke_id.setdefault(nama, []).append(sid)
     kasus = []
     for r in _records("Akun_Pengguna"):
@@ -5012,6 +5011,35 @@ def tampilkan_cek_perbaiki_id():
     ganda = {i: n for i, n in id_siswa_semua.items() if len(n) > 1}
     if ganda:
         st.warning("ID ganda di Data_Siswa: " + "; ".join(f"{i} → {', '.join(n)}" for i, n in ganda.items()))
+    # Baris sisa: hanya berisi ID (semua kolom lain kosong) dan ID itu juga ada pada baris siswa bernama.
+    nilai_ds, kolom_ds = peta["Data_Siswa"]
+    kepala_ds = [str(h).strip().casefold() for h in nilai_ds[0]]
+    kolom_id_ds = set(kolom_ds)
+    baris_sisa = []
+    for nomor, row in enumerate(nilai_ds[1:], start=2):
+        ids = {str(row[c]).strip().upper() for c in kolom_id_ds if c < len(row) and str(row[c]).strip()}
+        lain = [str(x).strip() for j, x in enumerate(row) if j not in kolom_id_ds and str(x).strip()]
+        if ids and not lain and any(i in id_siswa_semua for i in ids):
+            baris_sisa.append((nomor, sorted(ids)[0]))
+    if baris_sisa:
+        st.warning(
+            f"Ditemukan {len(baris_sisa)} baris sisa di Data_Siswa: hanya berisi ID (tanpa nama/kelas/PIN), "
+            "sedangkan ID yang sama sudah ada pada baris siswa bernama. Baris sisa tidak dipakai aplikasi."
+        )
+        st.caption("Contoh (nomor baris → ID): " + ", ".join(f"{n}→{i}" for n, i in baris_sisa[:15]) + (" …" if len(baris_sisa) > 15 else ""))
+        st.caption("Sebelum membersihkan, buat salinan spreadsheet (File → Buat salinan). Pembersihan hanya mengosongkan sel baris sisa, tidak menghapus baris.")
+        yakin_sisa = st.checkbox("Saya sudah membuat salinan dan ingin mengosongkan baris sisa.", key="yakin_baris_sisa")
+        if st.button("🧹 Kosongkan baris sisa ber-ID", key="bersihkan_baris_sisa", disabled=not yakin_sisa):
+            try:
+                ws_ds = next(ws for ws, _n, _k in sheet_data if ws.title == "Data_Siswa")
+                lebar_ds = max(len(kepala_ds), 1)
+                kolom_akhir = re.sub(r"\d+", "", gspread.utils.rowcol_to_a1(1, lebar_ds))
+                ws_ds.batch_clear([f"A{n}:{kolom_akhir}{n}" for n, _i in baris_sisa])
+                _baca_values_cache.clear()
+                st.session_state.pop("_pindai_id", None)
+                st.success(f"{len(baris_sisa)} baris sisa dikosongkan. Tekan Pindai lagi untuk memeriksa ulang.")
+            except Exception as exc:
+                st.error(f"Gagal membersihkan ({exc.__class__.__name__}): {exc}")
     if not kasus:
         st.success("Tidak ditemukan siswa dengan ID berbeda antara Data_Siswa dan Akun_Pengguna.")
         return
@@ -6545,7 +6573,7 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
-VERSI_KODE = "23-11-2026 · API & ID v5"
+VERSI_KODE = "23-11-2026 · API & ID v6"
 st.caption(f"Versi kode: {VERSI_KODE}")
 
 peran = st.selectbox(
