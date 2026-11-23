@@ -472,17 +472,103 @@ def get_or_create_worksheet(title, headers, rows="2000", cols="20"):
         return ws
 
 
-@st.cache_data(ttl=180, show_spinner=False)
-def _baca_values_cache(spreadsheet_id, worksheet_title):
-    """Cache nilai sheet 3 menit; memakai objek spreadsheet yang sudah di-cache."""
-    ws_cached = init_spreadsheet().worksheet(worksheet_title)
-    return ws_cached.get_all_values()
+# ---------------------------------------------------------------------------
+# Cache pembacaan sheet per-sheet. Setiap penulisan lewat gspread menandai HANYA sheet yang ditulis
+# sebagai usang, sehingga sheet lain tetap memakai cache (kuota baca Google tidak terkuras setelah
+# setiap simpan). State disimpan di modul gspread agar bertahan antar-rerun dan dibagi antar-sesi.
+# ---------------------------------------------------------------------------
+_STATE_CACHE = gspread.__dict__.setdefault("_nazma_cache_state", {"data": {}, "tulis": {}, "semua": 0.0})
+TTL_CACHE_SHEET = 180  # detik
+
+
+def _pasang_penanda_tulis():
+    import functools
+    kelas_ws = getattr(gspread, "Worksheet", None)
+    if kelas_ws is None or getattr(kelas_ws, "_nazma_dipatch", False):
+        return
+    for nama in ("update", "batch_update", "update_cell", "update_cells", "update_acell", "append_row",
+                 "append_rows", "insert_row", "insert_rows", "delete_rows", "delete_row", "clear",
+                 "batch_clear", "add_rows", "add_cols", "resize", "delete_columns", "insert_cols"):
+        asli = getattr(kelas_ws, nama, None)
+        if asli is None:
+            continue
+        def _bungkus(asli=asli):
+            @functools.wraps(asli)
+            def terbungkus(self, *a, **k):
+                try:
+                    return asli(self, *a, **k)
+                finally:
+                    _STATE_CACHE["tulis"][self.title] = time.time()
+            return terbungkus
+        setattr(kelas_ws, nama, _bungkus())
+    kelas_ss = getattr(gspread, "Spreadsheet", None)
+    asli_ss = getattr(kelas_ss, "batch_update", None) if kelas_ss else None
+    if asli_ss is not None:
+        @functools.wraps(asli_ss)
+        def batch_ss(self, *a, **k):
+            try:
+                return asli_ss(self, *a, **k)
+            finally:
+                _STATE_CACHE["semua"] = time.time()
+        kelas_ss.batch_update = batch_ss
+    kelas_ws._nazma_dipatch = True
+
+
+_pasang_penanda_tulis()
+
+
+def _kuota_habis(exc):
+    pesan = str(exc).lower()
+    return "429" in pesan or "quota exceeded" in pesan or "resource_exhausted" in pesan
+
+
+def _baca_values_dengan_ulang(ws, boleh_pakai_salinan=False):
+    """get_all_values dengan 3x percobaan saat kuota Google habis (jeda bertambah)."""
+    terakhir = None
+    for percobaan in range(3):
+        try:
+            return ws.get_all_values()
+        except Exception as exc:
+            terakhir = exc
+            if not _kuota_habis(exc):
+                raise
+            time.sleep(1.5 * (percobaan + 1))
+    raise terakhir
+
+
+class _CacheBacaSheet:
+    """Pengganti st.cache_data: cache per sheet, TTL 3 menit, usang hanya bila sheet itu ditulis."""
+
+    def __call__(self, spreadsheet_id, worksheet_title):
+        kunci = (spreadsheet_id, worksheet_title)
+        sekarang = time.time()
+        ent = _STATE_CACHE["data"].get(kunci)
+        if (ent and sekarang - ent[0] < TTL_CACHE_SHEET
+                and ent[0] >= _STATE_CACHE["tulis"].get(worksheet_title, 0.0)
+                and ent[0] >= _STATE_CACHE["semua"]):
+            return ent[1]
+        ws_cached = _worksheet_cached(spreadsheet_id, worksheet_title)
+        try:
+            nilai = _baca_values_dengan_ulang(ws_cached)
+        except Exception as exc:
+            if ent and _kuota_habis(exc):
+                return ent[1]  # kuota habis: pakai data terakhir yang berhasil dibaca
+            raise
+        _STATE_CACHE["data"][kunci] = (sekarang, nilai)
+        return nilai
+
+    def clear(self, *args, **kwargs):
+        """Kompatibilitas: invalidasi sudah otomatis per sheet saat ada penulisan; tidak ada yang dihapus massal."""
+        return None
+
+
+_baca_values_cache = _CacheBacaSheet()
 
 
 def baca_records_aman(ws, refresh=False):
     """Membaca sheet dengan cache 180 detik; refresh=True memaksa pembacaan terbaru."""
     try:
-        values = ws.get_all_values() if refresh else _baca_values_cache(sheet.id, ws.title)
+        values = _baca_values_dengan_ulang(ws) if refresh else _baca_values_cache(sheet.id, ws.title)
     except Exception as exc:
         # Jika cache/API gagal, jangan menyamarkan error dengan data kosong.
         raise RuntimeError(f"Gagal membaca worksheet {ws.title}: {exc}")
@@ -1776,6 +1862,13 @@ def validasi_waktu_pengiriman(task_id, siswa_id):
     if durasi <= 0:
         return True
     sesi = baca_sesi_aktif_siswa(siswa_id)
+    if offline_siswa and (not sesi or str(sesi.get("ID_Tugas", "")).strip() != str(task_id).strip()):
+        # Siswa sudah menekan Selesai: kirim diizinkan selama masa unggah setelah Selesai.
+        _sesi_selesai = baca_sesi_selesai_siswa(siswa_id, task_id)
+        if _sesi_selesai and sisa_detik_unggah_setelah_selesai(_sesi_selesai, sekarang=sekarang) > 0:
+            return True
+        if _sesi_selesai:
+            raise ValueError("Masa unggah setelah Selesai sudah habis. Hubungi Tutor untuk membuka kembali.")
     if not sesi or str(sesi.get("ID_Tugas", "")).strip() != str(task_id).strip():
         raise ValueError("Sesi pengerjaan tidak aktif. Muat ulang tugas dan hubungi Tutor bila masalah berlanjut.")
     sisa = hitung_sisa_waktu_sesi(sesi, durasi + masa_tambahan_menit(task), sekarang=sekarang)
@@ -1894,6 +1987,32 @@ def sesi_selesai_tugas(siswa_id, task_id):
         and str(r.get("Status", "")).strip().lower() == "selesai"
         for r in rows
     )
+
+
+def baca_sesi_selesai_siswa(siswa_id, task_id):
+    """Baris sesi terakhir berstatus Selesai untuk siswa dan tugas ini (atau None)."""
+    rows = baca_records_aman(get_active_task_worksheet())
+    sid, tid = str(siswa_id or "").strip(), str(task_id or "").strip()
+    cocok = [
+        r for r in rows
+        if str(r.get("ID_Siswa", "")).strip() == sid and str(r.get("ID_Tugas", "")).strip() == tid
+        and str(r.get("Status", "")).strip().lower() == "selesai"
+    ]
+    return cocok[-1] if cocok else None
+
+
+def sisa_detik_unggah_setelah_selesai(sesi_selesai, sekarang=None):
+    """Sisa detik masa unggah (MASA_UNGGAH_MENIT) sejak siswa menekan Selesai Mengerjakan."""
+    try:
+        selesai = datetime.strptime(str((sesi_selesai or {}).get("Waktu_Selesai", "")).strip(), "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=ZoneInfo("Asia/Jakarta")
+        )
+    except (TypeError, ValueError):
+        return 0
+    now = sekarang or waktu_lokal()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ZoneInfo("Asia/Jakarta"))
+    return max(0, int(MASA_UNGGAH_MENIT * 60 - (now - selesai).total_seconds()))
 
 
 def tampilkan_tombol_selesai_mengerjakan(siswa_id, task_id, expander_state_key):
@@ -2047,6 +2166,21 @@ def gerbang_sesi_tugas(t, task_id, siswa_id, sesi_aktif_page, expander_state_key
                 return True
         except Exception:
             pass
+    if not sesi_ini_aktif and unggah_oleh_tugas(t) == "siswa":
+        try:
+            _selesai_row = baca_sesi_selesai_siswa(siswa_id, task_id)
+        except Exception:
+            _selesai_row = None
+        if _selesai_row:
+            _sisa_unggah = sisa_detik_unggah_setelah_selesai(_selesai_row)
+            if _sisa_unggah > 0:
+                st.success(
+                    f"⏹ Timer sudah berhenti. Unggah hasil pekerjaanmu lalu tekan Kirim. "
+                    f"Sisa waktu unggah sekitar {max(1, _sisa_unggah // 60)} menit."
+                )
+                return True
+            st.error("⏰ Masa unggah setelah Selesai sudah habis. Hubungi Tutor bila perlu dibuka kembali.")
+            return False
     if not sesi_ini_aktif:
         st.info("Tekan Mulai Mengerjakan jika sudah siap. Soal terbuka dan waktu berjalan setelah tombol ditekan; tugas lain terkunci sampai selesai.")
         if st.button("▶️ Mulai Mengerjakan", key=f"mulai_offline_{task_id}", type="primary"):
@@ -6518,10 +6652,19 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                 return
             else:
                 # FITUR BARU: tugas offline unggah mandiri: Mulai -> kerjakan -> Selesai Mengerjakan -> unggah foto.
-                # Tanpa tombol perantara: area unggah langsung terbuka. Penanda di memori sesi hilang saat HP
-                # memuat ulang halaman (misalnya ketika kamera/galeri dibuka), sehingga tombol Selesai terlihat tidak respon.
-                if mode_pengerjaan == TASK_MODE_OFFLINE:
-                    st.info("Kerjakan di kertas. Setelah selesai menulis, foto hasilnya di bawah lalu tekan Kirim Hasil Pekerjaan.")
+                # Alur: Mulai -> kerjakan -> Selesai (timer berhenti, tersimpan di sheet) -> Unggah -> Kirim.
+                _timer_ofl = str(t.get("Timer_Menit", "")).strip()
+                if mode_pengerjaan == TASK_MODE_OFFLINE and _timer_ofl not in ("", "0"):
+                    try:
+                        _sisa_kerja = hitung_sisa_waktu_sesi(sesi_aktif_page, _timer_ofl) if (
+                            sesi_aktif_page and str(sesi_aktif_page.get("ID_Tugas", "")).strip() == task_id
+                        ) else 0
+                    except Exception:
+                        _sisa_kerja = 0
+                    if _sisa_kerja and _sisa_kerja > 0:
+                        st.info("Kerjakan di kertas. Setelah selesai menulis, tekan Selesai Mengerjakan (timer berhenti), lalu unggah foto hasilnya dan kirim.")
+                        tampilkan_tombol_selesai_mengerjakan(siswa_id, task_id, expander_state_key)
+                        return
                 st.info("Kerjakan melalui materi/lampiran dari Tutor. Unggah foto, PDF, audio, atau video hasil pekerjaan, lalu kirim kepada Tutor.")
                 catatan_siswa = st.text_area("Catatan untuk Tutor (opsional):", key=f"cat_{task_id}")
                 file_jawaban_offline = st.file_uploader(
@@ -6573,7 +6716,7 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
-VERSI_KODE = "23-11-2026 · API & ID v6"
+VERSI_KODE = "23-11-2026 · Cache per-sheet v8"
 st.caption(f"Versi kode: {VERSI_KODE}")
 
 peran = st.selectbox(
