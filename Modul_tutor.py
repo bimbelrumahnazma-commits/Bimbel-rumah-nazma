@@ -4880,7 +4880,21 @@ def tampilkan_pilih_soal_portofolio(nama_siswa, daftar_tugas):
             key=f"pilih_soal_portofolio_{nama_siswa}"
         )
         if pilih != "— Pilih tugas —":
-            _isi_soal_tugas_tutor(opsi[pilih])
+            tugas_p = opsi[pilih]
+            try:
+                _jawab = next((x for x in baca_jawaban_tergabung(get_answers_worksheet(), segarkan=True)
+                               if x.get("ID_Tugas") == str(tugas_p.get("ID_Tugas", "")).strip()
+                               and x.get("ID_Siswa") == str(tugas_p.get("ID_Siswa", "")).strip()), None)
+            except Exception:
+                _jawab = None
+            if _jawab and isinstance(_jawab.get("Jawaban"), dict) and _jawab.get("Jawaban"):
+                st.markdown("#### ✅ Jawaban siswa, benar/salah, kunci & pembahasan")
+                _tampilkan_jawaban_per_soal(tugas_p, _jawab["Jawaban"])
+                with st.expander("Lihat daftar soal tanpa jawaban siswa", expanded=False):
+                    _isi_soal_tugas_tutor(tugas_p)
+            else:
+                st.caption("Siswa belum mengirim jawaban online untuk tugas ini, jadi hanya soal yang tampil.")
+                _isi_soal_tugas_tutor(tugas_p)
 
 
 # =========================================================
@@ -7426,7 +7440,7 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
-VERSI_KODE = "27-11-2026 · Nilai otomatis terlihat v15"
+VERSI_KODE = "27-11-2026 · Rincian jawaban di portofolio v16"
 st.caption(f"Versi kode: {VERSI_KODE}")
 
 peran = st.selectbox(
