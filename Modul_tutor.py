@@ -5460,18 +5460,28 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
     if not baris_hasil:
         st.info("Tidak ada soal yang terbaca. Periksa format tempelan.")
         return
-    siap = [b for b in baris_hasil if not b["_masalah"]]
+    jumlah_dup = sum(1 for b in baris_hasil if any("sudah ada" in m for m in b["_masalah"]))
+    abaikan_dup = False
+    if jumlah_dup:
+        abaikan_dup = st.checkbox(
+            f"{jumlah_dup} soal sama persis dengan soal di bank / tempelan ini. Simpan juga (abaikan pemeriksaan duplikat)",
+            key=f"{k}_abaikan_dup")
+    def _masalah_efektif(b):
+        return [m for m in b["_masalah"] if not (abaikan_dup and "sudah ada" in m)]
+    siap = [b for b in baris_hasil if not _masalah_efektif(b)]
     st.markdown(f"**Hasil: {len(siap)} soal siap disimpan dari {len(baris_hasil)} soal terbaca.**")
     st.dataframe(pd.DataFrame([
         {
-            "No": i, "Status": "✅ Siap" if not b["_masalah"] else "❌ Perlu diperbaiki",
-            "Bentuk": b["Bentuk_Soal"], "Soal": b["Teks_Soal"][:90],
+            "No": i,
+            "Status": "✅ Siap" if not _masalah_efektif(b) else "❌ " + "; ".join(_masalah_efektif(b))[:70],
+            "Bentuk": b["Bentuk_Soal"], "Soal": pisah_wacana(b["Teks_Soal"])[1][:80],
+            "Bacaan": "📖" if pisah_wacana(b["Teks_Soal"])[0] else "",
             "Pilihan": b["Opsi_Jawaban"], "Kunci": b["Kunci_Jawaban"],
-            "Catatan": "; ".join(b["_masalah"] + b["_catatan"]),
+            "Catatan": "; ".join(_masalah_efektif(b) + b["_catatan"]),
         } for i, b in enumerate(baris_hasil, 1)
     ]), use_container_width=True, hide_index=True)
     if len(siap) < len(baris_hasil):
-        st.caption("Soal bertanda ❌ tidak ikut disimpan. Perbaiki teks tempelan lalu tekan Konversi lagi.")
+        st.caption("Soal bertanda ❌ tidak ikut disimpan; alasannya tertulis di kolom Status. Perbaiki teks tempelan lalu tekan Konversi lagi.")
     if siap and not hasil["umum"]:
         if st.button(f"💾 Simpan {len(siap)} soal ke Bank_Soal_Master", type="primary", key=f"{k}_simpan"):
             try:
@@ -6348,26 +6358,36 @@ def koreksi_nilai_terbit(id_tugas, id_siswa, nilai_baru, catatan, tutor_id):
     return False
 
 
-def tampilkan_hasil_objektif_siswa(daftar_soal, jawaban):
-    """Beri tahu siswa nomor yang benar/salah saja. Kunci dan pembahasan tidak ditampilkan."""
+def tampilkan_hasil_objektif_siswa(daftar_soal, jawaban, id_tugas=None, id_siswa=None):
+    """Nilai + benar/salah per nomor untuk siswa. Kunci dan pembahasan TIDAK ditampilkan."""
+    if id_tugas and id_siswa:
+        try:
+            baris_nilai = next((r for r in baca_nilai_tugas_terpadu()
+                                if kunci_nilai_penugasan(r) == (str(id_tugas).strip(), str(id_siswa).strip())), None)
+        except Exception:
+            baris_nilai = None
+        if baris_nilai:
+            st.metric("Nilai", f"{baris_nilai.get('Nilai', '-')}/{baris_nilai.get('Nilai_Maksimal', 100) or 100}")
+            if str(baris_nilai.get("Umpan_Balik", "")).strip() and PENILAI_OTOMATIS not in str(baris_nilai.get("ID_Tutor_Penilai", "")):
+                st.caption("💬 Komentar tutor: " + str(baris_nilai.get("Umpan_Balik")))
     jawaban = jawaban if isinstance(jawaban, dict) else {}
     hasil = hitung_nilai_objektif(daftar_soal, jawaban)
     if not hasil.get("rincian"):
         return
-    st.markdown("**📋 Hasil soal objektif**")
-    salah = [x for x in hasil["rincian"] if x["poin"] < 0.999]
-    if not salah:
-        st.success("Semua soal objektif benar. 🎉")
-    else:
-        benar = [str(x["nomor"]) for x in hasil["rincian"] if x["poin"] >= 0.999]
-        if benar:
-            st.write("✅ Benar: nomor " + ", ".join(benar))
-        for x in salah:
-            jw = jawaban.get(str(x["nomor"]), "")
-            if isinstance(jw, (list, dict)):
-                jw = ", ".join(map(str, jw.values() if isinstance(jw, dict) else jw))
-            tanda = "🟡 Sebagian benar" if x["poin"] > 0 else "❌ Salah"
-            st.markdown(f"{tanda}: nomor {x['nomor']} — jawabanmu: {rapikan_rumus(jw) if str(jw).strip() else '(kosong)'}")
+    st.markdown("**📋 Hasil per soal**")
+    baris = []
+    for x in hasil["rincian"]:
+        jw = jawaban.get(str(x["nomor"]), "")
+        if isinstance(jw, (list, dict)):
+            jw = ", ".join(map(str, jw.values() if isinstance(jw, dict) else jw))
+        jw_txt = rapikan_rumus(jw) if str(jw).strip() else "(kosong)"
+        if x["poin"] >= 0.999:
+            baris.append(f"✅ **No. {x['nomor']}** benar")
+        elif x["poin"] > 0:
+            baris.append(f"🟡 **No. {x['nomor']}** sebagian benar — jawabanmu: {jw_txt}")
+        else:
+            baris.append(f"❌ **No. {x['nomor']}** salah — jawabanmu: {jw_txt}")
+    st.markdown("  \n".join(baris))
     st.caption("Kunci dan pembahasan akan dibahas bersama tutor.")
     if hasil.get("soal_manual"):
         st.caption("Soal nomor " + ", ".join(map(str, hasil["soal_manual"])) + " menunggu pemeriksaan tutor.")
@@ -7064,9 +7084,9 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                 st.info("Jawaban sudah dikirim, jadi tidak bisa diubah lagi.")
                 if not soal_dari_lampiran_awal:
                     try:
-                        tampilkan_hasil_objektif_siswa(daftar_soal, old_answer)
-                    except Exception:
-                        pass
+                        tampilkan_hasil_objektif_siswa(daftar_soal, old_answer, task_id, siswa_id)
+                    except Exception as _e:
+                        st.caption(f"Rincian hasil belum bisa ditampilkan ({_e.__class__.__name__}). Tekan 🔄 Muat ulang data.")
                 tampilkan_bahan_tutor_siswa(task_id, siswa_id)
 
             # Untuk tugas yang sumber soalnya berupa PDF/link/lampiran, aplikasi hanya
@@ -7401,7 +7421,7 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
-VERSI_KODE = "27-11-2026 · Koreksi foto & pembersih soal v13"
+VERSI_KODE = "27-11-2026 · Hasil nilai & alasan konversi v14"
 st.caption(f"Versi kode: {VERSI_KODE}")
 
 peran = st.selectbox(
@@ -9791,6 +9811,17 @@ elif peran == "🔒 Pengajar / Tutor":
                             "Pilih nilai:", list(_peta_k), key="koreksi_pilih",
                             format_func=lambda k: f"{info_tgs.get(_peta_k[k].get('ID_Penugasan'), {}).get('Nama_Siswa', _peta_k[k].get('ID_Siswa'))} · "
                                                   f"{info_tgs.get(_peta_k[k].get('ID_Penugasan'), {}).get('Judul_Tugas', _peta_k[k].get('ID_Penugasan'))} · nilai {_peta_k[k].get('Nilai')}")
+                        try:
+                            _r0 = _peta_k[_pilih_k]
+                            _tg0 = info_tgs.get(str(_r0.get("ID_Penugasan", "")).strip(), {})
+                            _jw0 = next((x for x in baca_jawaban_tergabung(get_answers_worksheet(), segarkan=True)
+                                         if x.get("ID_Tugas") == str(_r0.get("ID_Penugasan", "")).strip()
+                                         and x.get("ID_Siswa") == str(_r0.get("ID_Siswa", "")).strip()), None)
+                            if _jw0:
+                                st.markdown("**Rincian jawaban, kunci, dan pembahasan:**")
+                                _tampilkan_jawaban_per_soal(_tg0, _jw0.get("Jawaban", {}))
+                        except Exception as _e:
+                            st.caption(f"Rincian belum bisa dimuat ({_e.__class__.__name__}).")
                         _nilai_k = st.number_input("Nilai baru (1–100):", 1, 100, int(float(_peta_k[_pilih_k].get("Nilai") or 1)), key="koreksi_nilai")
                         _cat_k = st.text_input("Komentar tutor:", key="koreksi_catatan")
                         if st.button("💾 Simpan koreksi", key="koreksi_simpan"):
