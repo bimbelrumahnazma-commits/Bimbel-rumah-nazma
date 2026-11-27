@@ -7087,6 +7087,9 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                         tampilkan_hasil_objektif_siswa(daftar_soal, old_answer, task_id, siswa_id)
                     except Exception as _e:
                         st.caption(f"Rincian hasil belum bisa ditampilkan ({_e.__class__.__name__}). Tekan 🔄 Muat ulang data.")
+                if st.session_state.get(f"_galat_auto_{task_id}"):
+                    st.caption("Nilai otomatis belum terbit; tutor akan memeriksa jawabanmu. "
+                               f"(Info teknis: {str(st.session_state[f'_galat_auto_{task_id}'])[:120]})")
                 tampilkan_bahan_tutor_siswa(task_id, siswa_id)
 
             # Untuk tugas yang sumber soalnya berupa PDF/link/lampiran, aplikasi hanya
@@ -7300,8 +7303,10 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
                             if not soal_dari_lampiran:
                                 try:
                                     nilai_otomatis = terbitkan_nilai_otomatis(task_id, siswa_id, daftar_soal, current_answers)
-                                except Exception:
+                                except Exception as _e_auto:
                                     nilai_otomatis = None  # gagal otomatis: tetap menunggu tutor
+                                    catat_log_gagal_pengiriman(task_id, siswa_id, "nilai_otomatis", _e_auto)
+                                    st.session_state[f"_galat_auto_{task_id}"] = f"{_e_auto.__class__.__name__}: {_e_auto}"
                             # Notifikasi hanya dikirim setelah penyimpanan jawaban berhasil.
                             try:
                                 kirim_telegram_notifikasi_pengiriman(
@@ -7421,7 +7426,7 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
-VERSI_KODE = "27-11-2026 · Hasil nilai & alasan konversi v14"
+VERSI_KODE = "27-11-2026 · Nilai otomatis terlihat v15"
 st.caption(f"Versi kode: {VERSI_KODE}")
 
 peran = st.selectbox(
@@ -7715,6 +7720,18 @@ if peran == "🎓 Siswa":
                     nama_tutor_nilai = tg.get("Tutor") or n.get("Tutor") or "-"
                     waktu_nilai = n.get("Tanggal_Penilaian", n.get("Waktu_Penilaian", "-"))
                     st.caption(f"Diperiksa oleh {nama_tutor_nilai} · {waktu_nilai}")
+                    try:
+                        _soal_n, _mode_n = buka_soal_dan_mode(tg.get("Soal_JSON", ""), tg.get("Jenis_Tugas", ""))
+                        if _soal_n and _mode_n == TASK_MODE_ONLINE:
+                            _jw_n = {}
+                            for _a in jawaban_siswa:
+                                if str(_a.get("ID_Tugas", "")).strip() == _id_tugas_nilai(n):
+                                    _jw_n = json.loads(_a.get("Jawaban_JSON", "{}") or "{}")
+                                    break
+                            with st.expander("📋 Lihat benar/salah per soal", expanded=False):
+                                tampilkan_hasil_objektif_siswa(_soal_n, _jw_n)
+                    except Exception as _e:
+                        st.caption(f"Rincian per soal belum bisa dimuat ({_e.__class__.__name__}).")
                     st.divider()
             else:
                 st.info("Belum ada hasil penilaian dari Tutor.")
@@ -9792,7 +9809,7 @@ elif peran == "🔒 Pengajar / Tutor":
 
 
                 st.markdown("---")
-                with st.expander("✏️ Koreksi nilai yang terbit otomatis", expanded=False):
+                with st.expander("✅ Nilai otomatis soal online: lihat benar/salah, kunci & pembahasan, atau koreksi", expanded=True):
                     try:
                         _tid_k = str(st.session_state.get("tutor_id", "")).strip()
                         _auto = [
