@@ -3206,15 +3206,40 @@ def tampilkan_pembersih_bank(tampil):
         mode = st.radio("Aksi:", ["Nonaktifkan soal", "Pulihkan / hapus soal nonaktif"], key="bersih_mode", horizontal=True)
         if mode == "Nonaktifkan soal":
             st.caption("Soal nonaktif hilang dari bank dan bisa dipulihkan. Tugas yang sudah dikirim memakai salinan soal sendiri.")
-            semua = st.checkbox(f"Pilih semua {len(tampil)} soal sesuai filter di atas", key="bersih_semua")
-            peta = {str(x.get("Kode_Soal", "")): x for x in tampil}
-            if semua:
-                dipilih = list(peta)
+            cakupan = st.radio("Cakupan:", ["Per paket", "Per soal", "Semua soal aktif"], horizontal=True, key="bersih_cakupan")
+            try:
+                aktif_bank = [x for x in baca_records_aman(get_worksheet("Bank_Soal_Master")) if _soal_aktif(x)]
+            except Exception as exc:
+                aktif_bank = []
+                st.error(f"Gagal membaca bank: {exc}")
+            dipilih, label_cakupan = [], ""
+            if cakupan == "Per paket":
+                paket = {}
+                for x in aktif_bank:
+                    nama = re.sub(r"\s+", " ", str(x.get("Bab_Atau_Topik", "") or "")).strip() or "(tanpa paket)"
+                    paket.setdefault(nama, []).append(str(x.get("Kode_Soal", "")).strip())
+                pilih_paket = st.multiselect("Pilih paket:", sorted(paket, key=str.casefold), key="bersih_paket",
+                                             format_func=lambda n: f"{n} ({len(paket[n])} soal)")
+                dipilih = [c for n in pilih_paket for c in paket[n] if c]
+                label_cakupan = f"{len(pilih_paket)} paket"
+            elif cakupan == "Per soal":
+                semua = st.checkbox(f"Pilih semua {len(tampil)} soal sesuai filter di atas", key="bersih_semua")
+                peta = {str(x.get("Kode_Soal", "")): x for x in tampil}
+                if semua:
+                    dipilih = list(peta)
+                else:
+                    dipilih = st.multiselect(
+                        "Pilih soal:", list(peta), key="bersih_pilih",
+                        format_func=lambda c: f"{c} | {pisah_wacana(peta[c].get('Teks_Soal', ''))[1][:60]}")
+                label_cakupan = "soal terpilih"
             else:
-                dipilih = st.multiselect(
-                    "Pilih soal:", list(peta), key="bersih_pilih",
-                    format_func=lambda c: f"{c} | {pisah_wacana(peta[c].get('Teks_Soal', ''))[1][:60]}")
-            yakin = st.checkbox(f"Saya yakin menonaktifkan {len(dipilih)} soal.", key="bersih_yakin")
+                dipilih = [str(x.get("Kode_Soal", "")).strip() for x in aktif_bank if str(x.get("Kode_Soal", "")).strip()]
+                label_cakupan = "seluruh bank"
+                st.warning(f"Ini menonaktifkan SEMUA {len(dipilih)} soal aktif di bank.")
+                kata = st.text_input("Ketik SEMUA untuk melanjutkan:", key="bersih_kata")
+                if kata.strip().upper() != "SEMUA":
+                    dipilih = []
+            yakin = st.checkbox(f"Saya yakin menonaktifkan {len(dipilih)} soal ({label_cakupan}).", key="bersih_yakin")
             if st.button("🚫 Nonaktifkan", disabled=not (dipilih and yakin), key="bersih_tombol"):
                 try:
                     n = ubah_status_soal_bank(dipilih, "Nonaktif")
@@ -5233,6 +5258,28 @@ def _bank_sidik_soal(teks, opsi, bentuk):
     return (rapat(teks), rapat(opsi), rapat(bentuk))
 
 
+def _paket_norm(x):
+    return re.sub(r"\s+", " ", str(x or "")).strip().casefold()
+
+
+def _soal_aktif(baris):
+    return str(baris.get("Status", "")).strip().casefold() not in ("nonaktif", "tidak aktif", "arsip")
+
+
+def daftar_paket_bank():
+    """Nama paket (Bab/topik) dari soal aktif di bank, tanpa duplikat, urut abjad."""
+    try:
+        baris = baca_records_aman(get_worksheet("Bank_Soal_Master"))
+    except Exception:
+        return []
+    peta = {}
+    for x in baris:
+        nama = re.sub(r"\s+", " ", str(x.get("Bab_Atau_Topik", "") or "")).strip()
+        if nama and _soal_aktif(x):
+            peta.setdefault(_paket_norm(nama), nama)
+    return sorted(peta.values(), key=str.casefold)
+
+
 def _bank_kunci_ke_teks(kunci_raw, opsi):
     """Ubah kunci huruf (B / A,C) menjadi teks pilihan. Mengembalikan (daftar_teks, masalah)."""
     mentah = str(kunci_raw or "").strip()
@@ -5424,9 +5471,12 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
             kelas = st.text_input("Kelas (contoh: Kelas 7)", key=f"{k}_kelas")
         with kol2:
             mapel = st.selectbox("Mapel", [""] + list(MAPEL_OPTIONS), key=f"{k}_mapel")
-            topik = st.text_input("Bab / topik", key=f"{k}_topik")
+            _paket_lama = daftar_paket_bank()
+            paket_pilih = st.selectbox("Paket yang sudah ada (opsional)", [""] + _paket_lama,
+                                       format_func=lambda x: "— pilih paket —" if not x else x, key=f"{k}_paket_lama")
+            topik = st.text_input("Bab / topik = nama paket (ketik untuk paket baru)", key=f"{k}_topik")
         konversi_ditekan = st.form_submit_button("🔄 Konversi dan periksa")
-    meta = {"jenjang": jenjang.strip(), "kelas": kelas.strip(), "mapel": mapel.strip(), "topik": topik.strip()}
+    meta = {"jenjang": jenjang.strip(), "kelas": kelas.strip(), "mapel": mapel.strip(), "topik": (topik.strip() or paket_pilih.strip())}
 
     kunci_hasil = f"{k}_hasil"
     if konversi_ditekan:
@@ -5439,8 +5489,10 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
                 existing = baca_records_aman(ws_bank, refresh=True)
                 bentuk_peta = {str(x.get("Bentuk_Soal", "")).strip().casefold(): str(x.get("Bentuk_Soal", "")).strip()
                                for x in existing if str(x.get("Bentuk_Soal", "")).strip()}
-                teks_ada = {_bank_sidik_soal(x.get("Teks_Soal", ""), x.get("Opsi_Jawaban", ""), x.get("Bentuk_Soal", ""))
-                            for x in existing}
+                # Duplikat hanya dihitung di paket yang sama (Bab/topik sama) dan hanya terhadap soal aktif.
+                teks_ada = {(_bank_sidik_soal(x.get("Teks_Soal", ""), x.get("Opsi_Jawaban", ""), x.get("Bentuk_Soal", "")),
+                             _paket_norm(x.get("Bab_Atau_Topik", "")))
+                            for x in existing if _soal_aktif(x)}
                 if mode.startswith("Teks"):
                     mentah, masalah_umum = bank_parse_teks_soal(teks_tempel), []
                 else:
@@ -5453,8 +5505,9 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
                 for item in mentah:
                     b = bank_bangun_baris(item, meta, bentuk_peta)
                     norm = _bank_sidik_soal(b["Teks_Soal"], b["Opsi_Jawaban"], b["Bentuk_Soal"])
+                    norm = (norm, _paket_norm(b.get("Bab_Atau_Topik", "")))
                     if b["Teks_Soal"] and (norm in teks_ada or norm in dilihat):
-                        b["_masalah"].append("soal yang sama sudah ada, dilewati")
+                        b["_masalah"].append("soal yang sama sudah ada di paket ini, dilewati")
                     dilihat.add(norm)
                     for kolom_wajib, nama_tampil in (("Jenjang", "jenjang"), ("Kelas", "kelas"), ("Mapel", "mapel")):
                         if not b[kolom_wajib]:
@@ -5478,7 +5531,7 @@ def tampilkan_konverter_bank_soal(konteks="owner"):
     abaikan_dup = False
     if jumlah_dup:
         abaikan_dup = st.checkbox(
-            f"{jumlah_dup} soal sama persis dengan soal di bank / tempelan ini. Simpan juga (abaikan pemeriksaan duplikat)",
+            f"{jumlah_dup} soal sama persis dengan soal lain di paket ini. Simpan juga (abaikan pemeriksaan duplikat)",
             key=f"{k}_abaikan_dup")
     def _masalah_efektif(b):
         return [m for m in b["_masalah"] if not (abaikan_dup and "sudah ada" in m)]
@@ -6993,6 +7046,52 @@ def tampilkan_nazma_focus_alert(task_id, siswa_id, task_info=None):
                     # Kegagalan pencatatan tidak mengganggu timer atau pengerjaan siswa.
                     pass
 
+_CSS_KARTU_TUGAS = """
+<style>
+.kt{display:flex;gap:14px;align-items:center;border-radius:16px;padding:14px 16px;margin:14px 0 4px 0;border:2px solid #cfe0ff;background:#f3f8ff}
+.kt .kt-ik{font-size:2.4rem;line-height:1}
+.kt .kt-jd{font-size:1.1rem;font-weight:800;color:#13315c;line-height:1.25}
+.kt .kt-mp{font-size:.9rem;color:#4a5d7a;margin-top:2px}
+.kt .kt-st{display:inline-block;font-size:.8rem;font-weight:700;border-radius:999px;padding:2px 10px;margin-top:6px;background:#e3eefc;color:#13315c}
+.kt .kt-tg{font-size:.82rem;font-weight:700;margin-top:6px}
+.kt-merah{background:#fff1f0;border-color:#ffb3ad}.kt-merah .kt-tg{color:#c0261b}
+.kt-kuning{background:#fff8e6;border-color:#ffd98a}.kt-kuning .kt-tg{color:#9a6200}
+.kt-hijau{background:#effaf1;border-color:#b5e3bd}.kt-hijau .kt-tg{color:#1f7a34}
+.kt-abu{background:#f4f5f7;border-color:#dfe2e8;opacity:.9}.kt-abu .kt-tg{color:#667085}
+[class*="st-key-kerjakan_"] details>summary{background:#1e6fd9;color:#fff;border-radius:12px;font-weight:800;padding:.7rem 1rem}
+[class*="st-key-kerjakan_"] details>summary p,[class*="st-key-kerjakan_"] details>summary span{color:#fff!important;font-size:1.05rem}
+[class*="st-key-kerjakan_"] details>summary svg{fill:#fff;color:#fff}
+[class*="st-key-lihat_"] details>summary{background:#eef1f6;border-radius:12px}
+</style>
+"""
+
+
+def _kartu_depan_html(t, kode, label, mapel_txt, judul, ikon, tenggat):
+    import html as _h
+    selesai = kode in ("dikirim", "dinilai")
+    warna, info_tg = ("kt-abu" if selesai else "kt-hijau"), ""
+    tgl = parse_tanggal(tenggat) if tenggat and not adalah_materi(t) else None
+    if tgl is not None and not selesai:
+        sisa = (tgl - waktu_lokal().date()).days
+        if sisa < 0:
+            warna, info_tg = "kt-merah", "⏰ Sudah lewat tenggat, kerjakan sekarang ya!"
+        elif sisa == 0:
+            warna, info_tg = "kt-merah", "⏰ Tenggat HARI INI"
+        elif sisa <= 2:
+            warna, info_tg = "kt-kuning", f"🕒 Tenggat {sisa} hari lagi"
+        else:
+            info_tg = f"📅 Tenggat {_h.escape(str(tenggat)[:16])}"
+    elif tenggat and not adalah_materi(t):
+        info_tg = f"📅 Tenggat {_h.escape(str(tenggat)[:16])}"
+    return (
+        f'<div class="kt {warna}"><div class="kt-ik">{ikon}</div><div>'
+        f'<div class="kt-jd">{_h.escape(str(judul))}</div>'
+        f'<div class="kt-mp">{_h.escape(str(mapel_txt))}</div>'
+        f'<span class="kt-st">{_h.escape(str(label))}</span>'
+        + (f'<div class="kt-tg">{info_tg}</div>' if info_tg else "") + '</div></div>'
+    )
+
+
 def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_aktif_page=None):
     """Satu kartu tugas/PR untuk siswa. Setiap tugas menyimpan jawabannya sendiri
     (tidak saling menimpa), dan terkunci setelah dikirim."""
@@ -7016,7 +7115,21 @@ def tampilkan_kartu_tugas(t, jawaban_siswa, status_by_task, nilai_ids, sesi_akti
     kartu_terbuka = bool(st.session_state.get(expander_state_key, False) or sesi_tugas_ini_awal)
 
     label_mapel_tugas = ", ".join(daftar_mapel_tugas(t)) or t.get("Mapel", "Mapel")
-    with st.expander(f"{ikon} {label_mapel_tugas} · {judul} · {label}{tambahan}", expanded=kartu_terbuka):
+    st.markdown(_CSS_KARTU_TUGAS + _kartu_depan_html(t, kode, label, label_mapel_tugas, judul, ikon, tenggat),
+                unsafe_allow_html=True)
+    if adalah_materi(t):
+        _label_buka, _awalan = "📖 Buka materi", "lihat_"
+    elif terkunci:
+        _label_buka, _awalan = "🔎 Lihat tugas & hasil", "lihat_"
+    elif kode == "draft":
+        _label_buka, _awalan = "▶ Lanjutkan mengerjakan", "kerjakan_"
+    else:
+        _label_buka, _awalan = "▶ Kerjakan sekarang", "kerjakan_"
+    try:
+        _wadah_kartu = st.container(key=f"{_awalan}{task_id}")
+    except TypeError:  # versi Streamlit lama tanpa parameter key
+        _wadah_kartu = st.container()
+    with _wadah_kartu, st.expander(_label_buka, expanded=kartu_terbuka):
         timer_txt = str(t.get("Timer_Menit", "")).strip()
         st.write(f"**Instruksi Tutor:** {t.get('Instruksi') or '-'}")
         st.write(f"**Diberikan:** {t.get('Tanggal') or '-'}")
@@ -7440,7 +7553,7 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
-VERSI_KODE = "27-11-2026 · Rincian jawaban di portofolio v16"
+VERSI_KODE = "28-11-2026 · Paket soal, kartu tugas ramah anak v17"
 st.caption(f"Versi kode: {VERSI_KODE}")
 
 peran = st.selectbox(
@@ -7666,6 +7779,10 @@ if peran == "🎓 Siswa":
                 st.warning(f"⚠️ Ada {pr_terlambat} PR yang sudah lewat tenggat. Buka menu PR untuk mengerjakannya.")
             elif pr_belum:
                 st.info(f"📌 Ada {pr_belum} PR yang belum dikerjakan. Buka menu PR.")
+            if pending:
+                st.button(f"▶ Ada {pending} tugas menunggu. Kerjakan sekarang!", type="primary", key="beranda_ke_tugas",
+                          use_container_width=True,
+                          on_click=lambda: st.session_state.update({"menu_navigasi_siswa": "📝 Tugas"}))
             st.info("Pilih menu di sebelah kiri untuk mengerjakan tugas dan PR, melihat nilai, atau memeriksa riwayat belajar.")
 
         elif menu_siswa == "📝 Tugas":
